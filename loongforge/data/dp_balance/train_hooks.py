@@ -12,11 +12,14 @@ from megatron.core.num_microbatches_calculator import get_num_microbatches
 from megatron.training import get_args, get_timers
 
 from loongforge.data.dp_balance.rebalance.warmup import (
-    set_warmup_c1,
-    set_warmup_groups,
-    solve_computation_coef,
-    get_seq_coefs,
-    set_seq_coefs,
+    set_vlm_warmup_c1,
+    set_vlm_warmup_groups,
+    solve_vlm_computation_coef,
+    get_vlm_seq_coefs,
+    set_vlm_seq_coefs,
+    solve_vit_computation_coef,
+    get_vit_computation_coef,
+    set_vit_computation_coef,
 )
 from loongforge.data.dp_balance.rerun_iterator import RerunDataIterator
 
@@ -54,6 +57,8 @@ def train_log_decorator(training_log):
         if (rank == 0 and
             args_train.use_vlm_dp_balance and
             iteration in args_train.vlm_dp_balance_warmup_iters):
+            # Only rank 0 records time due to DP synchronization: all ranks wait at sync points,
+            # so the overall iteration time is determined by the slowest rank.
             active_btime = timers('interval-time').active_time()
         ret = training_log(*args, **kwargs)
         if (rank == 0 and
@@ -61,7 +66,7 @@ def train_log_decorator(training_log):
             iteration in args_train.vlm_dp_balance_warmup_iters):
             active_etime = timers('interval-time').active_time()
             c1 = (active_etime - active_btime) * 1000
-            set_warmup_c1(c1)
+            set_vlm_warmup_c1(c1)
         return ret
     return wrapper
 
@@ -111,7 +116,18 @@ def train_step_decorator(train_step):
     4. Broadcasting calibrated load model coefficients to all data parallel processes
 
     Load model formula:
-        load ≈ SEQ2_COEF × seq_len² + SEQ_COEF × seq_len + SEQ_NUM_COEF
+        VLM: load ≈ SEQ2_COEF × seq_len² + SEQ_COEF × seq_len + SEQ_NUM_COEF
+        ViT: load ≈ a × num_patches² + b × num_patches + c × num_images
+
+    Warmup Order Requirement:
+        When both VLM and ViT warmup are enabled, ViT warmup must complete
+        before VLM warmup starts. This is because VLM warmup measures the
+        full training iteration time (which includes ViT forward pass),
+        while ViT warmup measures only the ViT forward pass time.
+
+        Example configuration:
+            vit_dp_balance_warmup_iters = [2, 3, 4, 5, 6]   # First 5 iterations
+            vlm_dp_balance_warmup_iters = [7, 8, 9, 10, 11]  # Next 5 iterations
 
     This model is used for subsequent data reordering and load balancing decisions.
 
@@ -129,6 +145,21 @@ def train_step_decorator(train_step):
         timers = get_timers()
         args_train = get_args()
 
+        # Validate warmup iteration order when both VLM and ViT warmup are enabled
+        # ViT warmup must complete before VLM warmup to avoid measurement interference
+        if (args_train.use_vlm_dp_balance and
+                hasattr(args_train, 'use_vit_dp_balance') and args_train.use_vit_dp_balance):
+            vlm_warmup_iters = args_train.vlm_dp_balance_warmup_iters
+            if hasattr(args_train, 'vit_dp_balance_warmup_iters'):
+                vit_warmup_iters = args_train.vit_dp_balance_warmup_iters
+                # Check for overlap or incorrect order
+                if vit_warmup_iters[-1] >= vlm_warmup_iters[0]:
+                    raise ValueError(
+                        f"ViT warmup iterations {vit_warmup_iters} must complete "
+                        f"before VLM warmup iterations {vlm_warmup_iters}. "
+                        f"Expected: vit_warmup_iters[-1] < vlm_dp_balance_warmup_iters[0]"
+                    )
+
         dp_group = mpu.get_data_parallel_group_gloo(
             with_context_parallel=False,
             partial_data_parallel=False,
@@ -139,12 +170,12 @@ def train_step_decorator(train_step):
             num_microbatches = get_num_microbatches()
             all_data, new_itertor = safe_peek(data_iterator, n=num_microbatches)
             if all_data:
-                set_warmup_groups(all_data)
+                set_vlm_warmup_groups(all_data)
 
             args = (*args[:1], new_itertor, *args[2:])
         ret = train_step(*args, **kwargs)
-        end_flag = solve_computation_coef()
-        seq2_coef, seq_coef, seq_num_coef = get_seq_coefs()
+        end_flag = solve_vlm_computation_coef()
+        seq2_coef, seq_coef, seq_num_coef = get_vlm_seq_coefs()
         if (args_train.use_vlm_dp_balance and
                 iteration == args_train.vlm_dp_balance_warmup_iters[-1] + 1):
             if rank == 0:
@@ -159,7 +190,32 @@ def train_step_decorator(train_step):
             seq2_coef, seq_coef, seq_num_coef = (comp_coefs[0].item(),
                                                  comp_coefs[1].item(),
                                                  comp_coefs[2].item())
-            set_seq_coefs(seq2_coef, seq_coef, seq_num_coef)
+            set_vlm_seq_coefs(seq2_coef, seq_coef, seq_num_coef)
+
+        # ViT warmup coefficient fitting and broadcasting
+        end_flag = solve_vit_computation_coef()
+        vit_num_patches_sq_coef, vit_num_patches_coef, vit_num_images_coef = get_vit_computation_coef()
+        if (hasattr(args_train, 'use_vit_dp_balance') and
+                args_train.use_vit_dp_balance and
+                hasattr(args_train, 'vit_dp_balance_warmup_iters') and
+                iteration == args_train.vit_dp_balance_warmup_iters[-1] + 1):
+            if rank == 0:
+                vit_coefs_tensor = torch.tensor([float(vit_num_patches_sq_coef),
+                                                   float(vit_num_patches_coef),
+                                                   float(vit_num_images_coef)],
+                                                  dtype=torch.float, device=torch.device("cpu"))
+            else:
+                vit_coefs_tensor = torch.tensor([float(0.0),
+                                                   float(1.0),
+                                                   float(0.0)],
+                                                  dtype=torch.float, device=torch.device("cpu"))
+            torch.distributed.broadcast(vit_coefs_tensor, src=torch.distributed.get_process_group_ranks(dp_group)[0], group=dp_group)
+            vit_num_patches_sq_coef, vit_num_patches_coef, vit_num_images_coef = (
+                vit_coefs_tensor[0].item(),
+                vit_coefs_tensor[1].item(),
+                vit_coefs_tensor[2].item()
+            )
+            set_vit_computation_coef(vit_num_patches_sq_coef, vit_num_patches_coef, vit_num_images_coef)
         return ret
 
     return wrapper

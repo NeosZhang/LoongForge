@@ -22,6 +22,7 @@ from functools import partial
 from megatron.core import mpu
 import torch.distributed as dist
 from typing import List
+import numpy as np
 
 from megatron.training import get_args
 from loongforge.utils import constants
@@ -48,8 +49,9 @@ from loongforge.data.dp_balance.rebalance.reconstruct import (
 )
 
 from loongforge.data.dp_balance.rebalance.warmup import (
-    load_estimate_per_sample,
+    load_estimate_per_vlm_sample,
 )
+from loongforge.data.dp_balance.rebalance.comm_tracker import _comm_overhead_tracker
 
 
 class _MicroBatchLoadTracker:
@@ -387,9 +389,26 @@ def solve_sample_dp_reorder_plan(
     else:
         trigger_threshold = getattr(args, "dp_balance_trigger_threshold_vlm", 0.2)
 
+    # Estimate communication overhead for rebalancing
+    total_elements = sum([item[1] for item in items])
+    estimated_comm_cost_ms = _comm_overhead_tracker.estimate(total_elements)
+
+    # Expected imbalance gain: time saved by rebalancing
+    expected_imbalance_gain = (max_dp_load - dp_average_load) if dp_average_load > 0 else 0
+
+    #
+    # Decision logic for rebalancing:
+    #   - Early stage (before warmup completes): use simple threshold only
+    #     (imbalance_ratio < trigger_threshold). Communication cost estimation
+    #     returns 0 (not fitted yet), so rebalancing is triggered by threshold.
+    #   - Later stage (after warmup): both threshold and communication cost are considered
+    #     to avoid negative gain. Rebalance is skipped if communication overhead >= gain.
+    #
+
     if (
         max_seq_load > dp_average_load
         or imbalance_ratio < trigger_threshold
+        or estimated_comm_cost_ms >= expected_imbalance_gain
     ):
         _load_tracker.record_skip(caller)
         if verbose:
@@ -634,6 +653,15 @@ def redistribute_tensor_helper(
             Reconstructed tensors received by the current DP rank, in reordered order.
     """
 
+    from megatron.training import get_timers
+
+    # Record start time for communication overhead tracking
+    timers = get_timers()
+    start_time = None
+    if timers is not None:
+        start_time = timers('interval-time').active_time()
+
+
     dp_group = get_dp_group_by_device(local_tensor_list[0])
     dp_size = dp_group.size()
 
@@ -683,7 +711,7 @@ def redistribute_tensor_helper(
         sum(recv_splits),
         dtype=local_tensor_list[0].dtype,
         device=local_tensor_list[0].device,
-    )
+    ).pin_memory()
 
     # Safety checks before all_to_all
     if recv_tensor.dtype != send_tensor.dtype:
@@ -733,6 +761,13 @@ def redistribute_tensor_helper(
     recv_tensor = recv_tensor.contiguous()
     redistributed_tensor_list = torch.split(recv_tensor, recv_tensor_lengths)
     redistributed_tensor_list = [reconstruct_func(t) for t in redistributed_tensor_list]
+
+    # Record end time and update communication tracker
+    if start_time is not None:
+        end_time = timers('interval-time').active_time()
+        comm_time_ms = (end_time - start_time) * 1000
+        data_size = sum([t.numel() for t in local_tensor_list])
+        _comm_overhead_tracker.record(data_size, comm_time_ms)
 
     return redistributed_tensor_list
 
@@ -833,7 +868,7 @@ def reorder_data_for_internvl(data):
         global_seq_lengths,
         local_sample_index,
         sample_src_dp_rank,
-        cost_fn=load_estimate_per_sample,
+        cost_fn=load_estimate_per_vlm_sample,
         pack_len_ratio=args.dp_balance_max_len_ratio_vlm,
         dp_historical_costs=historical_costs,
         caller="InternVL",
@@ -958,7 +993,7 @@ def reorder_data_for_vlm(data):
         global_seq_lengths,
         local_sample_index,
         sample_src_dp_rank,
-        cost_fn=load_estimate_per_sample,
+        cost_fn=load_estimate_per_vlm_sample,
         pack_len_ratio=args.dp_balance_max_len_ratio_vlm,
         dp_historical_costs=historical_costs,
         caller="VLM",

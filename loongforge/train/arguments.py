@@ -1226,8 +1226,19 @@ def _add_extra_parallel_args(parser):
         '--vlm-dp-balance-warmup-iters',
         nargs='+',
         type=int,
-        default=[2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        default=[12, 13, 14, 15, 16, 17, 18, 19, 20, 21],
         help="Iteration indices to collect statistics for VLM DP balance coefficient warmup. "
+             "VLM warmup must start after ViT warmup completes. "
+             "Default: [12, 13, 14, 15, 16, 17, 18, 19, 20, 21]"
+    )
+
+    group.add_argument(
+        '--vit-dp-balance-warmup-iters',
+        nargs='+',
+        type=int,
+        default=[2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+        help="Iteration indices to collect statistics for ViT DP balance coefficient warmup. "
+             "ViT warmup must complete before VLM warmup starts. "
              "Default: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11]"
     )
 

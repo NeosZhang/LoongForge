@@ -13,6 +13,9 @@ Main function:
 """
 
 import torch
+import torch.distributed as dist
+from megatron.core import mpu
+from megatron.training import get_timers, get_args
 from loongforge.data.dp_balance.rebalance.balance import (
     gather_sample_info_across_dp,
     solve_sample_dp_reorder_plan,
@@ -20,8 +23,12 @@ from loongforge.data.dp_balance.rebalance.balance import (
     get_reverse_reorder_plan,
     get_dp_group_by_device,
 )
+from loongforge.data.dp_balance.rebalance.warmup import (
+    get_vit_computation_coef,
+    set_vit_warmup_groups,
+    set_vit_warmup_c1,
+)
 from loongforge.train.initialize import change_parallel_state
-from loongforge.utils import get_args
 
 
 def dp_balance_vit_encoder(vit_module, pixel_values, image_grid_thw):
@@ -58,6 +65,36 @@ def dp_balance_vit_encoder(vit_module, pixel_values, image_grid_thw):
     vit_input_lengths = (
         image_grid_thw[:, 0] * image_grid_thw[:, 1] * image_grid_thw[:, 2]
     ).tolist()
+    vit_input_lengths_tensor = torch.tensor(
+        vit_input_lengths, dtype=torch.int, device=pixel_values.device
+    )
+
+    # Collect ViT warmup statistics
+    args = get_args()
+    timers = get_timers()
+    iteration = args.curr_iteration
+    dp_rank = mpu.get_data_parallel_rank()
+    is_dp_root = dp_rank == 0
+
+    # Check if we're in ViT warmup phase and on DP root
+    is_warmup_vit = (
+        hasattr(args, 'use_vit_dp_balance') and
+        args.use_vit_dp_balance and
+        hasattr(args, 'vit_dp_balance_warmup_iters') and
+        iteration in args.vit_dp_balance_warmup_iters and
+        iteration != args.vit_dp_balance_warmup_iters[0]
+    )
+
+    if is_warmup_vit and is_dp_root:
+        # Only DP root records time due to DP synchronization: all ranks wait at sync points,
+        # so the overall iteration time is determined by the slowest rank.
+        warmup_vit_btime = timers('interval-time').active_time() if timers is not None else None
+
+    # Collect ViT input length statistics for warmup
+    if (hasattr(args, 'use_vit_dp_balance') and
+            args.use_vit_dp_balance):
+        set_vit_warmup_groups(vit_input_lengths_tensor)
+
     split_vit_input = pixel_values.split(vit_input_lengths, dim=0)
     global_vit_lengths, local_vit_index, tensor_src_dp_rank = (
         gather_sample_info_across_dp(
@@ -65,12 +102,17 @@ def dp_balance_vit_encoder(vit_module, pixel_values, image_grid_thw):
         )
     )
 
+    # Determine cost function using calibrated coefficients from warmup
+    # If warmup is not enabled, coefficients remain at their initial values (0, 1, 0)
+    vit_num_patches_sq_coef, vit_num_patches_coef, vit_num_images_coef = get_vit_computation_coef()
+    cost_fn = lambda l: vit_num_patches_sq_coef * (l ** 2) + vit_num_patches_coef * l + vit_num_images_coef
+
     vit_dp_reorder_plan, _ = solve_sample_dp_reorder_plan(
         global_vit_lengths,
         local_vit_index,
         tensor_src_dp_rank,
-        cost_fn=lambda l: l ** 2,
-        pack_len_ratio=get_args().dp_balance_max_len_ratio_vit,
+        cost_fn=cost_fn,
+        pack_len_ratio=args.dp_balance_max_len_ratio_vit,
         cross_micro_batch_balance=False,
         caller="ViT",
     )
@@ -100,7 +142,16 @@ def dp_balance_vit_encoder(vit_module, pixel_values, image_grid_thw):
     pixel_embeds, window_index, deepstack_pixel_embeds = vit_module(
         pixel_values, reordered_image_grid_thw
     )
-    args = get_args()
+
+    # Collect ViT warmup time after forward pass
+    if is_warmup_vit and is_dp_root and timers is not None:
+        # Synchronize all ranks to ensure the measured time includes sync overhead
+        dist.barrier(group=dp_group)
+        warmup_vit_etime = timers('interval-time').active_time()
+        if warmup_vit_btime is not None and warmup_vit_etime is not None:
+            c1 = (warmup_vit_etime - warmup_vit_btime) * 1000
+            set_vit_warmup_c1(c1)
+
     if args.enable_encoder_hetero_dp or args.enable_full_hetero_dp:
         change_parallel_state("image_encoder")
 
