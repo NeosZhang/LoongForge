@@ -1,10 +1,23 @@
 # README
 <div align="center">
 
-<h1 align="center">LoongForge</h1>
-<h3>A modular, scalable, and highly efficient training framework for language, multimodal, and embodied models.</h3>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"  srcset="./docs/assets/images/logo/banner-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./docs/assets/images/logo/banner.svg">
+    <img alt="LoongForge" src="./docs/assets/images/logo/banner.svg" width="520">
+  </picture>
+</p>
+<h4>A modular, scalable, and highly efficient training framework for language, multimodal, and embodied models.</h4>
 
-[![Documentation](https://img.shields.io/badge/docs-latest-brightgreen.svg?style=flat)](https://loongforge.readthedocs.io/en/latest/index.html)[![License](https://img.shields.io/github/license/open-mmlab/mmdeploy.svg)](https://github.com/baidu-baige/LoongForge/blob/master/LICENSE)[![Stars](https://img.shields.io/github/stars/baidu-baige/LoongForge=social)](https://github.com/baidu-baige/LoongForge/tree/master)[![Issues](https://img.shields.io/github/issues-raw/baidu-baige/LoongForge)](https://github.com/baidu-baige/LoongForge/issues)
+<p align="center">
+      
+[![Documentation](https://img.shields.io/badge/DOCS-latest-blue?style=for-the-badge&logo=readthedocs)](https://loongforge.readthedocs.io/en/latest/index.html)
+[![License](https://img.shields.io/github/license/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/blob/master/LICENSE)
+[![Stars](https://img.shields.io/github/stars/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/tree/master)
+[![WeChat](https://img.shields.io/badge/WeChat-Join_Community-07C160.svg?style=for-the-badge&logo=wechat)](https://github.com/baidu-baige/LoongForge/issues/34)
+
+</p>
 
 </div>
 
@@ -28,13 +41,13 @@
 * **Decoupled Encoder-Decoder Training**: Separates vision encoder and LLM into independent tasks, eliminating encoder-induced pipeline bubbles and preventing ViT computation from blocking LLM throughput.
 * **DP Load Balancing**: Leverages a load-aware data redistribution algorithm to optimize data parallel imbalances caused by data packing, improving multi-node scaling efficiency.
 * **MoE A2A Optimization**: Overlaps All2All communication, activation offloading, and computation to optimize memory usage and communication in large-scale MoE models, achieving lower memory footprint than upstream Megatron-LM.
-* **Custom Fused Operators**: High-performance fused operators like FusedDSA, which integrates flashmla and indexer forward operators with custom backward operators (essential for training) to accelerate DSA model training.
+* **Custom Fused Operators**: High-performance fused operators like FusedDSA, which integrates flashmla and indexer forward operators with custom backward operators (essential for training) to accelerate DSA model training. Currently the TileLang-based operators are open-sourced.
 * **Adaptive FP8 precision**: End-to-end FP8 training support for both LLMs and VLMs, further enhanced with adaptive FP8 that automatically determines whether to enable FP8 per operator based on GEMM shape and computational efficiency to maximize training performance.
 * **Flexible Checkpoint Conversion**: Supports both **offline bidirectional Megatron ↔ HuggingFace weight conversion** and **native online HuggingFace checkpoint load/save**, eliminating format barriers throughout the training workflow.
 * **Versatile Pipeline & Tools**: Out-of-the-box support for Pretrain, MidTrain, SFT, and LoRA, with built-in tools for dataset processing such as format conversion and packing.
 * **Heterogeneous Hardware**: Supports training on both NVIDIA GPUs and Kunlun XPUs via a minimally intrusive plugin design.
 
-*(🔔🔔🔔 Please refer to our [Official Documentation](https://loongforge.readthedocs.io/en/latest/index.html) for detailed tutorials.)*
+*(🔔🔔🔔 Please refer to our [LLM Advanced features](https://loongforge.readthedocs.io/en/latest/llm_tutorial/features_index.html) / [VLM Advanced features](https://loongforge.readthedocs.io/en/latest/vlm_tutorial/features_index.html) for detailed tutorials.)*
 
 ## 🚀 Ongoing & Upcoming
 
@@ -79,7 +92,7 @@ LoongForge supports a massive array of [state-of-the-art models](https://loongfo
 | | Qwen2.5 | qwen2.5-0.5b, qwen2.5-1.5b, qwen2.5-3b, qwen2.5-7b, qwen2.5-14b, qwen2.5-32b, qwen2.5-72b |
 | | Qwen3 | qwen3-0.6b, qwen3-1.7b, qwen3-4b, qwen3-8b, qwen3-14b, qwen3-32b, qwen3-30b-a3b, qwen3-235b-a22b, qwen3-480b-a35b, qwen3-coder-30b-a3b |
 | | Qwen3-Next | qwen3-next-80b-a3b |
-| | MiniMax | minimax-m2.1, minimax-m2.5 |
+| | MiniMax | minimax-m2.1, minimax-m2.5, minimax-m2.7 |
 | | MIMO | mimo-7b |
 | | GLM | glm5 |
 | **VLM** | Qwen2.5-VL | qwen2.5-vl-3b, qwen2.5-vl-7b, qwen2.5-vl-32b, qwen2.5-vl-72b |
@@ -128,7 +141,7 @@ LoongForge/
 │   ├── convert_checkpoint/       # HuggingFace ↔ Megatron checkpoint conversion
 │   ├── data_preprocess/          # Data preprocessing utilities
 │   └── dist_checkpoint/          # Distributed checkpoint utilities
-├── ops/                          # Custom fused CUDA/C++ operators (sparse MLA, lightning indexer)
+├── ops/                          # Custom fused operators (TileLang open-sourced)
 ├── patches/                      # TransformerEngine patch files
 ├── docker/                       # Dockerfiles (GPU & XPU)
 ├── tests/                        # E2E test suite (YAML-driven)
@@ -150,7 +163,7 @@ Before becoming an open-source project, LoongForge had already empowered numerou
 
 ## 🤝 Contributing
 
-We heartily welcome community contributions! Whether it's reporting bugs, proposing features, or submitting code, please read our [Contributing Guidelines](docs/source/CONTRIBUTING.md) before submitting a Pull Request.
+We heartily welcome community contributions! Whether it's reporting bugs, proposing features, or submitting code, please read our [Contributing Guidelines](https://github.com/baidu-baige/LoongForge/blob/master/CONTRIBUTING.md) before submitting a Pull Request.
 
 ## 📄 License
 
@@ -174,4 +187,11 @@ If you find LoongForge helpful in your research or production, please consider c
 ## 🙏 Acknowledgments
 
 LoongForge is built upon NVIDIA's Megatron-LM. During development, we also referenced and drew inspiration from several excellent open-source projects, including but not limited to Transformers, LLaMA-Factory, and Megatron-Bridge. We sincerely thank these communities for their outstanding contributions.
+
+
+## 💬 Contact
+
+We welcome questions, feedback, feature requests, and contributions from the community. Please feel free to open an issue on GitHub, or scan the WeChat QR code below to join our developer community for discussion and collaboration.
+
+<img width="377" height="566" alt="2296f1c87a045dbb615d6697617f42d9" src="https://github.com/user-attachments/assets/1bc94e98-d9d7-41dc-b4b8-fefc6288bdc0" />
 
