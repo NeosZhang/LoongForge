@@ -1,21 +1,12 @@
 # README
 <div align="center">
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)"  srcset="./docs/assets/images/logo/banner-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./docs/assets/images/logo/banner.svg">
-    <img alt="LoongForge" src="./docs/assets/images/logo/banner.svg" width="520">
-  </picture>
-</p>
+<h1 align="center">LoongForge</h1>
 <h4>A modular, scalable, and highly efficient training framework for language, multimodal, and embodied models.</h4>
 
 <p align="center">
       
-[![Documentation](https://img.shields.io/badge/DOCS-latest-blue?style=for-the-badge&logo=readthedocs)](https://loongforge.readthedocs.io/en/latest/index.html)
-[![License](https://img.shields.io/github/license/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/blob/master/LICENSE)
-[![Stars](https://img.shields.io/github/stars/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/tree/master)
-[![WeChat](https://img.shields.io/badge/WeChat-Join_Community-07C160.svg?style=for-the-badge&logo=wechat)](https://github.com/baidu-baige/LoongForge/issues/34)
+[![Documentation](https://img.shields.io/badge/DOCS-latest-blue?style=for-the-badge&logo=readthedocs)](https://loongforge.readthedocs.io/en/latest/index.html)[![License](https://img.shields.io/github/license/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/blob/master/LICENSE)[![Stars](https://img.shields.io/github/stars/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/tree/master)[![WeChat](https://img.shields.io/badge/WeChat-Join_Community-07C160.svg?style=for-the-badge&logo=wechat)](https://github.com/baidu-baige/LoongForge/issues/34)
 
 </p>
 
