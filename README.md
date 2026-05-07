@@ -5,10 +5,12 @@
 <h4>A modular, scalable, and highly efficient training framework for language, multimodal, and embodied models.</h4>
 
 <p align="center">
-<a href="https://loongforge.readthedocs.io/en/latest/index.html"><img src="https://img.shields.io/badge/DOCS-latest-blue?style=for-the-badge&logo=readthedocs" alt="Documentation"></a>
-<a href="https://github.com/baidu-baige/LoongForge/blob/master/LICENSE"><img src="https://img.shields.io/badge/LICENSE-APACHE%202.0-green?style=for-the-badge&logo=github" alt="License"></a>
-<a href="https://github.com/baidu-baige/LoongForge/tree/master"><img src="https://img.shields.io/github/stars/baidu-baige/LoongForge?style=for-the-badge&logo=github" alt="Stars"></a>
-<a href="https://github.com/baidu-baige/LoongForge/issues/34"><img src="https://img.shields.io/badge/WeChat-Join community-green?style=for-the-badge&logo=wechat" alt="WeChat"></a>
+      
+[![Documentation](https://img.shields.io/badge/DOCS-latest-blue?style=for-the-badge&logo=readthedocs)](https://loongforge.readthedocs.io/en/latest/index.html)
+[![License](https://img.shields.io/github/license/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/blob/master/LICENSE)
+[![Stars](https://img.shields.io/github/stars/baidu-baige/LoongForge.svg?style=for-the-badge&amp;logo=github)](https://github.com/baidu-baige/LoongForge/tree/master)
+[![WeChat](https://img.shields.io/badge/WeChat-Join_Community-07C160.svg?style=for-the-badge&logo=wechat)](https://github.com/baidu-baige/LoongForge/issues/34)
+
 </p>
 
 </div>
