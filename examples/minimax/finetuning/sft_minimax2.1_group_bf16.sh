@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # This script is used for SFT training Minimax2.1 in BF16 mixed precision.
-
-
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 MEGATRON_PATH=${MEGATRON_PATH:-"/workspace/Loong-Megatron"}
 export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"/workspace/LoongForge"}
@@ -12,6 +11,8 @@ TOKENIZER_PATH=${TOKENIZER_PATH:-"/mnt/cluster/huggingface.co/MiniMax-M2.1"}
 CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/mnt/cluster/LoongForge/minimax_m2.1/MiniMax_mcore_tp8pp4ep8etp1/"}
 
 TENSORBOARD_PATH=${TENSORBOARD_PATH:-"/mnt/cluster/LoongForge/tensorboard-log/minimax_m2"}
+
+GPUS_PER_NODE=8
 
 export NCCL_SOCKET_IFNAME=bond0
 export NCCL_IB_GID_INDEX=3

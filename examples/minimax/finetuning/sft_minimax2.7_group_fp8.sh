@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # This script is used for SFT training Minimax2.7 in FP8 mixed precision.
-
-
+export TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1
 
 MEGATRON_PATH=${MEGATRON_PATH:-"/workspace/Loong-Megatron"}
 LOONGFORGE_PATH=${LOONGFORGE_PATH:-"/workspace/LoongForge"}
@@ -17,6 +16,7 @@ export FP8_QUANT_FWD_INP_AMAX_EPS=1e-12
 export FP8_QUANT_FWD_WEIGHT_AMAX_EPS=1e-12
 export FP8_QUANT_BWD_GRAD_AMAX_EPS=1e-12
 
+GPUS_PER_NODE=8
 
 export NCCL_SOCKET_IFNAME=bond0
 export NCCL_IB_GID_INDEX=3
