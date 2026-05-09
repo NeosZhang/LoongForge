@@ -51,3 +51,4 @@ LoongForge 支持在昆仑芯 P800 XPU 上进行训练，涵盖 LLM、VLM、VLA 
 | | | internvl3.5_241b_a28b | | ✅ (示例) |
 | | Qwen-3.5 | qwen3.5_35b_a3b | ✅ (示例) | ✅ (示例) |
 | VLA | PI 0.5 | | | ✅ (示例) |
+| | GR00T-N1.6 | | | ✅ (示例) |
