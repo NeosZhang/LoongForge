@@ -100,6 +100,7 @@ LoongForge supports a massive array of [state-of-the-art models](https://loongfo
 | | CustomCombinedModel | Flexible ViT + LLM backbone configuration ([example](https://github.com/baidu-baige/LoongForge/blob/master/configs/models/custom/qwen_vit_llama3_8b.yaml)) |
 | **Diffusion** | WAN2.2 | wan2.2_i2v_a14b |
 | **VLA** | Pi | pi0.5 |
+| | GR00T | groot-n1.6 |
 
 
 ## 🏗️ Architecture Overview
