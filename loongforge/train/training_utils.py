@@ -1820,18 +1820,28 @@ def train_step(
                     args.training_phase == constants.TrainingPhase.SFT
                     and not args.legacy_reporting_loss_reduction
                 ):
-                    # in mcore the normalization happens on micro batch instead of global
-                    val = torch.vstack(val)
-                    val = val[:, 0] / val[:, 1]
-                    val = val.mean()
-                    torch.distributed.all_reduce(
-                        val,
-                        group=mpu.get_data_parallel_group(with_context_parallel=True),
-                    )
-                    val /= torch.distributed.get_world_size(
-                        group=mpu.get_data_parallel_group(with_context_parallel=True)
-                    )
-                    loss_reduced[key] = val
+                    if args.calculate_per_token_loss:
+                        # SFT ChunkPipe: log as ΣS/Σn to align with token-equal-weight gradient
+                        val = torch.vstack(val).sum(dim=0)
+                        torch.distributed.all_reduce(
+                            val,
+                            group=mpu.get_data_parallel_group(with_context_parallel=True),
+                        )
+                        loss_reduced[key] = val[0] / val[1]
+                    else:
+                        # SFT non-ChunkPipe: normalize per sample (mean of S_i/n_i),
+                        # in mcore the normalization happens on micro batch instead of global
+                        val = torch.vstack(val)
+                        val = val[:, 0] / val[:, 1]
+                        val = val.mean()
+                        torch.distributed.all_reduce(
+                            val,
+                            group=mpu.get_data_parallel_group(with_context_parallel=True),
+                        )
+                        val /= torch.distributed.get_world_size(
+                            group=mpu.get_data_parallel_group(with_context_parallel=True)
+                        )
+                        loss_reduced[key] = val
                 else:
                     # there is one dict per microbatch. in new reporting, we average
                     # over the total number of tokens across the global batch.
@@ -1842,8 +1852,20 @@ def train_step(
                     )
                     loss_reduced[key] = val[0] / val[1]
             elif val[0].numel() == 1:
-                # legacy behavior, we average over the number of microbatches
-                val = torch.cat(val).mean()
+                # For the SFT chunkpipe per-sample loss path, each micro-batch
+                # reports S_{g,k}/(N_g*G) — a partial per-step sum. Summing
+                # across chunks within the rank's step yields the step-level
+                # per-sample loss (1/G) sum_g (sum_k S_{g,k})/N_g, which is
+                # what we want to log. Other paths use legacy mean-over-
+                # micro-batches behavior.
+                if (
+                    args.enable_chunkpipe
+                    and getattr(args, 'sft_chunkpipe_mode', False)
+                    and not args.calculate_per_token_loss
+                ):
+                    val = torch.cat(val).sum()
+                else:
+                    val = torch.cat(val).mean()
                 # since we remove the dpcp allreduce in loss func
                 torch.distributed.all_reduce(
                     val, group=mpu.get_data_parallel_group(with_context_parallel=True)

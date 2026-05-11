@@ -247,6 +247,11 @@ def _preprocess_supervised_dataset(
         # Track how many consecutive chunks belong to the same source sequence,
         # so that the sampler can keep them together and in order.
         model_inputs["chunk_group_size"] = []
+        # Per-chunk N_g: total response tokens of the source sequence this chunk
+        # belongs to. All chunks from the same source sequence carry the same
+        # value; bin-packed short sequences store the bin's total response
+        # tokens. Consumed by the SFT chunkpipe per-sample loss path.
+        model_inputs["group_total_tokens"] = []
 
     pad_to_multiple_of = 1
     if config.packing:
@@ -368,6 +373,11 @@ def _preprocess_supervised_dataset(
                 ignore_index,
             )
             num_chunks = len(chunks)
+            # N_g = total response tokens across all chunks of this source
+            # sequence (sum of per-chunk loss masks). Shared by every chunk.
+            group_total_tokens = sum(
+                sum(chunk_loss_mask) for _, _, chunk_loss_mask in chunks
+            )
             for chunk_input_ids, chunk_labels, chunk_loss_mask in chunks:
                 model_inputs["input_ids"].append(chunk_input_ids)
                 model_inputs["labels"].append(chunk_labels)
@@ -375,6 +385,7 @@ def _preprocess_supervised_dataset(
                 model_inputs["images"].append([])
                 model_inputs["videos"].append([])
                 model_inputs["chunk_group_size"].append(num_chunks)
+                model_inputs["group_total_tokens"].append(group_total_tokens)
                 if not config.eod_mask_loss:
                     model_inputs["loss_mask"].append(chunk_loss_mask)
 
@@ -407,6 +418,9 @@ def _preprocess_supervised_dataset(
             model_inputs["images"].append([])
             model_inputs["videos"].append([])
             model_inputs["chunk_group_size"].append(1)
+            # Bin-packed chunk is treated as a single sample; N_g = total
+            # response tokens of the whole bin.
+            model_inputs["group_total_tokens"].append(sum(packed_loss_mask))
             if not config.eod_mask_loss:
                 model_inputs["loss_mask"].append(packed_loss_mask)
 
@@ -526,6 +540,7 @@ def convert_to_tokenized_data(
     )
     if config.enable_chunkpipe:
         features["chunk_group_size"] = datasets.Value(dtype="int64", id=None)
+        features["group_total_tokens"] = datasets.Value(dtype="int64", id=None)
 
     dataset = dataset.map(
         partial(_preprocess_supervised_dataset, config=config),

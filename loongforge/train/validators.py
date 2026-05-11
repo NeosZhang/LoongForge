@@ -183,6 +183,61 @@ def _validate_extra_sft_args(args):
             "WARING: Setting args.padding_side to right when run sft.", args.rank
         )
 
+    # NOTE on ordering: this validator runs BEFORE megatron's `validate_args`,
+    # so `args.sft_chunkpipe_mode` and `args.data_parallel_size` are not yet
+    # populated. We are already inside the SFT branch (early-return above),
+    # which is exactly the condition under which `sft_chunkpipe_mode` is later
+    # set to True in megatron arguments.py, so we don't need to re-check it.
+    # `data_parallel_size` is recomputed locally with megatron's formula.
+    if getattr(args, "enable_chunkpipe", False):
+        # SFT chunkpipe per-sample loss path: default when
+        # --calculate-per-token-loss is not set. Requires the new 2-tuple
+        # reporting format (legacy_reporting_loss_reduction=False); the new
+        # path returns a scalar S/(N*G), not the 2-tuple [loss, num_tokens]
+        # the legacy path expects.
+        if not args.calculate_per_token_loss:
+            assert not args.legacy_reporting_loss_reduction, (
+                "SFT chunkpipe per-sample loss path requires "
+                "legacy_reporting_loss_reduction=False. "
+                "Either drop --legacy-reporting-loss-reduction or pass "
+                "--calculate-per-token-loss to fall back to the "
+                "token-weighted path."
+            )
+            print_rank_0(
+                "INFO: SFT chunkpipe per-sample loss path enabled (default). "
+                "Pass --calculate-per-token-loss to fall back to the "
+                "token-weighted loss path.",
+                args.rank,
+            )
+
+        # ChunkPipeGroupBatchSampler currently assumes attention DP == MoE DP
+        # for group-level data partitioning (LPT bucket assignment + per-step
+        # group_size accounting). When attention_dp != expert_dp (e.g. MoE
+        # big-EP deployments such as DSv3.1 pp8ep32tp8), the sampler's
+        # per-rank bucket → micro-batch contract no longer aligns the data
+        # view across both DP groups, and gradients computed on attention vs
+        # expert params would be synchronized over inconsistent batch sets.
+        #
+        # Megatron's parallel_state.py:765-769 allows attention_dp !=
+        # expert_dp under pp-last rank ordering (the default), which is what
+        # makes big-EP deployments work for non-chunkpipe paths. ChunkPipe
+        # SFT is stricter: it requires the two DPs to be equal regardless of
+        # rank order.
+        tp = args.tensor_model_parallel_size
+        pp = args.pipeline_model_parallel_size
+        cp = args.context_parallel_size
+        etp = getattr(args, "expert_tensor_parallel_size", None) or tp
+        ep = getattr(args, "expert_model_parallel_size", 1) or 1
+        attn_dp = args.world_size // (tp * pp * cp)
+        expert_dp = args.world_size // (etp * ep * pp)
+        assert attn_dp == expert_dp, (
+            f"ChunkPipe SFT sampler requires attention DP == MoE DP, got "
+            f"attention_data_parallel_size={attn_dp}, "
+            f"expert_data_parallel_size={expert_dp} "
+            f"(world_size={args.world_size}, TP={tp}, PP={pp}, CP={cp}, ETP={etp}, EP={ep}). "
+            f"Big-EP MoE deployments (e.g. DSv3 pp8ep32tp8) are not yet supported by ChunkPipeGroupBatchSampler."
+        )
+
 
 def _validate_extra_training_args(args):
     """Validate training arguments"""

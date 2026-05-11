@@ -19,6 +19,7 @@ from megatron.core.enums import ModelType
 from megatron.core.utils import StragglerDetector
 from megatron.core.datasets.utils import get_blend_from_list
 from megatron.core.rerun_state_machine import get_rerun_state_machine
+from megatron.core.num_microbatches_calculator import get_num_microbatches
 
 from megatron.training import get_timers
 from megatron.training.utils import average_losses_across_data_parallel_group
@@ -92,6 +93,16 @@ def get_batch(data_iterator):
             if config.chunkpipe_chunk_idx_in_group == 0:
                 config.chunkpipe_current_group_size = group_size
 
+        # N_g and G for the per-sample loss path. N_g is per-chunk (same value
+        # for all chunks in one source sequence), G is per-step (same for all
+        # chunks in one step). Both are read by loss_func from args. Because
+        # micro_batch_size >= 1 chunk all share the same step, picking index 0
+        # is correct.
+        if "group_total_tokens" in batch:
+            args.chunkpipe_group_total_tokens = batch["group_total_tokens"][0].item()
+        if "step_num_groups" in batch:
+            args.chunkpipe_step_num_groups = batch["step_num_groups"][0].item()
+
     output = (
         batch["tokens"],
         batch["labels"],
@@ -161,6 +172,31 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
         )
 
     num_tokens = loss_mask.sum().clone().detach().to(torch.int)
+
+    # SFT chunkpipe per-sample loss path (default when sft_chunkpipe_mode=True
+    # and --calculate-per-token-loss is NOT set). Goal: final gradient equals
+    # (1/G) * sum_g (1/N_g) * sum_k d S_{g,k}/d theta, i.e. per-source-sequence
+    # equal weighting independent of chunk count per sequence.
+    #
+    # Derivation (legacy=True 2-tuple path, no CP for brevity; cp=1):
+    #   loss_func returns scaled = S_{g,k} * M_raw / (N_g * G * cp)
+    #   schedules legacy path multiplies by cp / M_raw
+    #   → backward sees S_{g,k} / (N_g * G)
+    #   accumulated over all chunks: (1/G) sum_g (1/N_g) sum_k S_{g,k}  ✓
+    config = get_model_config()
+    sft_cp_mode = config is not None and getattr(config, "sft_chunkpipe_mode", False)
+    if sft_cp_mode and not args.calculate_per_token_loss:
+        N_g = args.chunkpipe_group_total_tokens
+        G = args.chunkpipe_step_num_groups
+        M_raw = get_num_microbatches()
+        cp = mpu.get_context_parallel_world_size()
+
+        denom = N_g * G * cp
+        scaled = loss * (M_raw / denom)
+        reporting = (loss / (N_g * G)).detach()
+        loss_reduced_dict = {'lm loss': reporting}
+        return scaled, loss_reduced_dict
+
     reporting_loss = torch.cat([loss.clone().detach().view(1), num_tokens.view(1)])
 
     loss_reduced_dict = {'lm loss': reporting_loss if not args.legacy_reporting_loss_reduction

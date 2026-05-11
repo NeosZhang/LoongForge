@@ -4,6 +4,7 @@
 """utils for sft"""
 
 import logging
+from collections import deque
 
 from typing import TYPE_CHECKING, List, Optional, Union, Any, Type, Dict
 from dataclasses import dataclass
@@ -176,10 +177,16 @@ class ChunkPipeGroupBatchSampler:
     This sampler:
       1. Scans the dataset to identify groups (consecutive chunks with the same group size).
       2. Shuffles groups for training randomness.
-      3. Shards groups across data-parallel ranks (whole groups, never split).
+      3. Shards groups across data-parallel ranks via LPT multiway partition
+         (whole groups, never split), balancing total chunk count per rank so
+         that all ranks produce nearly the same number of complete steps.
       4. Schedules groups into fixed-capacity step windows (capacity = num_microbatches
-         chunks), ensuring no group is split across step boundaries.
-      5. Yields one micro-batch at a time, keeping group members consecutive.
+         x micro_batch_size chunks) using FFD (first-fit decreasing) to maximize
+         packing density, ensuring no group is split across step boundaries.
+      5. Aligns the per-rank step count to the cross-rank minimum, so every rank
+         yields the same number of micro-batches per epoch (required for
+         collective-sync correctness under DDP).
+      6. Yields one micro-batch at a time, keeping group members consecutive.
     """
 
     def __init__(
@@ -224,12 +231,15 @@ class ChunkPipeGroupBatchSampler:
         )
 
         # Pre-compute usable samples per epoch for epoch/resume calculation.
-        # Run one dummy schedule (unshuffled) to determine how many samples
-        # a full epoch yields per rank after drop-last truncation.
-        dummy_rank_groups = [self.groups[gi] for gi in
-                             list(range(len(self.groups)))[self.data_parallel_rank::self.data_parallel_size]]
-        dummy_indices = self._schedule_step_aligned(dummy_rank_groups)
-        self.usable_per_rank = (len(dummy_indices) // self.step_capacity) * self.step_capacity
+        # Use an unshuffled LPT partition + cross-rank min alignment as the
+        # stable baseline. The shuffled per-epoch schedule in __iter__ may
+        # yield slightly different step counts, but epoch/resume accounting
+        # needs a deterministic, shuffle-independent estimate shared by all
+        # ranks so that `_epoch = consumed_samples // usable_total` and the
+        # shuffle seed `seed + _epoch` agree across ranks.
+        dummy_buckets = self._lpt_partition(range(len(self.groups)))
+        _, _, dummy_aligned = self._schedule_buckets(dummy_buckets)
+        self.usable_per_rank = dummy_aligned * self.step_capacity
         self.usable_total = self.usable_per_rank * self.data_parallel_size
 
         # Determine initial epoch and within-epoch offset for checkpoint resume
@@ -241,36 +251,141 @@ class ChunkPipeGroupBatchSampler:
             self._epoch = 0
             self._resume_offset = 0
 
+        # Per-step G (number of source sequences in the step) queue. Populated
+        # yield-time in __iter__, consumed by get_batch via TP rank-0 popleft +
+        # broadcast. The deque object itself is created once and never cleared,
+        # so downstream references (saved in args.chunkpipe_step_g_queue) stay
+        # valid across epochs. FIFO alignment with the DataLoader's actual
+        # batch production is guaranteed because sampler yield and get_batch
+        # consumption both run in the main process in strict order.
+        self._step_g_queue = deque()
+
     def __len__(self):
         return self.total_samples
 
+    def _lpt_partition(self, group_indices):
+        """LPT (Longest Processing Time) multiway partition into DP buckets.
+
+        Distributes the given group indices across `data_parallel_size` buckets
+        such that the total chunk count per bucket is balanced. Largest groups
+        are assigned first to the bucket with the smallest current load; ties
+        are broken by bucket id for determinism. LPT guarantees
+        `max_load - min_load <= max(group_size) <= step_capacity`, i.e. the
+        cross-rank imbalance is bounded by one step window.
+
+        All ranks run this locally and obtain the same assignment because the
+        inputs (`self.groups` and `group_indices`) and the algorithm are
+        deterministic — no collective communication is required.
+
+        Args:
+            group_indices: iterable of indices into self.groups.
+
+        Returns:
+            List[List[int]]: length `data_parallel_size`; `buckets[r]` is the
+            list of group indices assigned to rank r.
+        """
+        buckets = [[] for _ in range(self.data_parallel_size)]
+        loads = [0] * self.data_parallel_size
+        sorted_indices = sorted(
+            group_indices,
+            key=lambda gi: (-len(self.groups[gi]), gi),
+        )
+        for gi in sorted_indices:
+            r = min(range(self.data_parallel_size), key=lambda r: (loads[r], r))
+            buckets[r].append(gi)
+            loads[r] += len(self.groups[gi])
+        return buckets
+
+    def _schedule_buckets(self, buckets):
+        """Schedule all buckets and cross-rank-align their step counts.
+
+        Runs `_schedule_step_aligned` independently on every bucket (locally,
+        all ranks compute the same results) and truncates the current rank's
+        schedule to the minimum step count across all buckets. This guarantees
+        every rank yields the same number of complete steps per epoch, which
+        is required for DDP collectives to stay in lock-step.
+
+        Args:
+            buckets: output of `_lpt_partition`.
+
+        Returns:
+            Tuple (my_steps, my_step_gs, aligned_count):
+              my_steps: List[List[int]] of complete steps for the current rank,
+                        already truncated to aligned_count.
+              my_step_gs: List[int], number of source groups placed in each
+                          step of my_steps (aligned with my_steps).
+              aligned_count: int, the common step count across all ranks.
+        """
+        step_counts = []
+        my_steps = None
+        my_step_gs = None
+        for r, bucket in enumerate(buckets):
+            steps_r, step_gs_r = self._schedule_step_aligned(
+                [self.groups[gi] for gi in bucket]
+            )
+            step_counts.append(len(steps_r))
+            if r == self.data_parallel_rank:
+                my_steps = steps_r
+                my_step_gs = step_gs_r
+        aligned_count = min(step_counts) if step_counts else 0
+        assert aligned_count > 0, (
+            f"ChunkPipe sampler: 0 complete steps per epoch. "
+            f"total_chunks={len(self.groups)}, step_capacity={self.step_capacity}, DP={self.data_parallel_size}.\n"
+            f"Possible causes:\n"
+            f"  1. Dataset too small (need at least {self.step_capacity * self.data_parallel_size} chunks total)\n"
+            f"  2. --global-batch-size too large (reduces step_capacity={self.step_capacity})\n"
+            f"Suggestion: add more data into dataset or reduce --global-batch-size."
+        )
+        return my_steps[:aligned_count], my_step_gs[:aligned_count], aligned_count
+
     def _schedule_step_aligned(self, rank_groups):
-        """Arrange groups into step-aligned index sequence.
+        """Arrange groups into a list of complete step windows.
 
         For each step window of `step_capacity` chunks:
-          1. Greedily place multi-chunk groups (long sequences) that fit.
+          1. Greedily place multi-chunk groups (long sequences) that fit, in
+             size-descending order (FFD).
           2. Fill remaining slots with single-chunk groups (binpacked short sequences).
 
-        This guarantees that all chunks of a long sequence are within the same
-        training step.
+        Under-filled steps (when no single-groups remain and no deferred
+        multi-group fits the current vacancy) are dropped but scheduling
+        continues — deferred multi-groups may still combine into complete
+        windows in subsequent iterations. This preserves the invariant that
+        every emitted step contains only whole groups and is exactly
+        `step_capacity` chunks long, so downstream flattening + fixed-size
+        micro-batching never splits a chunk group across a step boundary.
 
         Args:
             rank_groups: list of groups (each group is a list of dataset indices)
-                         assigned to this DP rank, already shuffled.
+                         assigned to this DP rank.
 
         Returns:
-            Flat list of dataset indices, step-aligned.
+            Tuple (steps, step_gs):
+              steps: List[List[int]] — each inner list is exactly
+                `step_capacity` dataset indices, representing one complete
+                training step.
+              step_gs: List[int] —               step_gs[i] is the number of source groups
+                placed in steps[i] (used as G for the per-sample loss path).
         """
-        from collections import deque
-
-        multi_groups = deque(g for g in rank_groups if len(g) > 1)
+        # FFD (first-fit decreasing): sort multi-chunk groups by size descending
+        # so that large groups are placed first and small groups act as "glue"
+        # to fill remaining capacity. This significantly improves packing
+        # density compared to shuffle-order placement, reducing under-filled
+        # steps and the amount of data dropped per epoch. Within-step order of
+        # groups does not affect training correctness (gradients are accumulated
+        # across all chunks in the step).
+        multi_groups = deque(sorted(
+            (g for g in rank_groups if len(g) > 1),
+            key=len, reverse=True,
+        ))
         single_groups = deque(g for g in rank_groups if len(g) == 1)
 
-        all_indices = []
+        steps = []
+        step_gs = []
 
         while multi_groups or single_groups:
             remaining = self.step_capacity
             step_indices = []
+            step_group_count = 0
 
             # Phase 1: greedily place multi-chunk groups
             deferred = deque()
@@ -279,6 +394,7 @@ class ChunkPipeGroupBatchSampler:
                 if len(group) <= remaining:
                     step_indices.extend(group)
                     remaining -= len(group)
+                    step_group_count += 1
                 else:
                     deferred.append(group)
             # Put back groups that didn't fit for future steps
@@ -288,13 +404,28 @@ class ChunkPipeGroupBatchSampler:
             while single_groups and remaining > 0:
                 step_indices.extend(single_groups.popleft())
                 remaining -= 1
+                step_group_count += 1
 
-            if not step_indices:
-                break
+            if len(step_indices) < self.step_capacity:
+                # Under-filled step: no single-groups left to fill gaps and the
+                # groups placed here plus the deferred ones could not combine
+                # into a full window. Drop this step but keep scheduling —
+                # remaining deferred multi-groups may still combine into
+                # complete windows in subsequent iterations (e.g. two deferred
+                # groups of size 5+3 can fit a fresh 8-wide step together even
+                # though neither fit alongside a previously-placed 7).
+                #
+                # Termination: the init-time assertion max_group_size <=
+                # step_capacity guarantees Phase 1 always places at least one
+                # group when multi_groups is non-empty, so every outer
+                # iteration consumes at least one group and the loop is
+                # bounded by len(rank_groups).
+                continue
 
-            all_indices.extend(step_indices)
+            steps.append(step_indices)
+            step_gs.append(step_group_count)
 
-        return all_indices
+        return steps, step_gs
 
     def __iter__(self):
         total_groups = len(self.groups)
@@ -304,32 +435,42 @@ class ChunkPipeGroupBatchSampler:
         g.manual_seed(self.seed + self._epoch)
         group_order = torch.randperm(total_groups, generator=g).tolist()
 
-        # Shard groups across DP ranks (round-robin at group level)
-        rank_group_order = group_order[self.data_parallel_rank :: self.data_parallel_size]
-        rank_groups = [self.groups[gi] for gi in rank_group_order]
+        # Shard groups across DP ranks via LPT multiway partition (balanced by
+        # chunk count, not group count). All ranks run the same deterministic
+        # partition locally, so each rank knows exactly which groups it owns
+        # without any collective communication.
+        buckets = self._lpt_partition(group_order)
 
-        # Schedule groups into step-aligned index sequence
-        rank_indices = self._schedule_step_aligned(rank_groups)
+        # Schedule every bucket and truncate the current rank's schedule to
+        # the cross-rank minimum step count. This guarantees every rank yields
+        # the same number of micro-batches per epoch, preventing DDP collective
+        # desync when one rank's iterator exhausts before others.
+        my_steps, my_step_gs, _ = self._schedule_buckets(buckets)
 
-        # Drop tail samples that cannot form a complete training step.
-        # This prevents epoch boundary from splitting a chunk group across
-        # two steps (which would break KV cache continuity).
-        usable = (len(rank_indices) // self.step_capacity) * self.step_capacity
-        rank_indices = rank_indices[:usable]
+        # Resume skip in micro-batch granularity. _resume_offset was already
+        # rounded down to step_capacity boundary in __init__, and
+        # step_capacity % micro_batch_size == 0 holds by construction, so
+        # skip_mbs lands on a step boundary.
+        skip_mbs = self._resume_offset // self.micro_batch_size
+        self._resume_offset = 0  # only skip once
 
-        # On first __iter__ call with checkpoint resume, skip already-consumed samples
-        if self._resume_offset > 0:
-            rank_indices = rank_indices[self._resume_offset:]
-            self._resume_offset = 0  # only skip once
-
-        # Yield in batches of micro_batch_size
-        batch = []
-        for idx in rank_indices:
-            batch.append(idx)
-            if len(batch) == self.micro_batch_size:
+        # Yield one micro-batch at a time. Every micro-batch within a step
+        # shares the same G = number of source groups in that step. We append
+        # G to _step_g_queue immediately before yield (never clear it) so that
+        # get_batch's popleft order matches yield order strictly — robust to
+        # DataLoader prefetching and epoch boundaries. Skipped micro-batches
+        # (via resume) do NOT enter the queue, preserving FIFO alignment.
+        mb_idx = 0
+        for step, G in zip(my_steps, my_step_gs):
+            for mb_start in range(0, len(step), self.micro_batch_size):
+                if mb_idx < skip_mbs:
+                    mb_idx += 1
+                    continue
+                mb_idx += 1
+                batch = step[mb_start:mb_start + self.micro_batch_size]
+                self._step_g_queue.append(G)
                 self.consumed_samples += self.micro_batch_size * self.data_parallel_size
                 yield batch
-                batch = []
 
         # Epoch complete — next __iter__ call will use a different shuffle
         self._epoch += 1
@@ -379,6 +520,11 @@ def _build_cylic_iterator(
                 num_microbatches=num_microbatches,
                 seed=args.seed,
             )
+            # Expose the per-step G FIFO queue to get_batch. Only the deque
+            # reference is shared; the sampler object itself stays private.
+            # The deque is created once in __init__ and never replaced, so
+            # this reference remains valid across epochs.
+            args.chunkpipe_step_g_queue = _batch_sampler._step_g_queue
         else:
             _batch_sampler = MegatronPretrainingRandomSampler(
             dataset,
@@ -513,6 +659,7 @@ def get_batch_on_this_tp_rank(data_iterator):
     required_keys = ["attention_mask"]
     if args.enable_chunkpipe:
         required_keys.append("chunk_group_size")
+        required_keys.append("group_total_tokens")
 
     if args.pipeline_model_parallel_size == 1:
         required_keys += ["input_ids", "labels"] + (
@@ -585,6 +732,27 @@ def get_batch_on_this_tp_rank(data_iterator):
     }
     if args.enable_chunkpipe and "chunk_group_size" in data_b:
         batch["chunk_group_size"] = data_b["chunk_group_size"]
+        batch["group_total_tokens"] = data_b["group_total_tokens"]
+
+        # Per-step G (source sequence count). Unlike per-chunk fields, G is not
+        # carried through the dataset/collator path; it's produced by the
+        # sampler yield-time and delivered via a FIFO deque on args. TP rank 0
+        # pops the queue, other TP ranks receive the value via broadcast.
+        if mpu.get_tensor_model_parallel_rank() == 0:
+            step_num_groups = args.chunkpipe_step_g_queue.popleft()
+        else:
+            step_num_groups = 0
+        g_tensor = torch.tensor(
+            [step_num_groups],
+            dtype=torch.long,
+            device=torch.cuda.current_device(),
+        )
+        torch.distributed.broadcast(
+            g_tensor,
+            mpu.get_tensor_model_parallel_src_rank(),
+            group=mpu.get_tensor_model_parallel_group(),
+        )
+        batch["step_num_groups"] = g_tensor
 
     return batch
 

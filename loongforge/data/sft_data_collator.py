@@ -53,6 +53,12 @@ class DataCollatorForSupervisedDataset:
         if features and "chunk_group_size" in features[0]:
             chunk_group_sizes = [f.pop("chunk_group_size") for f in features]
 
+        # Same treatment for group_total_tokens (N_g, per-chunk) — consumed by
+        # the SFT chunkpipe per-sample loss path.
+        group_total_tokens = None
+        if features and "group_total_tokens" in features[0]:
+            group_total_tokens = [f.pop("group_total_tokens") for f in features]
+
         # padding loss mask here
         loss_mask = (
             [feature["loss_mask"] for feature in features]
@@ -103,6 +109,9 @@ class DataCollatorForSupervisedDataset:
         # Add chunk_group_size back — needed by scheduler for chunkpipe SFT
         if chunk_group_sizes is not None:  
             result["chunk_group_size"] = torch.tensor(chunk_group_sizes, dtype=torch.long)
+
+        if group_total_tokens is not None:
+            result["group_total_tokens"] = torch.tensor(group_total_tokens, dtype=torch.long)
 
         return result
 
