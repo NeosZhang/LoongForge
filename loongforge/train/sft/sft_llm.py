@@ -123,7 +123,31 @@ def get_batch(data_iterator):
         if "group_total_tokens" in batch:
             args.chunkpipe_group_total_tokens = batch["group_total_tokens"][0].item()
         if "step_num_groups" in batch:
-            args.chunkpipe_step_num_groups = batch["step_num_groups"][0].item()
+            step_num_groups = batch["step_num_groups"][0].item()
+            args.chunkpipe_step_num_groups = step_num_groups
+            if config is not None and getattr(config, 'sft_chunkpipe_mode', False):
+                config.chunkpipe_step_num_groups = step_num_groups
+
+    mtp_batch = None
+    if args.enable_chunkpipe and getattr(args, "sft_chunkpipe_mode", False):
+        if "mtp_tokens" in batch:
+            expected_length = args.chunksize + (args.mtp_num_layers or 0)
+            assert batch["tokens"].size(1) == args.chunksize, (
+                f"SFT chunkpipe main tokens must have base length "
+                f"{args.chunksize}, got {batch['tokens'].size(1)}."
+            )
+            assert batch["mtp_tokens"].size(1) == expected_length, (
+                f"SFT chunkpipe MTP tokens must have physical length "
+                f"{expected_length}, got {batch['mtp_tokens'].size(1)}."
+            )
+            mtp_batch = {
+                "tokens": batch["mtp_tokens"],
+                "position_ids": batch["mtp_position_ids"],
+                "labels": batch.get("mtp_labels"),
+                "loss_mask": batch.get("mtp_loss_mask"),
+                "group_total_tokens": batch.get("group_total_tokens"),
+                "step_num_groups": batch.get("step_num_groups"),
+            }
 
     output = (
         batch["tokens"],
@@ -132,6 +156,7 @@ def get_batch(data_iterator):
         batch["position_ids"],
         batch["attention_mask"],
         batch["packed_seq_params"],
+        mtp_batch,
     )
 
     return output
@@ -277,9 +302,17 @@ def forward_step(data_iterator, model, return_schedule_plan: bool = False):
             position_ids,
             attention_mask,
             packed_seq_params,
+            mtp_batch,
         ) = get_batch(data_iterator)
 
     timers("batch-generator").stop()
+
+    # SFT chunkpipe + MTP: MTP bridge tokens are appended during preprocessing.
+    # The main model consumes the base chunksize slice; the MTP branch consumes
+    # the full chunksize + mtp_num_layers tensors via extra_block_kwargs.
+    extra_block_kwargs = None
+    if mtp_batch is not None and mpu.is_pipeline_last_stage():
+        extra_block_kwargs = {"mtp_batch": mtp_batch}
 
     with stimer:
         if return_schedule_plan:
@@ -302,6 +335,7 @@ def forward_step(data_iterator, model, return_schedule_plan: bool = False):
                 labels=labels,
                 packed_seq_params=packed_seq_params,
                 loss_mask=loss_mask,
+                extra_block_kwargs=extra_block_kwargs,
             )
 
     return output_tensor, partial(loss_func, loss_mask)
@@ -357,6 +391,7 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
         context_parallel_size=args.context_parallel_size,
         enable_chunkpipe=args.enable_chunkpipe,
         chunksize=args.chunksize,
+        mtp_num_layers=args.mtp_num_layers or 0,
     )
 
     print_rank_0(

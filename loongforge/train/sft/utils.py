@@ -89,6 +89,8 @@ def build_sft_data_collator(
     # https://github.com/NVIDIA/TransformerEngine/blob/v2.4/transformer_engine/pytorch/utils.py#L425
     # https://github.com/NVIDIA/TransformerEngine/blob/main/transformer_engine/common/gemm/cublaslt_gemm.cu#L151
     pad_to_multiple_of *= 128 if args.fp8 else 1
+    if args.enable_chunkpipe and getattr(args, "sft_chunkpipe_mode", False):
+        pad_to_multiple_of = args.chunksize
 
     padding = (
         PaddingStrategy.LONGEST
@@ -96,8 +98,10 @@ def build_sft_data_collator(
         else PaddingStrategy.MAX_LENGTH
     )
 
-    # When chunkpipe is enabled, all chunks are already padded to chunksize,
-    # so max_length should be chunksize instead of seq_length.
+    # When chunkpipe is enabled, all base chunks are already padded to chunksize.
+    # If SFT chunkpipe + MTP is enabled, the collator temporarily strips bridge
+    # tokens, pads only the base part to pad_to_multiple_of, then appends bridge
+    # tokens back.
     max_length = args.chunksize if args.enable_chunkpipe else args.seq_length
 
     data_collator = cls(
@@ -106,6 +110,16 @@ def build_sft_data_collator(
         pad_to_multiple_of=pad_to_multiple_of,
         padding=padding,
         max_length=max_length,
+        chunkpipe_base_length=(
+            args.chunksize
+            if args.enable_chunkpipe and getattr(args, "sft_chunkpipe_mode", False)
+            else None
+        ),
+        chunkpipe_mtp_num_layers=(
+            args.mtp_num_layers or 0
+            if args.enable_chunkpipe and getattr(args, "sft_chunkpipe_mode", False)
+            else 0
+        ),
         **kwargs,
     )
     return data_collator
@@ -879,9 +893,11 @@ def _build_cylic_iterator(
     )
 
     if args.dataloader_save is not None:
-        return SavableCyclicIterator(dataloader)
+        base_iter = SavableCyclicIterator(dataloader)
     else:
-        return iter(_cyclic_iter(dataloader))
+        base_iter = iter(_cyclic_iter(dataloader))
+
+    return base_iter
 
 
 def build_sft_cyclic_iterators(
@@ -1005,16 +1021,50 @@ def get_batch_on_this_tp_rank(data_iterator):
 
     data_b = tensor_parallel.broadcast_data(required_keys, data, torch.int64)
 
+    sft_chunkpipe_mtp = (
+        args.enable_chunkpipe
+        and getattr(args, "sft_chunkpipe_mode", False)
+        and getattr(args, "mtp_num_layers", 0)
+        and args.mtp_num_layers > 0
+    )
+    base_length = args.chunksize if sft_chunkpipe_mtp else None
+
     # tokens & position ids
-    tokens = data_b["input_ids"].long() if "input_ids" in data_b else None
-    position_ids = None
-    if tokens is not None:
+    tokens_full = data_b["input_ids"].long() if "input_ids" in data_b else None
+    tokens = tokens_full
+    mtp_tokens = None
+    mtp_position_ids = None
+    if tokens_full is not None:
+        if sft_chunkpipe_mtp:
+            expected_length = base_length + args.mtp_num_layers
+            assert tokens_full.dim() == 2, (
+                f"SFT chunkpipe MTP expects 2D tokens, got shape "
+                f"{tuple(tokens_full.shape)}."
+            )
+            assert tokens_full.size(1) == expected_length, (
+                f"SFT chunkpipe MTP expects physical sequence length "
+                f"{expected_length}, got {tokens_full.size(1)}."
+            )
+            mtp_tokens = tokens_full
+            tokens = tokens_full[:, :base_length]
+            assert tokens.size(1) == base_length, (
+                f"SFT chunkpipe main tokens must have base length "
+                f"{base_length}, got {tokens.size(1)}."
+            )
+            mtp_position_ids = _get_position_ids(mtp_tokens)
         position_ids = _get_position_ids(tokens)
+    else:
+        position_ids = None
 
     # labels & loss mask
-    labels = data_b["labels"].long() if "labels" in data_b else None
-    if labels is not None:
-        if not args.enable_chunkpipe:
+    labels_full = data_b["labels"].long() if "labels" in data_b else None
+    labels = labels_full
+    mtp_labels = None
+    if labels_full is not None:
+        if sft_chunkpipe_mtp:
+            mtp_labels = labels_full[:, :base_length + args.mtp_num_layers]
+            labels = labels_full[:, :base_length]
+        elif not args.enable_chunkpipe:
             # Shift labels for next-token prediction; chunkpipe data is already pre-shifted
             labels = torch.roll(labels, shifts=-1, dims=1)
             labels[:, -1] = constants.IGNORE_INDEX
@@ -1022,9 +1072,14 @@ def get_batch_on_this_tp_rank(data_iterator):
         # labels[labels == tokenizer.eos] == constants.IGNORE_INDEX
 
     # create loss mask
-    loss_mask = data_b["loss_mask"].long() if "loss_mask" in data_b else None
-    if loss_mask is not None:
-        if not args.enable_chunkpipe:
+    loss_mask_full = data_b["loss_mask"].long() if "loss_mask" in data_b else None
+    loss_mask = loss_mask_full
+    mtp_loss_mask = None
+    if loss_mask_full is not None:
+        if sft_chunkpipe_mtp:
+            mtp_loss_mask = loss_mask_full[:, :base_length + args.mtp_num_layers]
+            loss_mask = loss_mask_full[:, :base_length]
+        elif not args.enable_chunkpipe:
             # pp last && not eod_mask_loss; chunkpipe data is already pre-shifted
             loss_mask = torch.roll(loss_mask, shifts=-1, dims=1)
             loss_mask[:, -1] = 0
@@ -1036,20 +1091,24 @@ def get_batch_on_this_tp_rank(data_iterator):
         loss_mask[labels == constants.IGNORE_INDEX] = 0.0
         loss_mask[labels == tokenizer.pad] = 0.0
         loss_mask[labels == tokenizer.eos] = 0.0
+        if sft_chunkpipe_mtp and mtp_labels is not None:
+            mtp_loss_mask = torch.ones(mtp_labels.size(), dtype=torch.float, device=mtp_labels.device)
+            mtp_loss_mask[mtp_labels == constants.IGNORE_INDEX] = 0.0
+            mtp_loss_mask[mtp_labels == tokenizer.pad] = 0.0
+            mtp_loss_mask[mtp_labels == tokenizer.eos] = 0.0
 
     # attention mask
     attention_mask = None
     packed_seq_params = None
+    attention_mask_data = data_b["attention_mask"].long()
+    if sft_chunkpipe_mtp:
+        attention_mask_data = attention_mask_data[:, :base_length]
 
     if not args.packing_sft_data:
-        attention_mask = _get_attention_mask(
-            data_b["attention_mask"].long()
-        )
+        attention_mask = _get_attention_mask(attention_mask_data)
     else:
         # attention_mask will be ignored in te
-        packed_seq_params = _get_packed_sequence_params(
-            data_b["attention_mask"].long()
-        )
+        packed_seq_params = _get_packed_sequence_params(attention_mask_data)
 
     batch = {
         "tokens": tokens,
@@ -1059,6 +1118,14 @@ def get_batch_on_this_tp_rank(data_iterator):
         "attention_mask": attention_mask,
         "packed_seq_params": packed_seq_params,
     }
+    if sft_chunkpipe_mtp:
+        if mtp_tokens is not None:
+            batch["mtp_tokens"] = mtp_tokens
+            batch["mtp_position_ids"] = mtp_position_ids
+        if mtp_labels is not None:
+            batch["mtp_labels"] = mtp_labels
+        if mtp_loss_mask is not None:
+            batch["mtp_loss_mask"] = mtp_loss_mask
     if args.enable_chunkpipe and "chunk_group_size" in data_b:
         batch["chunk_group_size"] = data_b["chunk_group_size"]
         batch["group_total_tokens"] = data_b["group_total_tokens"]

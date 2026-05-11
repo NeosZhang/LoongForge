@@ -182,13 +182,14 @@ def _split_long_sequence(
     chunksize: int,
     pad_token_id: int,
     ignore_index: int,
+    mtp_num_layers: int = 0,
 ) -> List[Tuple[List[int], List[int], List[int]]]:
     """
-    Split a long sequence (len > chunksize) into multiple chunks of exactly chunksize.
+    Split a long sequence (len > chunksize) into chunks with a base length of chunksize.
     Labels and loss_mask are pre-shifted to next-token prediction format:
       - Non-final chunks: labels[i] = original_labels[start+i+1], covering the chunk boundary.
       - Final chunk: last label is IGNORE (no next token to predict).
-    The last chunk is padded to chunksize if its length is shorter.
+    When MTP is enabled, append mtp_num_layers bridge tokens after the base chunk.
     """
     chunks = []
     seq_len = len(input_ids)
@@ -211,12 +212,38 @@ def _split_long_sequence(
             chunk_labels = labels[start + 1 : end] + [ignore_index]
             chunk_loss_mask = loss_mask[start + 1 : end] + [0]
 
-        # Pad the last chunk if needed
+        # Pad the base chunk if needed
         padding_len = chunksize - len(chunk_input_ids)
         if padding_len > 0:
             chunk_input_ids = chunk_input_ids + [pad_token_id] * padding_len
             chunk_labels = chunk_labels + [ignore_index] * padding_len
             chunk_loss_mask = chunk_loss_mask + [0] * padding_len
+
+        if mtp_num_layers > 0:
+            if not is_final_chunk:
+                bridge_end = min(end + mtp_num_layers, seq_len)
+                bridge_input_ids = input_ids[end:bridge_end]
+
+                bridge_label_end = min(end + 1 + mtp_num_layers, seq_len)
+                bridge_labels = labels[end + 1:bridge_label_end]
+                bridge_loss_mask = loss_mask[end + 1:bridge_label_end]
+
+                bridge_padding_len = mtp_num_layers - len(bridge_input_ids)
+                if bridge_padding_len > 0:
+                    bridge_input_ids += [pad_token_id] * bridge_padding_len
+
+                bridge_label_padding_len = mtp_num_layers - len(bridge_labels)
+                if bridge_label_padding_len > 0:
+                    bridge_labels += [ignore_index] * bridge_label_padding_len
+                    bridge_loss_mask += [0] * bridge_label_padding_len
+            else:
+                bridge_input_ids = [pad_token_id] * mtp_num_layers
+                bridge_labels = [ignore_index] * mtp_num_layers
+                bridge_loss_mask = [0] * mtp_num_layers
+
+            chunk_input_ids = chunk_input_ids + bridge_input_ids
+            chunk_labels = chunk_labels + bridge_labels
+            chunk_loss_mask = chunk_loss_mask + bridge_loss_mask
 
         chunks.append((chunk_input_ids, chunk_labels, chunk_loss_mask))
 
@@ -268,6 +295,7 @@ def _preprocess_supervised_dataset(
 
     if config.enable_chunkpipe:
         chunksize = config.chunksize
+        mtp_num_layers = getattr(config, "mtp_num_layers", 0) or 0
         # Buffers for long sequences (len > chunksize): will be split into chunks
         long_input_ids, long_labels, long_loss_mask = [], [], []
         # Buffers for short sequences (len <= chunksize): will be binpacked
@@ -371,17 +399,20 @@ def _preprocess_supervised_dataset(
                 chunksize,
                 pad_token_id,
                 ignore_index,
+                mtp_num_layers,
             )
             num_chunks = len(chunks)
             # N_g = total response tokens across all chunks of this source
             # sequence (sum of per-chunk loss masks). Shared by every chunk.
             group_total_tokens = sum(
-                sum(chunk_loss_mask) for _, _, chunk_loss_mask in chunks
+                sum(chunk_loss_mask[:chunksize]) for _, _, chunk_loss_mask in chunks
             )
             for chunk_input_ids, chunk_labels, chunk_loss_mask in chunks:
                 model_inputs["input_ids"].append(chunk_input_ids)
                 model_inputs["labels"].append(chunk_labels)
-                model_inputs["attention_mask"].append([1] * chunksize)
+                model_inputs["attention_mask"].append(
+                    [1] * chunksize + [0] * mtp_num_layers
+                )
                 model_inputs["images"].append([])
                 model_inputs["videos"].append([])
                 model_inputs["chunk_group_size"].append(num_chunks)
@@ -412,6 +443,12 @@ def _preprocess_supervised_dataset(
                 packed_loss_mask += [0] * padding_len
                 packed_attention_mask += [0] * padding_len
 
+            if mtp_num_layers > 0:
+                packed_input_ids += [pad_token_id] * mtp_num_layers
+                packed_labels += [ignore_index] * mtp_num_layers
+                packed_loss_mask += [0] * mtp_num_layers
+                packed_attention_mask += [0] * mtp_num_layers
+
             model_inputs["input_ids"].append(packed_input_ids)
             model_inputs["labels"].append(packed_labels)
             model_inputs["attention_mask"].append(packed_attention_mask)
@@ -419,8 +456,10 @@ def _preprocess_supervised_dataset(
             model_inputs["videos"].append([])
             model_inputs["chunk_group_size"].append(1)
             # Bin-packed chunk is treated as a single sample; N_g = total
-            # response tokens of the whole bin.
-            model_inputs["group_total_tokens"].append(sum(packed_loss_mask))
+            # response tokens of the base chunk, excluding MTP bridge padding.
+            model_inputs["group_total_tokens"].append(
+                sum(packed_loss_mask[:chunksize])
+            )
             if not config.eod_mask_loss:
                 model_inputs["loss_mask"].append(packed_loss_mask)
 

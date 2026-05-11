@@ -30,6 +30,8 @@ class DataCollatorForSupervisedDataset:
     pad_to_multiple_of: Optional[int] = None
     label_pad_token_id: int = -100
     return_tensors: str = "pt"
+    chunkpipe_base_length: Optional[int] = None
+    chunkpipe_mtp_num_layers: int = 0
     collator: object = None
 
     def __post_init__(self):
@@ -58,6 +60,28 @@ class DataCollatorForSupervisedDataset:
         group_total_tokens = None
         if features and "group_total_tokens" in features[0]:
             group_total_tokens = [f.pop("group_total_tokens") for f in features]
+
+        split_bridge = (
+            features
+            and self.chunkpipe_base_length is not None
+            and self.chunkpipe_mtp_num_layers > 0
+            and "input_ids" in features[0]
+            and len(features[0]["input_ids"]) >= self.chunkpipe_base_length + self.chunkpipe_mtp_num_layers
+        )
+        bridge_inputs, bridge_labels, bridge_attention_masks, bridge_loss_masks = [], [], [], []
+        if split_bridge:
+            base_len = self.chunkpipe_base_length
+            bridge_len = self.chunkpipe_mtp_num_layers
+            for feature in features:
+                bridge_inputs.append(feature["input_ids"][base_len:base_len + bridge_len])
+                bridge_labels.append(feature["labels"][base_len:base_len + bridge_len])
+                bridge_attention_masks.append(feature["attention_mask"][base_len:base_len + bridge_len])
+                if "loss_mask" in feature:
+                    bridge_loss_masks.append(feature["loss_mask"][base_len:base_len + bridge_len])
+                    feature["loss_mask"] = feature["loss_mask"][:base_len]
+                feature["input_ids"] = feature["input_ids"][:base_len]
+                feature["labels"] = feature["labels"][:base_len]
+                feature["attention_mask"] = feature["attention_mask"][:base_len]
 
         # padding loss mask here
         loss_mask = (
@@ -105,6 +129,32 @@ class DataCollatorForSupervisedDataset:
 
         # default only padding labels
         result = self.collator(features, return_tensors)
+
+        if split_bridge:
+            device = result["input_ids"].device
+            result["input_ids"] = torch.cat(
+                [result["input_ids"], torch.tensor(bridge_inputs, dtype=result["input_ids"].dtype, device=device)],
+                dim=1,
+            )
+            result["labels"] = torch.cat(
+                [result["labels"], torch.tensor(bridge_labels, dtype=result["labels"].dtype, device=device)],
+                dim=1,
+            )
+            result["attention_mask"] = torch.cat(
+                [
+                    result["attention_mask"],
+                    torch.tensor(bridge_attention_masks, dtype=result["attention_mask"].dtype, device=device),
+                ],
+                dim=1,
+            )
+            if loss_mask is not None:
+                result["loss_mask"] = torch.cat(
+                    [
+                        result["loss_mask"],
+                        torch.tensor(bridge_loss_masks, dtype=result["loss_mask"].dtype, device=device),
+                    ],
+                    dim=1,
+                )
 
         # Add chunk_group_size back — needed by scheduler for chunkpipe SFT
         if chunk_group_sizes is not None:  

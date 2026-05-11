@@ -175,6 +175,9 @@ class SFTDatasetConfig(BlendedHuggingFaceDatasetConfig):
     chunksize: Optional[int] = None
     """Size of each chunk when chunkpipe is enabled."""
 
+    mtp_num_layers: int = 0
+    """Number of MTP bridge tokens appended to each chunk when chunkpipe is enabled."""
+
     def _setup_default_dataset(self):
         """Setup default dataset or fix the length of dataset list"""
 

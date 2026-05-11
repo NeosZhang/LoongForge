@@ -214,6 +214,26 @@ def _validate_extra_sft_args(args):
     # set to True in megatron arguments.py, so we don't need to re-check it.
     # `data_parallel_size` is recomputed locally with megatron's formula.
     if getattr(args, "enable_chunkpipe", False):
+        if args.context_parallel_size != 1:
+            raise NotImplementedError(
+                "SFT chunkpipe temporarily requires context_parallel_size == 1. "
+                f"Got context_parallel_size={args.context_parallel_size}."
+            )
+        if args.sequence_parallel and args.chunksize % args.tensor_model_parallel_size != 0:
+            raise ValueError(
+                "SFT chunkpipe requires chunksize to be divisible by "
+                "tensor_model_parallel_size when sequence_parallel is enabled. "
+                f"Got chunksize={args.chunksize}, "
+                f"tensor_model_parallel_size={args.tensor_model_parallel_size}."
+            )
+        if getattr(args, "mtp_num_layers", 0) and args.mtp_num_layers > 0:
+            if args.overlap_grad_reduce:
+                raise NotImplementedError(
+                    "SFT chunkpipe + MTP temporarily does not support "
+                    "--overlap-grad-reduce because MTP checkpoint/recompute can "
+                    "trigger duplicate grad-ready marking on output/shared embedding weights."
+                )
+
         # SFT chunkpipe per-sample loss path: default when
         # --calculate-per-token-loss is not set. Requires the new 2-tuple
         # reporting format (legacy_reporting_loss_reduction=False); the new
