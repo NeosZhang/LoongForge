@@ -10,10 +10,11 @@ from tools.convert_checkpoint.huggingface.huggingface_checkpoint import HuggingF
 from tools.convert_checkpoint.mcore.mcore_checkpoint import McoreCheckpoint
 from tools.convert_checkpoint.common.common_config import CommonConfig
 from tools.convert_checkpoint.utils.utils import(
+    _flatten_expert_ids,
+    get_ep_map,
     get_layer_ids
 )
 
-from tools.convert_checkpoint.utils.utils import get_ep_map
 from tools.convert_checkpoint.module_convertor.model import Model
 
 class HfCheckpointConverter:
@@ -40,6 +41,9 @@ class HfCheckpointConverter:
         self.args.fp8_force_no_requant = parallel_config.fp8_force_no_requant
         self.args.force_pow_2_scales = parallel_config.force_pow_2_scales
         self.args.amax_epsilon = parallel_config.amax_epsilon
+        self.args.hf_dequantize_int4 = parallel_config.hf_dequantize_int4
+        self.args.hf_dequantize_dtype = parallel_config.hf_dequantize_dtype
+        self.args.hf_quant_config_file = parallel_config.hf_quant_config_file
         self.args.mtp_num_layers = parallel_config.mtp_num_layers
         self.args.encoder_tensor_model_parallel_size = parallel_config.encoder_tp_size
         self.args.load_lora_ckpt_path = None
@@ -86,7 +90,8 @@ class HfCheckpointConverter:
                 c_config=vision_patch_config, args=visual_args, model_id=visual_model_id)
 
     def get_mcore_ckpt(self, ckpt_path):
-        expert_ids=self.expert_dict.values() if self.expert_dict is not None else None
+        expert_ids = self.expert_dict.values() if self.expert_dict is not None else None
+        expert_ids = _flatten_expert_ids(expert_ids)
         mcore_dict = {}
         for p in self.pp_ranks:
             cur_layer_dict = {p: self.layer_dict[p]}
