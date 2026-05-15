@@ -74,23 +74,35 @@ RUN set -exuo pipefail && \
         fi && \
         git clone --no-checkout https://github.com/huggingface/lerobot.git && \
         cd lerobot && \
-        git checkout tags/v0.4.3 && \
+        git checkout tags/v0.5.0 && \
         if [ -f "requirements-ubuntu.txt" ]; then \
             sed -i '/evdev/d' requirements-ubuntu.txt; \
         fi && \
-        pip install func_timeout pytest-xdist prettytable==3.11.0 peft==0.17.0 && \
+        pip install func_timeout pytest-xdist prettytable==3.11.0 huggingface-hub==0.34.0 && \
+        sed -i 's/^class Backtrackable\[T\]:$/from typing import Iterable, TypeVar, Generic\nT = TypeVar('\''T'\'')\nclass Backtrackable(Generic[T]):/' ./src/lerobot/datasets/utils.py && \
+        sed -i 's/^def deserialize_json_into_object\[T: JsonLike\](fpath: Path, obj: T) -> T:$/from typing import TypeVar\nT = TypeVar('\''T'\'', bound=JsonLike)\ndef deserialize_json_into_object(fpath: Path, obj: T) -> T:/' ./src/lerobot/utils/io_utils.py && \
+        sed -i '/^@dataclass$/{N; s/^@dataclass\nclass DataProcessorPipeline\[TInput, TOutput\](HubMixin):$/from typing import TypeVar, Generic\nTInput = TypeVar('\''TInput'\'')\nTOutput = TypeVar('\''TOutput'\'')\n@dataclass\nclass DataProcessorPipeline(Generic[TInput, TOutput], HubMixin):/}' ./src/lerobot/processor/pipeline.py && \
+        sed -i 's/^\([[:space:]]*\)from typing import TYPE_CHECKING, Literal, TypedDict, Unpack$/\1from typing import TYPE_CHECKING, Literal, TypedDict\n\1from typing_extensions import Unpack/' ./src/lerobot/policies/pi0_fast/modeling_pi0_fast.py && \
+        sed -i 's/^\([[:space:]]*\)from typing import TYPE_CHECKING, Literal, TypedDict, Unpack$/\1from typing import TYPE_CHECKING, Literal, TypedDict\n\1from typing_extensions import Unpack/' ./src/lerobot/policies/pi05/modeling_pi05.py && \
+        sed -i 's/^\([[:space:]]*\)from typing import TYPE_CHECKING, Literal, TypedDict, Unpack$/\1from typing import TYPE_CHECKING, Literal, TypedDict\n\1from typing_extensions import Unpack/' ./src/lerobot/policies/pi0/modeling_pi0.py && \
+        sed -i 's/^\([[:space:]]*\)from typing import TypedDict, Unpack$/\1from typing import TypedDict\n\1from typing_extensions import Unpack/' ./src/lerobot/policies/smolvla/modeling_smolvla.py && \
+        sed -i 's/^\([[:space:]]*\)from typing import TypedDict, TypeVar, Unpack$/\1from typing import TypedDict, TypeVar\n\1from typing_extensions import Unpack/'  ./src/lerobot/policies/pretrained.py && \
+        sed -i 's/^\([[:space:]]*\)from typing import Any, TypedDict, Unpack$/\1from typing import Any, TypedDict\n\1from typing_extensions import Unpack/' ./src/lerobot/policies/factory.py && \
+        sed -i '/^[[:space:]]*type NameOrID = str | int$/{N; s/^\([[:space:]]*\)type NameOrID = str | int\n[[:space:]]*type Value = int | float$/from typing import TypeAlias, Union\n\1NameOrID: TypeAlias = Union[str, int]\n\1Value: TypeAlias = Union[int, float]/}' ./src/lerobot/motors/motors_bus.py && \
         sed -i -e '/"torch[>=<]/d' \
            -e 's/"torchvision[^"]*",/"torchvision==0.20.1",/' \
            -e '/python-can/d' \
            -e '/lerobot\[can-dep\]/d' \
            -e '/lerobot\[damiao\]/d' \
-           -e '/unitree_g1 = \[/,/\]/ { /matplotlib/d; /pin/d; /meshcat/d; /casadi/d; }' \
+           -e '/unitree_g1 = \[/,/]/ { /matplotlib/d; /pin/d; /meshcat/d; /casadi/d; }' \
            -e '/lerobot-setup-can/d' \
            -e '/\[tool.setuptools.package-data\]/d' \
            -e '/lerobot = \["envs\/\*\.json"\]/d' \
            -e '/"OT_VALUE"/d' \
+           -e 's/requires-python = ">=3\.12"/requires-python = ">=3.10"/g' \
+           -e '/huggingface-hub>=1\.0\.0,<2\.0\.0/d' \
            pyproject.toml && \
-        pip install --no-build-isolation -e ".[pi]" && \
+        pip install --no-build-isolation -e ".[pi,peft-dep,scipy-dep]" && \
         sed -i 's|tokenizer_name="google/paligemma-3b-pt-224",|tokenizer_name=config.tokenizer_name,|g' ./src/lerobot/policies/pi05/processor_pi05.py && \
         echo "Lerobot installation completed"; \
     }; \
