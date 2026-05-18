@@ -82,9 +82,42 @@ def get_batch(data_iterator):
             # to update group_size_cache, even when chunk_idx was computed via fallback.
             config.chunkpipe_current_group_size = group_size
 
+            # Loong-Megatron scheduler: the scheduler must set
+            # config.chunkpipe_chunk_idx_in_group = 0 **before** invoking forward_step, so
+            # that get_batch (called inside forward_step) observes the correct index here.
+            #
+            # Timing chain:
+            #   scheduler sets chunk_idx = 0
+            #     → forward_step()
+            #       → get_batch() reads chunk_group_size from batch
+            #         → writes config.chunkpipe_current_group_size   ← here
+            #           → model code reads config.chunkpipe_current_group_size
+            #
+            # The ordering is currently correct but depends on this implicit call sequence.
+            # If the scheduler logic is refactored, ensure this contract is preserved.
+            if config.chunkpipe_chunk_idx_in_group == 0:
+                # Composite scheduling info: applied at every real-group start
+                # within the composite. The composite descriptor is the same
+                # for every chunk inside one composite (sampler repeats it
+                # per micro-batch), so re-writing on each real-group's chunk 0
+                # is idempotent and preserves the value across the composite
+                # for downstream readers (schedule.py + MLA chunk_keys).
+                if "composite_component_sizes" in batch:
+                    components = batch["composite_component_sizes"]
+                    if components:
+                        config.chunkpipe_component_sizes = list(components)
+                        config.chunkpipe_composite_group_size = sum(components)
+                    else:
+                        # No composite info → fall back to trivial (single
+                        # real group). Keeps behavior sane if the queues are
+                        # somehow not populated (e.g. ad-hoc test paths).
+                        config.chunkpipe_component_sizes = [group_size]
+                        config.chunkpipe_composite_group_size = group_size
+
         # N_g and G for the per-sample loss path. N_g is per-chunk (same value
-        # for all chunks in one source sequence), G is per-step (same for all
-        # chunks in one step). Both are read by loss_func from args. Because
+        # for all chunks in one source sequence), G_total is per-step (same
+        # for all chunks in one step) and is the cross-rank sum of source
+        # group counts. Both are read by loss_func from args. Because
         # micro_batch_size >= 1 chunk all share the same step, picking index 0
         # is correct.
         if "group_total_tokens" in batch:
@@ -164,25 +197,38 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
 
     # SFT chunkpipe per-sample loss path (default when sft_chunkpipe_mode=True
     # and --calculate-per-token-loss is NOT set). Goal: final gradient equals
-    # (1/G) * sum_g (1/N_g) * sum_k d S_{g,k}/d theta, i.e. per-source-sequence
-    # equal weighting independent of chunk count per sequence.
+    # (1/G_total) * sum_g (1/N_g) * sum_k d S_{g,k}/d theta, i.e. per-source-
+    # sequence equal weighting independent of chunk count per sequence and
+    # robust to per-rank G_local fluctuation.
     #
     # Derivation (legacy=True 2-tuple path, no CP for brevity; cp=1):
-    #   loss_func returns scaled = S_{g,k} * M_raw / (N_g * G * cp)
+    #   loss_func returns scaled = D * S_{g,k} * M_raw / (N_g * G_total * cp)
     #   schedules legacy path multiplies by cp / M_raw
-    #   → backward sees S_{g,k} / (N_g * G)
-    #   accumulated over all chunks: (1/G) sum_g (1/N_g) sum_k S_{g,k}  ✓
+    #   → backward sees D * S_{g,k} / (N_g * G_total)
+    #   DDP grad all-reduce averages by 1/D
+    #   → grad sees S_{g,k} / (N_g * G_total) accumulated over all chunks on
+    #     all ranks: (1/G_total) sum_g (1/N_g) sum_k S_{g,k}  ✓
+    #
+    # The D pre-compensation symmetrically applies to the reporting tensor so
+    # that the post-aggregation report (sum-across-mbs → all-reduce-sum →
+    # divide-by-DPxCP-world-size in training_utils) recovers the same
+    # (1/G_total) sum_g (1/N_g) sum_k S_{g,k} value. Using G_total instead of
+    # G_local also fixes a latent precision bug in the equal-DP case where
+    # LPT did not strictly guarantee G_local = G_total / D across ranks.
     config = get_model_config()
     sft_cp_mode = config is not None and getattr(config, "sft_chunkpipe_mode", False)
     if sft_cp_mode and not args.calculate_per_token_loss:
         N_g = args.chunkpipe_group_total_tokens
-        G = args.chunkpipe_step_num_groups
+        G_total = args.chunkpipe_step_num_groups
         M_raw = get_num_microbatches()
         cp = mpu.get_context_parallel_world_size()
+        D = mpu.get_data_parallel_world_size()
 
-        denom = N_g * G * cp
-        scaled = loss * (M_raw / denom)
-        reporting = (loss / (N_g * G)).detach()
+        denom = N_g * G_total * cp
+        scaled = loss * (D * M_raw / denom)
+        # Pre-compensate D*cp for the all_reduce + divide by (D*cp) in training_utils.py.
+        # Without cp factor, the logged loss would be 1/cp times smaller than correct value.
+        reporting = (D * cp * loss / (N_g * G_total)).detach()
         loss_reduced_dict = {'lm loss': reporting}
         return scaled, loss_reduced_dict
 

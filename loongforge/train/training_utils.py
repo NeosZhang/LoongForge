@@ -1896,11 +1896,18 @@ def train_step(
                     loss_reduced[key] = val[0] / val[1]
             elif val[0].numel() == 1:
                 # For the SFT chunkpipe per-sample loss path, each micro-batch
-                # reports S_{g,k}/(N_g*G) — a partial per-step sum. Summing
-                # across chunks within the rank's step yields the step-level
-                # per-sample loss (1/G) sum_g (sum_k S_{g,k})/N_g, which is
-                # what we want to log. Other paths use legacy mean-over-
-                # micro-batches behavior.
+                # reports D * S_{g,k}/(N_g * G_total), where:
+                #   - G_total is the cross-rank source-group count for the step
+                #     (identical on all DP ranks, supplied by the sampler)
+                #   - D = data_parallel_world_size, pre-compensating the 1/D
+                #     normalization that the DP all-reduce below introduces
+                # Summing local chunks gives D * (1/G_total) * sum_{g in rank}
+                # sum_k S_{g,k}/N_g; the subsequent DP+CP all-reduce-sum then
+                # /world_size cancels the D factor and aggregates across ranks,
+                # recovering the step-level per-sample loss
+                # (1/G_total) * sum_g sum_k S_{g,k}/N_g — the canonical metric
+                # to log regardless of how groups are distributed among ranks.
+                # Other paths keep legacy mean-over-micro-batches behavior.
                 if (
                     args.enable_chunkpipe
                     and getattr(args, 'sft_chunkpipe_mode', False)

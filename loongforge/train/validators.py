@@ -210,33 +210,37 @@ def _validate_extra_sft_args(args):
                 args.rank,
             )
 
-        # ChunkPipeGroupBatchSampler currently assumes attention DP == MoE DP
-        # for group-level data partitioning (LPT bucket assignment + per-step
-        # group_size accounting). When attention_dp != expert_dp (e.g. MoE
-        # big-EP deployments such as DSv3.1 pp8ep32tp8), the sampler's
-        # per-rank bucket → micro-batch contract no longer aligns the data
-        # view across both DP groups, and gradients computed on attention vs
-        # expert params would be synchronized over inconsistent batch sets.
-        #
-        # Megatron's parallel_state.py:765-769 allows attention_dp !=
-        # expert_dp under pp-last rank ordering (the default), which is what
-        # makes big-EP deployments work for non-chunkpipe paths. ChunkPipe
-        # SFT is stricter: it requires the two DPs to be equal regardless of
-        # rank order.
+        # Decide whether to enable the heterogeneous-DP synthesis path.
+        # attn_dp != expert_dp happens when EP > 1 or ETP differs from TP, in
+        # which case the LPT partition cannot guarantee identical group-size
+        # multisets across DP ranks; without synthesis the MoE All2All would
+        # desync. The sampler reads `args.chunkpipe_enable_synthesis` at
+        # construction time and switches to `_equal_size_partition`.
         tp = args.tensor_model_parallel_size
         pp = args.pipeline_model_parallel_size
         cp = args.context_parallel_size
-        etp = getattr(args, "expert_tensor_parallel_size", None) or tp
         ep = getattr(args, "expert_model_parallel_size", 1) or 1
+        etp = getattr(args, "expert_tensor_parallel_size", None)
+        if etp is None:
+            etp = tp
         attn_dp = args.world_size // (tp * pp * cp)
-        expert_dp = args.world_size // (etp * ep * pp)
-        assert attn_dp == expert_dp, (
-            f"ChunkPipe SFT sampler requires attention DP == MoE DP, got "
-            f"attention_data_parallel_size={attn_dp}, "
-            f"expert_data_parallel_size={expert_dp} "
-            f"(world_size={args.world_size}, TP={tp}, PP={pp}, CP={cp}, ETP={etp}, EP={ep}). "
-            f"Big-EP MoE deployments (e.g. DSv3 pp8ep32tp8) are not yet supported by ChunkPipeGroupBatchSampler."
-        )
+        expert_dp = args.world_size // (etp * pp * ep)
+        vpp = args.num_virtual_stages_per_pipeline_rank or 1
+        if (pp != 1 or vpp != 1) and attn_dp != expert_dp:
+            raise NotImplementedError(
+                f"SFT chunkpipe with pipeline parallelism (pp={pp}, vpp={vpp}) is temporarily not supported "
+                f"when attn_dp ({attn_dp}) != expert_dp ({expert_dp}). "
+                f"Please set pp=1, vpp=1, or ensure attn_dp == expert_dp."
+            )
+        args.chunkpipe_enable_synthesis = (attn_dp != expert_dp)
+        if args.chunkpipe_enable_synthesis:
+            print_rank_0(
+                f"INFO: SFT chunkpipe synthesis path enabled "
+                f"(attn_dp={attn_dp}, expert_dp={expert_dp}). "
+                f"Group-size multisets will be aligned across DP ranks via "
+                f"short-pool synthesis with all-or-nothing rollback.",
+                args.rank,
+            )
 
 
 def _validate_extra_training_args(args):
