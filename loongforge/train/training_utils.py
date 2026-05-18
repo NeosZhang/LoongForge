@@ -1827,7 +1827,6 @@ def train_step(
                 if (
                     args.training_phase == constants.TrainingPhase.SFT
                     and not args.legacy_reporting_loss_reduction
-                    and not args.enable_chunkpipe
                 ):
                     if args.calculate_per_token_loss:
                         # SFT ChunkPipe: log as ΣS/Σn to align with token-equal-weight gradient
