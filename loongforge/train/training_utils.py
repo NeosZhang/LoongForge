@@ -1816,9 +1816,18 @@ def train_step(
 
             val = [x[key].view(-1) for x in losses_reduced]
             if val[0].numel() == 2:
+                if args.enable_chunkpipe:
+                    # Skip microbatches with zero tokens (e.g. chunkpipe chunks that
+                    # fall entirely in the prompt region where loss_mask=0) to avoid
+                    # 0/0=NaN in per-token loss computation.
+                    val = [v for v in val if v[1].item() > 0]
+                    if len(val) == 0:
+                        loss_reduced[key] = torch.tensor(0.0)
+                        continue
                 if (
                     args.training_phase == constants.TrainingPhase.SFT
                     and not args.legacy_reporting_loss_reduction
+                    and not args.enable_chunkpipe
                 ):
                     if args.calculate_per_token_loss:
                         # SFT ChunkPipe: log as ΣS/Σn to align with token-equal-weight gradient

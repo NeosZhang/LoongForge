@@ -223,10 +223,12 @@ class ChunkPipeGroupBatchSampler:
             max_group_size = max(max_group_size, size)
             idx += size
 
+        self.max_group_size = max_group_size
+
         assert max_group_size <= self.step_capacity, (
             f"Max chunk_group_size ({max_group_size}) exceeds step capacity "
-            f"({self.step_capacity} = num_microbatches {num_microbatches} "
-            f"x micro_batch_size {micro_batch_size}). "
+            f"({self.step_capacity} = num_microbatches {self.num_microbatches} "
+            f"x micro_batch_size {self.micro_batch_size}). "
             f"Increase global_batch_size or decrease seq_length/chunksize ratio."
         )
 
