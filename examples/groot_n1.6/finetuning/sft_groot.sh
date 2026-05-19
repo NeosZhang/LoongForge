@@ -57,7 +57,7 @@ TRAINING_ARGS=(
     #--no-masked-softmax-fusion
     --lr 1.0e-4
     --min-lr 0.0
-    --lr-decay-iters 20
+    --lr-decay-iters 40
     --lr-warmup-fraction 0.05
     --lr-decay-style cosine
     --weight-decay 1.0e-5
@@ -65,7 +65,7 @@ TRAINING_ARGS=(
     --load $CHECKPOINT_PATH
     #--save $CHECKPOINT_SAVE_PATH
     --save-interval 50
-    --train-iters 20
+    --train-iters 40
     --eval-iters 0
     --num-workers 16
     --seed 1234
@@ -81,6 +81,12 @@ TRAINING_ARGS=(
     --no-load-rng
     --no-gradient-accumulation-fusion
     --deterministic-mode
+    # Optional: enable CUDA graph (per-microbatch)
+    #--cuda-graph-impl local
+    #--cuda-graph-scope per_microbatch
+    #--cuda-graph-warmup-steps 3
+    #--cuda-graph-pad-length 220          # required: pad seqs to fixed length for graph capture
+    #--no-check-for-nan-in-loss-and-grad  # required when CUDA graph enabled
 )
 
 MODEL_CONFIG_ARGS=(
@@ -94,6 +100,7 @@ MODEL_CONFIG_ARGS=(
 
 LOGGING_ARGS=(
     --log-interval 1
+    --detail-log-interval 40
     #--profile
     #--use-pytorch-profiler
     #--profile-step-start 5
