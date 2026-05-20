@@ -223,12 +223,10 @@ class ChunkPipeGroupBatchSampler:
             max_group_size = max(max_group_size, size)
             idx += size
 
-        self.max_group_size = max_group_size
-
         assert max_group_size <= self.step_capacity, (
             f"Max chunk_group_size ({max_group_size}) exceeds step capacity "
-            f"({self.step_capacity} = num_microbatches {self.num_microbatches} "
-            f"x micro_batch_size {self.micro_batch_size}). "
+            f"({self.step_capacity} = num_microbatches {num_microbatches} "
+            f"x micro_batch_size {micro_batch_size}). "
             f"Increase global_batch_size or decrease seq_length/chunksize ratio."
         )
 
@@ -526,6 +524,10 @@ def _build_cylic_iterator(
             # reference is shared; the sampler object itself stays private.
             # The deque is created once in __init__ and never replaced, so
             # this reference remains valid across epochs.
+
+            # However, when VPP is enabled, the chunkpipe_step_g_queue of the following vp_stage will overwrite the
+            # previous one, and the final args.chunkpipe_step_g_queue is a reference to the last vp_stage dataset,
+            # because all vp_stage share the same args
             args.chunkpipe_step_g_queue = _batch_sampler._step_g_queue
         else:
             _batch_sampler = MegatronPretrainingRandomSampler(
@@ -740,7 +742,21 @@ def get_batch_on_this_tp_rank(data_iterator):
         # carried through the dataset/collator path; it's produced by the
         # sampler yield-time and delivered via a FIFO deque on args. TP rank 0
         # pops the queue, other TP ranks receive the value via broadcast.
-        if mpu.get_tensor_model_parallel_rank() == 0:
+        #
+        # VPP mode: get_batch is called multiple times per step (once per VP stage).
+        # To avoid popping the queue multiple times, only pop on the first VP stage.
+        vp_size = mpu.get_virtual_pipeline_model_parallel_world_size()
+        vp_stage = mpu.get_virtual_pipeline_model_parallel_rank()
+        tp_rank = mpu.get_tensor_model_parallel_rank()
+        is_vpp_enabled = vp_size is not None and vp_size > 1
+
+        # Determine if this rank should pop the queue:
+        # - Non-VPP: only TP rank 0 pops
+        # - VPP: only TP rank 0 AND VP last stage pops，because args.chunkpipe_step_g_queue is last vp_stage,
+        #           and only last vp_stage will have loss_func calculations
+        should_pop = (tp_rank == 0) and ((not is_vpp_enabled) or (vp_stage == (vp_size - 1)))
+
+        if should_pop:
             step_num_groups = args.chunkpipe_step_g_queue.popleft()
         else:
             step_num_groups = 0

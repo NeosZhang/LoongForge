@@ -341,6 +341,15 @@ class BaseGPTModel(BaseMegatronLanguageModule):
         # this is used to store combined cos/sin embeddings, exclusively for flash infer rope
         rotary_pos_cos_sin = None
 
+        chunk_offset = 0
+        if getattr(self.config, 'enable_chunkpipe', False):
+            if not hasattr(self.config, 'chunkpipe_chunk_idx_in_group'):
+                raise RuntimeError(
+                    "chunkpipe_chunk_idx_in_group is not set. "
+                    "Please ensure the scheduler is properly configured for chunkpipe."
+                )
+            chunk_offset = self.config.chunkpipe_chunk_idx_in_group * self.config.chunksize
+
         if self.position_embedding_type == 'rope' and not self.config.multi_latent_attention:
             use_flash_infer_fused_rope = (
                 hasattr(inference_context, 'use_flashinfer_fused_rope')
@@ -373,6 +382,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                 )
                 rotary_pos_emb = self.rotary_pos_emb(
                     rotary_seq_len,
+                    offset=chunk_offset,
                     packed_seq=packed_seq_params is not None
                     and packed_seq_params.qkv_format == 'thd',
                 )
@@ -381,7 +391,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                 rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
                     inference_context, self.decoder, decoder_input, self.config, packed_seq_params
                 )
-                rotary_pos_emb, _ = self.rotary_pos_emb(rotary_seq_len)
+                rotary_pos_emb, _ = self.rotary_pos_emb(rotary_seq_len, offset=chunk_offset)
             else:
                 raise NotImplementedError(
                     "Flash decoding uses precomputed cos and sin for RoPE, not implemented in "
