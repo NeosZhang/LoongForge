@@ -130,7 +130,7 @@ def build_arg_parser():
     )
     parser.add_argument(
         "--dtype", type=str, default=None, choices=["fp32", "fp16", "bf16"],
-        help="Target data type (default: preserve original)"
+        help="Target data type (default: preserve original dtype from safetensors)"
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -147,6 +147,11 @@ def build_arg_parser():
     parser.add_argument(
         "--prefix-add", type=str, default=None,
         help="Add prefix to all parameter names, e.g. 'module.' changes 'layer1.weight' to 'module.layer1.weight'"
+    )
+    parser.add_argument(
+        "--source-checkpoint", type=str, default=None,
+        help="Path to original Megatron .pt checkpoint to copy 'args' and 'opt_param_scheduler' fields from. "
+             "Required for pi05 to preserve use_fp32_dtype_for_param_pattern and other training configs."
     )
     parser.add_argument(
         "--megatron-format", action="store_true",
@@ -234,6 +239,18 @@ def main():
                 'checkpoint_version': 3.0,
                 'num_floating_point_operations_so_far': 0,
             }
+            # Optionally copy args and opt_param_scheduler from source checkpoint.
+            # This is critical for pi05 which needs use_fp32_dtype_for_param_pattern
+            # and other training configs in args to initialize the model correctly.
+            if args.source_checkpoint:
+                print(f"Loading source checkpoint to copy args: {args.source_checkpoint}")
+                src = torch.load(args.source_checkpoint, map_location="cpu", weights_only=False)
+                if isinstance(src, dict):
+                    for key in ("args", "opt_param_scheduler"):
+                        if key in src and src[key] is not None:
+                            save_obj[key] = src[key]
+                            print(f"  Copied '{key}' from source checkpoint")
+                    del src
             print(f"\nSaving as Megatron format (iteration={args.iteration}): {args.output} ...")
         else:
             save_obj = state_dict
@@ -242,6 +259,18 @@ def main():
         torch.save(save_obj, args.output)
         size_gb = os.path.getsize(args.output) / 1024**3
         print(f"Save complete! File size: {size_gb:.2f} GB")
+
+        # Write Megatron tracker file so load_checkpoint can find the checkpoint.
+        # For release checkpoints (iteration=0), content is "release";
+        # otherwise, content is the iteration number.
+        if args.megatron_format:
+            # Walk up from mp_rank_XX/model_optim_rng.pt to the checkpoint root dir
+            output_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(args.output))))
+            tracker_path = os.path.join(output_dir, "latest_checkpointed_iteration.txt")
+            tracker_content = "release" if args.iteration == 0 else str(args.iteration)
+            with open(tracker_path, "w") as f:
+                f.write(tracker_content)
+            print(f"Tracker file written: {tracker_path} (content: {tracker_content})")
 
 
 if __name__ == "__main__":
