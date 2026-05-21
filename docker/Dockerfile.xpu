@@ -8,6 +8,7 @@ FROM ${BASE_IMAGE}
 # Enable only when training VLA models (e.g., Pi0.5, GR00T).
 ARG ENABLE_LEROBOT="false"
 ARG XPYTORCH_URL_ARG=""
+ARG KUNLUN_OPS_URL_ARG=""
 
 # =========================================================
 # Base System Configuration + APT Source Replacement
@@ -18,6 +19,13 @@ ENV PATH=/opt/loongforge_kunlun/bin:${PATH}
 
 RUN wget https://ai-data.bj.bcebos.com/open-source/xcudart.tar.gz && tar -xzvf xcudart.tar.gz -C /opt/loongforge_kunlun/ && rm -rf xcudart*
 ENV LD_LIBRARY_PATH=/usr/local/cuda-11.7/:/opt/loongforge_kunlun/xcudart/lib/:${LD_LIBRARY_PATH}
+
+# ======================== Validate xpu_packages.json ========================
+RUN set -exuo pipefail && \
+    python3 -c "import json; d=json.load(open('/workspace/LoongForge/docker/xpu_packages.json')); \
+    assert 'torch25' in d and 'torch29' in d, 'Missing torch version'; \
+    assert all(p in d.get('torch25',{}) and p in d.get('torch29',{}) for p in ['xpytorch','kunlun_ops','cocopod','xspeedgate']), 'Missing package'; \
+    print('xpu_packages.json validation passed')"
 
 # ======================== Install XPU Requirements ========================
 RUN set -exuo pipefail && \
@@ -38,24 +46,30 @@ RUN set -exuo pipefail && \
         XPYTORCH_URL="${XPYTORCH_URL_ARG}"; \
         echo "use specified xpytorch version: ${XPYTORCH_URL}"; \
     else \
-        xpytorch_info="/workspace/LoongForge/docker/xpytorch_info.txt"; \
-        if [ ! -f "${xpytorch_info}" ]; then \
-            echo "xpytorch info file not exist: ${xpytorch_info}" && exit 1; \
-        fi; \
-        DEFAULT_XPYTORCH_URL=$(cat "${xpytorch_info}" | tr -d '[:space:]'); \
-        if [ -z "${DEFAULT_XPYTORCH_URL}" ]; then \
-            echo "Error: xpytorch_info.txt file content is empty" && exit 1; \
-        fi; \
-        XPYTORCH_URL="${DEFAULT_XPYTORCH_URL}"; \
-        echo "use default xpytorch version: ${XPYTORCH_URL}"; \
+        XPYTORCH_URL=$(python3 -c "import json; print(json.load(open('/workspace/LoongForge/docker/xpu_packages.json'))['torch25']['xpytorch']['url'])"); \
+        echo "use default xpytorch version from json: ${XPYTORCH_URL}"; \
     fi && \
     export http_proxy=http://10.63.229.53:8891 && export https_proxy=http://10.63.229.53:8891 && download_xpytorch "${XPYTORCH_URL}"
+
+# ======================== Fix xpytorch_import_hook ========================
+RUN source /opt/loongforge_kunlun/bin/activate && bash /workspace/LoongForge/docker/fix_xpytorch_hook.sh
+
+# ======================== Install XPU Packages ========================
+RUN source /opt/loongforge_kunlun/bin/activate && \
+    COCOPOD_URL=$(python3 -c "import json; print(json.load(open('/workspace/LoongForge/docker/xpu_packages.json'))['torch25']['cocopod']['url'])") && \
+    XSPEEDGATE_URL=$(python3 -c "import json; print(json.load(open('/workspace/LoongForge/docker/xpu_packages.json'))['torch25']['xspeedgate']['url'])") && \
+    if [ -n "${KUNLUN_OPS_URL_ARG}" ]; then \
+        KUNLUN_OPS_URL="${KUNLUN_OPS_URL_ARG}"; \
+    else \
+        KUNLUN_OPS_URL=$(python3 -c "import json; print(json.load(open('/workspace/LoongForge/docker/xpu_packages.json'))['torch25']['kunlun_ops']['url'])"); \
+    fi && \
+    pip install "${COCOPOD_URL}" "${XSPEEDGATE_URL}" "${KUNLUN_OPS_URL}"
 
 # ======================== Install Base Requirements ========================
 RUN set -exuo pipefail && \
     source /opt/loongforge_kunlun/bin/activate && \
     # for deepspeed cpu adam
-    DS_BUILD_CPU_ADAM=1  BUILD_UTILS=1  pip install deepspeed==0.18.5 -U && \
+    DS_BUILD_CPU_ADAM=1  BUILD_UTILS=1  pip install --no-build-isolation deepspeed==0.18.5 -U && \
     echo "alias ll='ls -alF'" > /etc/profile.d/alias.sh; \
     echo "source /etc/profile.d/alias.sh" >> ~/.bashrc && \
     cd /workspace/LoongForge/ && \
@@ -99,7 +113,7 @@ RUN set -exuo pipefail && \
            -e '/\[tool.setuptools.package-data\]/d' \
            -e '/lerobot = \["envs\/\*\.json"\]/d' \
            -e '/"OT_VALUE"/d' \
-           -e 's/requires-python = ">=3\.12"/requires-python = ">=3.10"/g' \
+           -e 's/requires-python = ">=3\.12"/requires-python = ">=3\.10"/g' \
            -e '/huggingface-hub>=1\.0\.0,<2\.0\.0/d' \
            pyproject.toml && \
         pip install --no-build-isolation -e ".[pi,peft-dep,scipy-dep]" && \
