@@ -5,3 +5,4 @@ Diffusion Training Tutorial
    :maxdepth: 2
 
    quick_start_wan_training
+   wan_packing
