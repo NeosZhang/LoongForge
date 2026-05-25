@@ -1,8 +1,8 @@
 """
-LayeredFrameworkBuilder - Builder pattern assembler
+ModelFrameworkBuilder - Builder pattern assembler
 
 Builds the four-layer framework step by step from OmegaConf config:
-    condition → action_loss → architecture → LayeredFramework
+    condition → action → architecture → ModelFramework
 """
 
 from typing import Optional
@@ -13,12 +13,12 @@ import torch.nn as nn
 from model.compose.registry import (
     ARCHITECTURE_REGISTRY,
     CONDITION_REGISTRY,
-    LOSS_REGISTRY,
+    ACTION_REGISTRY,
     TRAINER_REGISTRY,
 )
-from model.compose.base import LayeredFramework
+from model.compose.base import ModelFramework
 from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseActionLoss
+from model.compose.action.base import BaseAction
 from model.compose.architecture.base import BaseArchitecture
 
 
@@ -29,12 +29,12 @@ def _auto_import_submodules(package_path: str, package_name: str):
             importlib.import_module(f"{package_name}.{module_name}")
 
 
-class LayeredFrameworkBuilder:
+class ModelFrameworkBuilder:
     """
     Builder pattern: build the complete four-layer training framework step by step from config.
 
     Usage:
-        builder = LayeredFrameworkBuilder(cfg)
+        builder = ModelFrameworkBuilder(cfg)
         model = (
             builder
             .build_condition()
@@ -52,10 +52,10 @@ class LayeredFrameworkBuilder:
         """
         self.cfg = cfg
         self._condition: Optional[BaseCondition] = None
-        self._action_loss: Optional[BaseActionLoss] = None
+        self._action: Optional[BaseAction] = None
         self._architecture: Optional[BaseArchitecture] = None
 
-    def build_condition(self) -> "LayeredFrameworkBuilder":
+    def build_condition(self) -> "ModelFrameworkBuilder":
         """Step 1: Build condition injection strategy from config."""
         condition_name = self.cfg.framework.compose.condition
         # Auto-import all condition implementations
@@ -69,27 +69,27 @@ class LayeredFrameworkBuilder:
         self._condition = condition_cls(config=self.cfg)
         return self
 
-    def build_action(self) -> "LayeredFrameworkBuilder":
+    def build_action(self) -> "ModelFrameworkBuilder":
         """Step 2: Build action loss strategy + action head from config."""
-        loss_name = self.cfg.framework.compose.action_loss
-        # Auto-import all action_loss implementations
-        import model.compose.action as loss_pkg
+        action_name = self.cfg.framework.compose.action
+        # Auto-import all action implementations
+        import model.compose.action as action_pkg
         import os
         _auto_import_submodules(
-            os.path.dirname(loss_pkg.__file__),
-            "model.compose.action_loss",
+            os.path.dirname(action_pkg.__file__),
+            "model.compose.action",
         )
-        LossCls = LOSS_REGISTRY[loss_name]
+        action_cls = ACTION_REGISTRY[action_name]
         # Build raw action head module
         action_head = self._build_action_head_module()
-        self._action_loss = LossCls(
+        self._action = action_cls(
             config=self.cfg.framework.action_model,
             action_head=action_head,
         )
         return self
 
-    def build_architecture(self) -> "LayeredFrameworkBuilder":
-        """Step 3: Assemble backbone + condition + action_loss from config."""
+    def build_architecture(self) -> "ModelFrameworkBuilder":
+        """Step 3: Assemble backbone + condition + action from config."""
         arch_name = self.cfg.framework.compose.architecture
         # Auto-import all architecture implementations
         import model.compose.architecture as arch_pkg
@@ -98,18 +98,18 @@ class LayeredFrameworkBuilder:
             os.path.dirname(arch_pkg.__file__),
             "model.compose.architecture",
         )
-        ArchCls = ARCHITECTURE_REGISTRY[arch_name]
-        self._architecture = ArchCls(
+        arch_cls = ARCHITECTURE_REGISTRY[arch_name]
+        self._architecture = arch_cls(
             config=self.cfg,
             condition=self._condition,
-            action_loss=self._action_loss,
+            action=self._action,
         )
         return self
 
-    def validate(self) -> "LayeredFrameworkBuilder":
+    def validate(self) -> "ModelFrameworkBuilder":
         """Step 4: Validate compatibility between layers (dimension matching, etc.)."""
         assert self._condition is not None, "Must call build_condition() first"
-        assert self._action_loss is not None, "Must call build_action_loss() first"
+        assert self._action is not None, "Must call build_action() first"
         assert self._architecture is not None, "Must call build_architecture() first"
 
         # Validate condition output compatibility with action_loss expectations
@@ -120,9 +120,9 @@ class LayeredFrameworkBuilder:
 
         return self
 
-    def finalize(self) -> LayeredFramework:
+    def finalize(self) -> ModelFramework:
         """Step 5: Produce the final assembled model."""
-        return LayeredFramework(
+        return ModelFramework(
             architecture=self._architecture,
             config=self.cfg,
         )
@@ -163,17 +163,17 @@ class LayeredFrameworkBuilder:
         )
 
 
-def build_framework(cfg) -> LayeredFramework:
+def build_framework(cfg) -> ModelFramework:
     """
-    Convenience function to build the layered framework in one call.
+    Convenience function to build the model framework in one call.
 
     Args:
         cfg: OmegaConf configuration containing cfg.framework.compose
 
     Returns:
-        LayeredFramework instance
+        ModelFramework instance
     """
-    builder = LayeredFrameworkBuilder(cfg)
+    builder = ModelFrameworkBuilder(cfg)
     return (
         builder
         .build_condition()

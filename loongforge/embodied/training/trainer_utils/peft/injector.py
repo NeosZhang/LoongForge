@@ -2,7 +2,7 @@
 LoRA injection: freeze backbone + wrap with PEFT + freeze extras.
 
 Adapts to LoongForgeVLA four-layer architecture:
-  - LayeredFramework.architecture.backbone is the VLM backbone
+  - ModelFramework.architecture.backbone is the VLM backbone
   - Locates VLM interface via lora.vlm_module or auto-detection
 """
 from __future__ import annotations

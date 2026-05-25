@@ -296,7 +296,7 @@ def main():
     logger.info(f"Model built: {model.__class__.__name__}")
     logger.info(f"  Architecture: {model.architecture.__class__.__name__}")
     logger.info(f"  Condition:    {model.condition.__class__.__name__}")
-    logger.info(f"  ActionLoss:   {model.action_loss.__class__.__name__}")
+    logger.info(f"  Action:   {model.action.__class__.__name__}")
 
     # prepare data
     dataloaders = prepare_data(cfg=cfg, accelerator=accelerator, output_dir=output_dir)

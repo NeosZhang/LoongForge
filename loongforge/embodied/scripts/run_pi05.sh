@@ -42,11 +42,11 @@ EXTRA_ARGS="$@"
 # ── Config Mapping ──
 case "$VLM_TYPE" in
     paligemma|pg)
-        CONFIG_FILE="configs/paligemma_pi05_layered.yaml"
+        CONFIG_FILE="configs/paligemma_pi05.yaml"
         RUN_NAME="paligemma_pi05"
         ;;
     qwen|qwen2.5)
-        CONFIG_FILE="configs/qwen_pi05_layered.yaml"
+        CONFIG_FILE="configs/qwen_pi05.yaml"
         RUN_NAME="qwen_pi05"
         ;;
     custom)
@@ -88,12 +88,12 @@ if [ "$NUM_GPUS" -gt 1 ]; then
         --config_file "$ACCELERATE_CONFIG" \
         --num_processes "$NUM_GPUS" \
         --main_process_port "$MASTER_PORT" \
-        training/train_layered.py \
+        training/train.py \
         --config "$CONFIG_FILE" \
         $EXTRA_ARGS
 else
     echo "[Launch] Single GPU training..."
-    python training/train_layered.py \
+    python training/train.py \
         --config "$CONFIG_FILE" \
         $EXTRA_ARGS
 fi

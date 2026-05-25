@@ -28,8 +28,8 @@ from training.trainers.bc import (
 def build_trainer(cfg, model, accelerator, optimizer, lr_scheduler, dataloaders) -> BaseTrainer:
     """Build the corresponding Trainer instance based on the trainer name in config."""
     trainer_name = cfg.framework.layers.trainer
-    TrainerCls = TRAINER_REGISTRY[trainer_name]
-    return TrainerCls(
+    trainer_cls = TRAINER_REGISTRY[trainer_name]
+    return trainer_cls(
         cfg=cfg,
         model=model,
         accelerator=accelerator,

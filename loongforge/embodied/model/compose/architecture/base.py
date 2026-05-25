@@ -1,7 +1,7 @@
 """
 Layer 2 - BaseArchitecture: Network structure base class
 
-Abstract Factory pattern: defines how backbone + condition + action_loss are composed.
+Abstract Factory pattern: defines how backbone + condition + action are composed.
 Three concrete factories correspond to three mainstream network paradigms.
 """
 
@@ -12,31 +12,31 @@ import torch.nn as nn
 import numpy as np
 
 from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseActionLoss
+from model.compose.action.base import BaseAction
 
 
 class BaseArchitecture(ABC, nn.Module):
     """
     Network structure abstract base class.
 
-    Responsibility: define how backbone combines with condition and action_loss.
+    Responsibility: define how backbone combines with condition and action.
     Subclasses implement different network paradigms:
-      - VLMActionModel:        VLM backbone → condition → action_loss
+      - VLMActionModel:        VLM backbone → condition → action
       - WAM:                   Unified latent space model (action = latent frame)
-      - WorldModelActionModel: World model encoder → condition → action_loss
+      - WorldModelActionModel: World model encoder → condition → action
     """
 
-    def __init__(self, config, condition: BaseCondition, action_loss: BaseActionLoss):
+    def __init__(self, config, condition: BaseCondition, action: BaseAction):
         """
         Args:
             config: Full framework configuration (OmegaConf)
             condition: Modality alignment strategy instance (Layer 3)
-            action_loss: Action loss strategy instance (Layer 4)
+            action: Action strategy instance (Layer 4)
         """
         super().__init__()
         self.config = config
         self.condition = condition
-        self.action_loss = action_loss
+        self.action = action
 
     @abstractmethod
     def encode(
@@ -96,5 +96,5 @@ class BaseArchitecture(ABC, nn.Module):
 
     @property
     def action_head(self) -> nn.Module:
-        """Return action prediction head (held by action_loss)"""
-        return self.action_loss.action_head
+        """Return action prediction head (held by action)"""
+        return self.action.action_head

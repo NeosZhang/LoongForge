@@ -17,7 +17,7 @@ import numpy as np
 from model.compose.registry import ARCHITECTURE_REGISTRY
 from model.compose.architecture.base import BaseArchitecture
 from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseActionLoss
+from model.compose.action.base import BaseAction
 
 
 @ARCHITECTURE_REGISTRY.register("WAM")
@@ -46,7 +46,7 @@ class WAM(BaseArchitecture):
            │  latent + mask + text_emb
            v
       ┌──────────┐
-      │ActionLoss│  (EDMRectifiedFlow: unified denoising)
+      │  Action  │  (EDMRectifiedFlow: unified denoising)
       │ (Layer4) │  DiT denoises the entire latent, action frames are the target
       └────┬─────┘
            │  denoised latent -> extract action frame -> reshape
@@ -54,8 +54,8 @@ class WAM(BaseArchitecture):
         actions
     """
 
-    def __init__(self, config, condition: BaseCondition, action_loss: BaseActionLoss):
-        super().__init__(config, condition, action_loss)
+    def __init__(self, config, condition: BaseCondition, action: BaseAction):
+        super().__init__(config, condition, action)
 
         cosmos_cfg = config.framework.get("cosmos_policy", {})
         self.action_frame_idx = cosmos_cfg.get("action_frame_idx", 4)
@@ -140,7 +140,7 @@ class WAM(BaseArchitecture):
 
         # 3. Action loss (EDM denoising loss, only for action frames)
         action_context = aligned["action_context"]
-        loss_dict = self.action_loss.compute_loss(
+        loss_dict = self.action.compute_loss(
             action_context=action_context,
             target_actions=actions,
         )
@@ -165,7 +165,7 @@ class WAM(BaseArchitecture):
 
         # 3. Predict (denoise -> extract action frame)
         action_context = aligned["action_context"]
-        pred_latent = self.action_loss.predict(
+        pred_latent = self.action.predict(
             action_context=action_context,
             action_shape=(video.shape[0], self.chunk_size, self.action_dim),
         )

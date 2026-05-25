@@ -30,12 +30,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.compose.registry import LOSS_REGISTRY
-from model.compose.action.base import BaseActionLoss
+from model.compose.registry import ACTION_REGISTRY
+from model.compose.action.base import BaseAction
 
 
-@LOSS_REGISTRY.register("Pi0FlowMatching")
-class Pi0FlowMatchingLoss(BaseActionLoss):
+@ACTION_REGISTRY.register("Pi0FlowMatching")
+class Pi0FlowMatchingLoss(BaseAction):
     """
     Pi0/Pi0.5 Flow Matching loss strategy.
 

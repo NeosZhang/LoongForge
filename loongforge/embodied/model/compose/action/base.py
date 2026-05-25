@@ -1,5 +1,5 @@
 """
-Layer 4 - BaseActionLoss: Action Loss Strategy Base Class
+Layer 4 - BaseAction: Action Strategy Base Class
 
 Strategy pattern: defines the training loss computation and inference action generation
 interface for the action head. Each strategy encapsulates specific noise scheduling,
@@ -12,9 +12,9 @@ import torch
 import torch.nn as nn
 
 
-class BaseActionLoss(ABC, nn.Module):
+class BaseAction(ABC, nn.Module):
     """
-    Action loss strategy abstract base class.
+    Action strategy abstract base class.
 
     Responsibilities:
       1. Training: given action_context + target_actions, compute scalar loss

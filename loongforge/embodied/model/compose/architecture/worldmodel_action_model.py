@@ -16,7 +16,7 @@ import numpy as np
 from model.compose.registry import ARCHITECTURE_REGISTRY
 from model.compose.architecture.base import BaseArchitecture
 from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseActionLoss
+from model.compose.action.base import BaseAction
 
 
 @ARCHITECTURE_REGISTRY.register("WorldModelActionModel")
@@ -41,15 +41,15 @@ class WorldModelActionModel(BaseArchitecture):
              │  fused_context
              v
       ┌──────────────┐
-      │ ActionLoss   │  (FlowMatchingMSE: DiT-based action generation)
+      │    Action    │  (FlowMatchingMSE: DiT-based action generation)
       │   (Layer4)   │
       └──────┬───────┘
              │  actions
              v
     """
 
-    def __init__(self, config, condition: BaseCondition, action_loss: BaseActionLoss):
-        super().__init__(config, condition, action_loss)
+    def __init__(self, config, condition: BaseCondition, action: BaseAction):
+        super().__init__(config, condition, action)
 
         wm_cfg = config.framework.get("world_model", {})
         self.feature_layer_id = wm_cfg.get("feature_layer_id", 18)
@@ -148,7 +148,7 @@ class WorldModelActionModel(BaseArchitecture):
 
         # 3. Action Loss (FlowMatchingMSE)
         action_context = aligned["action_context"]
-        loss_dict = self.action_loss.compute_loss(
+        loss_dict = self.action.compute_loss(
             action_context=action_context,
             target_actions=actions.to(action_context.device),
             state=state,
@@ -171,7 +171,7 @@ class WorldModelActionModel(BaseArchitecture):
 
         backbone_output = self.encode(images, None, text_embeddings=text_emb)
         aligned = self.condition.inject(backbone_output)
-        pred = self.action_loss.predict(
+        pred = self.action.predict(
             action_context=aligned["action_context"],
             state=state,
         )

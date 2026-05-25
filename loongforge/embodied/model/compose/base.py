@@ -1,5 +1,5 @@
 """
-LayeredFramework - Top-level model wrapper after four-layer composition
+ModelFramework - Top-level model wrapper after four-layer composition
 
 Inherits nn.Module (does not depend on transformers.PreTrainedModel in standalone project),
 compatible forward/predict_action interface
@@ -13,16 +13,16 @@ import numpy as np
 from model.compose.architecture.base import BaseArchitecture
 
 
-class LayeredFramework(nn.Module):
+class ModelFramework(nn.Module):
     """
     Top-level model after four-layer composition.
 
     Assembly relationship:
-        LayeredFramework
+        ModelFramework
             └── architecture (BaseArchitecture)
                     ├── backbone (nn.Module)
                     ├── condition (BaseCondition)
-                    └── action_loss (BaseActionLoss)
+                    └── action (BaseAction)
                             └── action_head (nn.Module)
 
         - forward(examples) -> Dict[str, Tensor]
@@ -32,7 +32,7 @@ class LayeredFramework(nn.Module):
     def __init__(self, architecture: BaseArchitecture, config):
         """
         Args:
-            architecture: Assembled BaseArchitecture instance (with condition + action_loss)
+            architecture: Assembled BaseArchitecture instance (with condition + action)
             config: Full framework configuration
         """
         super().__init__()
@@ -47,7 +47,7 @@ class LayeredFramework(nn.Module):
             examples: Batch list, each dict contains 'image', 'lang', 'action', optional 'state'
 
         Returns:
-            Dict containing 'action_loss' (required) and other optional loss terms
+            Dict containing 'action' (required) and other optional loss terms
         """
         return self.architecture.forward(examples, **kwargs)
 
@@ -71,9 +71,9 @@ class LayeredFramework(nn.Module):
         return self.architecture.condition
 
     @property
-    def action_loss(self) -> nn.Module:
-        """Get architecture's action_loss."""
-        return self.architecture.action_loss
+    def action(self) -> nn.Module:
+        """Get architecture's action."""
+        return self.architecture.action
 
     @property
     def action_head(self) -> nn.Module:

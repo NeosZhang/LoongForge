@@ -69,5 +69,5 @@ ARCHITECTURE_REGISTRY = Registry("architectures")
 # Layer 3: Modality alignment
 CONDITION_REGISTRY = Registry("conditions")
 
-# Layer 4: Action loss
-LOSS_REGISTRY = Registry("action_losses")
+# Layer 4: Action
+ACTION_REGISTRY = Registry("actions")

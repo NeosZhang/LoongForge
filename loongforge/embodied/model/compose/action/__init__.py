@@ -1,7 +1,7 @@
-"""Layer 4: Action Loss Strategies"""
+"""Layer 4: Action Strategies"""
 
-from model.compose.action.base import BaseActionLoss
+from model.compose.action.base import BaseAction
 
 __all__ = [
-    "BaseActionLoss",
+    "BaseAction",
 ]

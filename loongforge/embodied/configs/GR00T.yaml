@@ -69,7 +69,7 @@ trainer:
 # running config
 seed: 3047
 output_root_dir: outputs
-run_id: qwen_gr00t_layered
+run_id: qwen_gr00t
 wandb_project: loongforge-vla
 wandb_mode: online
 

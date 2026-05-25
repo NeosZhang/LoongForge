@@ -1,7 +1,7 @@
 """
 VLMActionModel - VLM + Action Model Architecture
 
-Architecture: VLM backbone (frozen/fine-tuned) -> condition -> action_loss
+Architecture: VLM backbone (frozen/fine-tuned) -> condition -> action
 Corresponding models: GR00T, Pi0/Pi0.5
 
 This is the most general architecture paradigm: a large vision-language model extracts
@@ -17,7 +17,7 @@ import numpy as np
 from model.compose.registry import ARCHITECTURE_REGISTRY
 from model.compose.architecture.base import BaseArchitecture
 from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseActionLoss
+from model.compose.action.base import BaseAction
 
 
 @ARCHITECTURE_REGISTRY.register("VLMActionModel")
@@ -42,15 +42,15 @@ class VLMActionModel(BaseArchitecture):
            │  action_context
            v
       ┌──────────┐
-      │ActionLoss│  (L1 / FlowMatching / CVAE / HybridSTDP)
+      │  Action  │  (L1 / FlowMatching / CVAE / HybridSTDP)
       │ (Layer4) │
       └────┬─────┘
-           │  action_loss / predicted_actions
+           │  action loss / predicted_actions
            v
     """
 
-    def __init__(self, config, condition: BaseCondition, action_loss: BaseActionLoss):
-        super().__init__(config, condition, action_loss)
+    def __init__(self, config, condition: BaseCondition, action: BaseAction):
+        super().__init__(config, condition, action)
 
         # VLM backbone (created by get_vlm_model(config) during integration)
         # Uses placeholder in standalone project
@@ -134,7 +134,7 @@ class VLMActionModel(BaseArchitecture):
 
         # 3. Compute loss
         action_context = aligned["action_context"]
-        loss_dict = self.action_loss.compute_loss(
+        loss_dict = self.action.compute_loss(
             action_context=action_context,
             target_actions=actions.to(action_context.device
                                       if isinstance(action_context, torch.Tensor)
@@ -160,7 +160,7 @@ class VLMActionModel(BaseArchitecture):
 
         # 3. Predict
         action_context = aligned["action_context"]
-        pred_actions = self.action_loss.predict(
+        pred_actions = self.action.predict(
             action_context=action_context,
             state=state,
         )

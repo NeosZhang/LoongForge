@@ -2,7 +2,7 @@
 LoongForgeVLA Training - Training paradigms and general training infrastructure
 
 Provides:
-  - Unified training entry point (train_layered.py)
+  - Unified training entry point (train.py)
   - Trainer hierarchy (trainers/)
   - General training utilities (trainer_utils/)
     - overwatch: Distributed-aware logging

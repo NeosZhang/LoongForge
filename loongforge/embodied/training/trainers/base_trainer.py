@@ -52,7 +52,7 @@ class BaseTrainer(ABC):
         """
         Args:
             cfg: OmegaConf training configuration
-            model: LayeredFramework or BaseArchitecture instance
+            model: ModelFramework or BaseArchitecture instance
             accelerator: HuggingFace Accelerator instance
             optimizer: torch optimizer
             lr_scheduler: learning rate scheduler
