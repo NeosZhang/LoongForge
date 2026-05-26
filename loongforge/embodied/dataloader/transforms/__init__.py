@@ -11,6 +11,7 @@ from dataloader.transforms.base import BaseTransform, ComposedTransform
 from dataloader.transforms.normalizer import Normalizer
 from dataloader.transforms.image_transform import ImageTransform
 from dataloader.transforms.action_transform import ActionTransform
+from dataloader.transforms.pi05_state_transform import Pi05StateTransform
 
 __all__ = [
     "BaseTransform",
@@ -18,4 +19,5 @@ __all__ = [
     "Normalizer",
     "ImageTransform",
     "ActionTransform",
+    "Pi05StateTransform",
 ]

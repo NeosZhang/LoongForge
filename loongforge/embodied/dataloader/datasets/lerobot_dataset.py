@@ -251,7 +251,7 @@ class LeRobotVLADataset(Dataset):
                     self.episodes.append(json.loads(line))
 
     def _load_data(self):
-        """Load parquet data files."""
+        """Build a lazy frame index without loading parquet data into memory."""
         import pandas as pd
 
         data_dir = self.dataset_path / "data"
@@ -260,14 +260,19 @@ class LeRobotVLADataset(Dataset):
         if not parquet_files:
             raise FileNotFoundError(f"No parquet files found in {data_dir}")
 
-        # Load all parquet files
-        dfs = []
-        for pf in parquet_files:
-            df = pd.read_parquet(pf)
-            dfs.append(df)
-        self.data = pd.concat(dfs, ignore_index=True)
+        # Build index: list of (file_path, row_index_within_file)
+        self._parquet_files = parquet_files
+        self._frame_index: list[tuple[int, int]] = []  # (file_idx, row_in_file)
+        self._file_cache: dict[int, pd.DataFrame] = {}  # LRU-like single-file cache
+        self._cached_file_idx: int = -1
 
-        logger.info(f"Loaded {len(self.data)} frames from {len(parquet_files)} parquet files")
+        for file_idx, pf in enumerate(parquet_files):
+            # Read only row count via parquet metadata (no data loaded)
+            import pyarrow.parquet as pq
+            n_rows = pq.read_metadata(pf).num_rows
+            self._frame_index.extend((file_idx, row) for row in range(n_rows))
+
+        logger.info(f"Indexed {len(self._frame_index)} frames from {len(parquet_files)} parquet files (lazy load)")
 
     def _build_transform(self) -> ComposedTransform:
         """Build data transformation pipeline."""
@@ -327,10 +332,20 @@ class LeRobotVLADataset(Dataset):
         return action_stats if action_stats else None
 
     def __len__(self) -> int:
-        return len(self.data)
+        return len(self._frame_index)
+
+    def _get_row(self, idx: int):
+        """Fetch a single row, caching the current file to avoid re-reads."""
+        import pandas as pd
+        file_idx, row_in_file = self._frame_index[idx]
+        if self._cached_file_idx != file_idx:
+            self._file_cache = {}
+            self._file_cache[file_idx] = pd.read_parquet(self._parquet_files[file_idx])
+            self._cached_file_idx = file_idx
+        return self._file_cache[file_idx].iloc[row_in_file]
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        row = self.data.iloc[idx]
+        row = self._get_row(idx)
 
         # Extract images
         images = self._extract_images(row, idx)

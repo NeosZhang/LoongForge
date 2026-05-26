@@ -88,17 +88,17 @@ def build_dataloader(cfg, dataloader_module: Optional[str] = None) -> DataLoader
     if module == "lerobot_datasets":
         from dataloader.datasets.lerobot_dataset import build_lerobot_dataloader
 
-        return build_lerobot_dataloader(cfg, vla_cfg, batch_size, num_workers)
+        dl = build_lerobot_dataloader(cfg, vla_cfg, batch_size, num_workers)
 
     elif module == "rlds_datasets":
         from dataloader.datasets.rlds_dataset import build_rlds_dataloader
 
-        return build_rlds_dataloader(cfg, vla_cfg, batch_size, num_workers)
+        dl = build_rlds_dataloader(cfg, vla_cfg, batch_size, num_workers)
 
     elif module == "hdf5_datasets":
         from dataloader.datasets.hdf5_dataset import build_hdf5_dataloader
 
-        return build_hdf5_dataloader(cfg, vla_cfg, batch_size, num_workers)
+        dl = build_dummy_dataloader(cfg, vla_cfg, batch_size, num_workers)
 
     elif module == "dummy_datasets":
         from dataloader.datasets.dummy_dataset import build_dummy_dataloader
@@ -110,3 +110,32 @@ def build_dataloader(cfg, dataloader_module: Optional[str] = None) -> DataLoader
             f"Unknown dataloader_module: '{module}'. "
             f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets"
         )
+
+    # Append Pi05StateTransform if discrete_state_input is enabled
+    _maybe_append_pi05_state_transform(cfg, dl)
+
+    return dl
+
+
+def _maybe_append_pi05_state_transform(cfg, dataloader: DataLoader):
+    """Conditionally append Pi05StateTransform to dataset's transform pipeline."""
+    backbone_cfg = cfg.get("framework", {}).get("backbone", {})
+    if not backbone_cfg.get("discrete_state_input", False):
+        return
+
+    from dataloader.transforms.pi05_state_transform import Pi05StateTransform
+
+    action_cfg = cfg.get("framework", {}).get("action_model", {})
+    max_state_dim = action_cfg.get("max_state_dim", 32)
+
+    dataset = dataloader.dataset
+    transform = Pi05StateTransform(apply_to=["lang"], max_state_dim=max_state_dim)
+
+    if hasattr(dataset, "transform") and dataset.transform is not None:
+        from dataloader.transforms.base import ComposedTransform
+        if isinstance(dataset.transform, ComposedTransform):
+            dataset.transform.transforms.append(transform)
+        else:
+            dataset.transform = ComposedTransform([dataset.transform, transform])
+    else:
+        dataset.transform = transform

@@ -76,7 +76,12 @@ class ModelFrameworkBuilder:
 
     def build_action(self) -> "ModelFrameworkBuilder":
         """Step 2: Build action loss strategy + action head from config."""
-        action_name = self.cfg.framework.compose.action
+        action_name = self.cfg.framework.compose.get("action", None)
+        if (action_name is None or
+                (isinstance(action_name, str) and
+                 action_name.lower() in ("none", ""))):
+            self._action = None
+            return self
         # Auto-import all action implementations
         import model.compose.action as action_pkg
         import os
@@ -113,11 +118,9 @@ class ModelFrameworkBuilder:
 
     def validate(self) -> "ModelFrameworkBuilder":
         """Step 4: Validate compatibility between layers (dimension matching, etc.)."""
-        #assert self._condition is not None, "Must call build_condition() first"
-        assert self._action is not None, "Must call build_action() first"
         assert self._architecture is not None, "Must call build_architecture() first"
 
-        if self._condition is None:
+        if self._condition is None or self._action is None:
             return self
         # Validate condition output compatibility with action_loss expectations
         spec = self._condition.get_action_head_input_spec()

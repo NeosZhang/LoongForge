@@ -28,10 +28,14 @@
 #       trainer.pretrained_checkpoint=outputs/paligemma_pi05_libero/checkpoint-50000
 # ═══════════════════════════════════════════════════════════════
 
+export CUDA_VISIBLE_DEVICES=0
+export USE_DDP=1
+export TOKENIZER_PATH=/ssd1/yexiaochuan/paligemma-3b-pt-224
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+EMBODIED_ROOT="$PROJECT_ROOT/loongforge/embodied"
 cd "$PROJECT_ROOT"
 
 # ── Argument Parsing ──
@@ -42,11 +46,11 @@ EXTRA_ARGS="$@"
 # ── Config Mapping ──
 case "$VLM_TYPE" in
     paligemma|pg)
-        CONFIG_FILE="configs/paligemma_pi05.yaml"
+        CONFIG_FILE="$PROJECT_ROOT/configs/models/embodied/paligemma_pi05.yaml"
         RUN_NAME="paligemma_pi05"
         ;;
     qwen|qwen2.5)
-        CONFIG_FILE="configs/qwen_pi05.yaml"
+        CONFIG_FILE="$EMBODIED_ROOT/configs/qwen_pi05.yaml"
         RUN_NAME="qwen_pi05"
         ;;
     custom)
@@ -63,8 +67,14 @@ case "$VLM_TYPE" in
 esac
 
 # ── Environment Variables ──
-NUM_GPUS="${NUM_GPUS:-$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)}"
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then
+    _GPU_COUNT=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
+else
+    _GPU_COUNT=$(nvidia-smi -L 2>/dev/null | wc -l || echo 1)
+fi
+NUM_GPUS=1
 ACCELERATE_CONFIG="${ACCELERATE_CONFIG:-configs/deepspeed/accelerate_zero2.yaml}"
+ACCELERATE_CONFIG=""
 MASTER_PORT="${MASTER_PORT:-29500}"
 
 # ── Training Parameters (override via env or edit below) ──
@@ -93,7 +103,7 @@ WANDB_MODE="${WANDB_MODE:-online}"
 # Dataset config
 DATALOADER_MODULE="${DATALOADER_MODULE:-lerobot_datasets}"
 DATA_ROOT_DIR="${DATA_ROOT_DIR:-/data/lerobot}"
-DATASET_PATH="${DATASET_PATH:-/data/lerobot/libero_spatial}"
+DATASET_PATH="${DATASET_PATH:-/ssd1/yexiaochuan/libero}"
 #DATASET_MIX="${DATASET_MIX:-libero_all}"
 ROBOT_TYPE="${ROBOT_TYPE:-libero_franka}"
 PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-4}"
@@ -160,16 +170,20 @@ fi
 # ── Launch Training ──
 if [ "$NUM_GPUS" -gt 1 ]; then
     echo "[Launch] accelerate launch with $NUM_GPUS GPUs..."
+    ACCELERATE_EXTRA_ARGS=()
+    if [ -n "$ACCELERATE_CONFIG" ]; then
+        ACCELERATE_EXTRA_ARGS+=(--config_file "$ACCELERATE_CONFIG")
+    fi
     accelerate launch \
-        --config_file "$ACCELERATE_CONFIG" \
+        "${ACCELERATE_EXTRA_ARGS[@]}" \
         --num_processes "$NUM_GPUS" \
         --main_process_port "$MASTER_PORT" \
-        training/train.py \
+        "$EMBODIED_ROOT/training/train.py" \
         "${TRAIN_ARGS[@]}" \
         $EXTRA_ARGS
 else
     echo "[Launch] Single GPU training..."
-    python training/train.py \
+    python "$EMBODIED_ROOT/training/train.py" \
         "${TRAIN_ARGS[@]}" \
         $EXTRA_ARGS
 fi
