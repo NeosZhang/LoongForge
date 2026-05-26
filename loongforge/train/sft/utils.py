@@ -9,7 +9,7 @@ from collections import deque, defaultdict, namedtuple
 
 from typing import TYPE_CHECKING, List, Optional, Union, Any, Type, Dict
 from dataclasses import dataclass
-
+import os
 import torch
 from torch.utils.data import DataLoader
 from transformers.utils import PaddingStrategy
@@ -24,6 +24,7 @@ from megatron.legacy.data.data_samplers import MegatronPretrainingRandomSampler
 from loongforge.utils import get_args, get_tokenizer, constants
 from loongforge.data import DataCollatorForSupervisedDataset
 from loongforge.tokenizer import AutoTokenizerFromHF
+from loongforge.train.checkpointing import get_checkpoint_name, read_tracker_iteration
 
 
 if TYPE_CHECKING:
@@ -177,6 +178,134 @@ class SavableCyclicIterator:
         """dataloader load state"""
         return self.iterable.load_state(state)
 
+
+class SavableCyclicIteratorWithPreprocessor:
+    """
+    Cyclic iterator that applies a preprocessor to each batch and supports
+    save_state/load_state for checkpoint resumption.
+
+    The preprocessor is applied after the _IterableWithState step counter
+    increments, so each DataLoader batch = one step regardless of preprocessing.
+
+    Compatible with Megatron's maybe_save_dataloader_state().
+    """
+
+    def __init__(self, dataloader, preprocessor=None):
+        self.iterable = _IterableWithState(dataloader)
+        self.preprocessor = preprocessor
+        self._iterator = self._cyclic_iter(self.iterable)
+
+    def _cyclic_iter(self, iterable_with_state):
+        while True:
+            for batch in iterable_with_state:
+                if self.preprocessor is not None:
+                    yield self.preprocessor(batch)
+                else:
+                    yield batch
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._iterator)
+
+    def save_state(self):
+        """dataloader save state"""
+        return self.iterable.save_state()
+
+    def load_state(self, state):
+        """dataloader load state"""
+        return self.iterable.load_state(state)
+
+
+def build_savable_dataloader_iter(dataloader, preprocessor=None):
+    """Build a savable cyclic iterator with optional preprocessor.
+
+    If args.dataloader_save is set, returns a SavableCyclicIteratorWithPreprocessor
+    that supports save_state/load_state for checkpoint resumption.
+    Otherwise returns a plain cyclic generator (no state tracking).
+
+    Also restores dataloader state from a previous checkpoint if applicable.
+
+    Args:
+        dataloader: PyTorch DataLoader to wrap.
+        preprocessor: Optional callable applied to each batch.
+
+    Returns:
+        A cyclic iterator (savable or plain).
+    """
+    from loongforge.utils import get_args, print_rank_0
+
+    args = get_args()
+
+    # Use args.dataloader_save if set; fall back to args.save so VLA trainers
+    # that set dataloader_save = args.save in _ensure_megatron_defaults still
+    # work even when Megatron re-parses args after initialize_megatron().
+    dl_save = getattr(args, "dataloader_save", None) or getattr(args, "save", None)
+    dl_load = getattr(args, "load", None)
+
+    if dl_save is not None:
+        train_iter = SavableCyclicIteratorWithPreprocessor(dataloader, preprocessor=preprocessor)
+
+        # Restore dataloader state when resuming from a checkpoint.
+        # When --no-load-optim/--finetune resets args.iteration to 0, we cannot
+        # rely on it to find the correct checkpoint directory. Instead, scan for
+        # the latest checkpoint iteration that contains a dataloader state file.
+        if dl_load is not None:
+
+            dp_rank = mpu.get_data_parallel_rank()
+            restored = False
+
+            # Determine the checkpoint iteration using the same logic as
+            # Megatron's load_checkpoint: read latest_checkpointed_iteration.txt.
+            # This ensures the dataloader state matches the actually-loaded
+            # model checkpoint, rather than blindly picking the largest iter.
+            candidates = []
+            iteration = getattr(args, "iteration", 0) or 0
+            if iteration > 0:
+                candidates.append(iteration)
+
+            tracker_result = read_tracker_iteration(dl_load)
+            if tracker_result is not None:
+                tracker_iter, _ = tracker_result
+                if tracker_iter not in candidates:
+                    candidates.append(tracker_iter)
+
+            # Prefer the latest iteration that has a dataloader state file.
+            candidates.sort(reverse=True)
+            for cand_iter in candidates:
+                data_save_name = get_checkpoint_name(
+                    dl_load,
+                    cand_iter,
+                    pipeline_rank=0,
+                    basename=f"train_dataloader_dprank{dp_rank:03d}.pt",
+                )
+                if os.path.exists(data_save_name):
+                    try:
+                        dataset_state_dict = torch.load(data_save_name, map_location="cpu", weights_only=False)
+                        train_iter.load_state(dataset_state_dict["dataloader_state_dict"])
+                        print_rank_0(
+                            f"Restored dataloader state from {data_save_name} "
+                            f"(step={dataset_state_dict['dataloader_state_dict'].get('step', '?')})"
+                        )
+                        restored = True
+                        break
+                    except Exception as e:
+                        print_rank_0(f"WARNING: Failed to restore dataloader state from {data_save_name}: {e}")
+
+            if not restored:
+                print_rank_0("No dataloader state found to restore, starting from scratch")
+    else:
+        def _preprocess_iter(dl_iter):
+            for batch in dl_iter:
+                if preprocessor is not None:
+                    yield preprocessor(batch)
+                else:
+                    yield batch
+
+        train_iter = _preprocess_iter(_cyclic_iter(dataloader))
+
+    return train_iter
 
 class ChunkPipeGroupBatchSampler:
     """Batch sampler that shuffles chunk groups while preserving intra-group order

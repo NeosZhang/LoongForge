@@ -9,6 +9,7 @@ from functools import partial
 from copy import deepcopy
 from dataclasses import fields
 import os
+import re
 from pathlib import Path
 from collections import Counter
 from pprint import pformat
@@ -22,8 +23,9 @@ from megatron.training.utils import average_losses_across_data_parallel_group
 from torch.utils.data import Dataset, SubsetRandomSampler, Sampler, default_collate
 
 from loongforge.models import get_model_family, get_model_provider
+from loongforge.train.checkpointing import apply_resumption_flags
 from loongforge.train.megatron_trainer import MegatronTrainer
-from loongforge.train.sft.utils import _build_cylic_iterator, _cyclic_iter
+from loongforge.train.sft.utils import build_savable_dataloader_iter
 from loongforge.train.trainer_builder import register_model_trainer
 from loongforge.utils import constants, get_args, print_rank_0
 from loongforge.utils.global_vars import get_model_config
@@ -162,6 +164,9 @@ def _ensure_megatron_defaults(train_args):
         # Force fp32 dtypes to satisfy OptimizerConfig assertions when precision-aware mode is off.
         for attr in ("main_grads_dtype", "main_params_dtype", "exp_avg_dtype", "exp_avg_sq_dtype"):
             setattr(train_args, attr, torch.float32)
+    # Enable dataloader state save by default for checkpoint resumption.
+    if not hasattr(train_args, "dataloader_save") or train_args.dataloader_save is None:
+        train_args.dataloader_save = getattr(train_args, "save", None)
 
 
 def get_lerobot_dataset_stats(dataset: Any) -> dict[str, Any] | None:
@@ -283,7 +288,6 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
     train_samples = train_val_test_num_samples[0] if train_val_test_num_samples else None
     if train_samples is None:
         train_samples = getattr(args, "train_iters", 1) * getattr(args, "global_batch_size", 1)
-    consumed = getattr(args, "consumed_train_samples", 0) or 0
 
     # Build the LeRobot-backed dataset via shared helper to mirror lerobot_train.
     repo_id = None
@@ -368,11 +372,8 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
         **dataloader_kwargs,
     )
 
-    def _preprocess_iter(dl_iter):
-        for batch in dl_iter:
-            yield preprocessor(batch)
+    train_iter = build_savable_dataloader_iter(dataloader, preprocessor=preprocessor)
 
-    train_iter = _preprocess_iter(_cyclic_iter(dataloader))
     return train_iter, None, None
 
 
@@ -383,6 +384,7 @@ def train_valid_test_datasets_provider(train_val_test_num_samples, vp_stage=None
 def default_sft_trainer(train_args):
     """Megatron-FSDP trainer for pi05 SFT."""
     _ensure_megatron_defaults(train_args)
+    apply_resumption_flags(train_args)
 
     trainer = MegatronTrainer(
         train_args=train_args,

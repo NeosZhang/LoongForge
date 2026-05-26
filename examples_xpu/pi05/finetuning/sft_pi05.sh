@@ -50,21 +50,19 @@ DATA_ARGS=(
 
 # Core training args — pi05 trainer only needs minimal Megatron flags
 TRAINING_ARGS=(
-    --use-megatron-fsdp
-    --data-parallel-sharding-strategy optim
     --training-phase sft
-    --micro-batch-size 16
-    --global-batch-size 128
-    --train-iters 30000
+    --micro-batch-size 12
+    --global-batch-size 96
+    --train-iters 50
     --seq-length 762
     --max-position-embeddings 762
     --tensor-model-parallel-size 1
     --pipeline-model-parallel-size 1
     --no-masked-softmax-fusion
-    --ckpt-format fsdp_dtensor
+    --ckpt-format torch
     --load $CHECKPOINT_PATH
-    --no-load-optim
-    --no-load-rng
+    --no-load-optim     # currently does not support load optim
+    --no-load-rng       # when resumeing from a trained checkpoint, rng state should be loaded
     --seed 1234
     --lr 2.5e-8
     --min-lr 0
@@ -76,27 +74,43 @@ TRAINING_ARGS=(
     --adam-eps 1e-8
     --adam-beta2 0.95
     --weight-decay 0.01
-    --no-strict-fsdp-dtensor-load
     --finetune
     --bf16
-    --grad-reduce-in-bf16
+    --init-model-with-meta-device
     --use-precision-aware-optimizer
-    --main-grads-dtype bf16
+    --exp-avg-dtype bf16
+    --exp-avg-sq-dtype bf16
     --num-distributed-optimizer-instances 1
     --save $CHECKPOINT_PATH
-    --save-interval 30000
+    --save-interval 30
+    --optimizer-cpu-offload
+    --optimizer-offload-fraction 0.05
 )
+
+# --- Checkpoint resumption (automatic) ---
+# The trainer auto-detects whether --load contains dataloader state:
+#   - Found: switches to resumption mode (restores iteration, RNG, dataloader, currently not support load optim)
+#   - Not found: keeps --finetune behavior (load weights only, start from iter 1)
+# No manual flag changes needed.
 
 MODEL_CONFIG_ARGS=(
     --model-name pi05
     --use-distributed-optimizer
     --distributed-backend nccl
-    #--random-fallback-cpu
+    --random-fallback-cpu
 )
 
 LOGGING_ARGS=(
     --log-interval 1
+    --tensorboard-dir ${TENSORBOARD_PATH}
 )
+
+#if [ -n "${WANDB_API_KEY}" ]; then
+#    LOGGING_ARGS+=(
+#        --wandb-project ${WANDB_PROJECT}
+#        --wandb-exp-name ${WANDB_NAME}
+#    )
+#fi
 
 PYTHONPATH=$MEGATRON_PATH:$LOONGFORGE_PATH:${PYTHONPATH:-} \
     torchrun ${DISTRIBUTED_ARGS[@]} \

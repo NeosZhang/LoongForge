@@ -20,7 +20,7 @@ LeRobot dataset v3.0 stores episodes as Parquet files with standardized fields f
 
 ## 2. Model Weight Preparation
 
-### 2.2 Convert HF Weights to torch Format
+### 2.1 Convert HF Weights to torch Format
 
 Convert HuggingFace weights to PyTorch format for LoongForge training:
 
@@ -163,4 +163,27 @@ PYTHONPATH=$MEGATRON_PATH:$LOONGFORGE_PATH:${PYTHONPATH:-} \
     ${DATA_ARGS[@]} \
     ${TRAINING_ARGS[@]} \
     ${LOGGING_ARGS[@]}
+```
+
+## 4. Model Weight Conversion
+### 4.1 Convert Torch Checkpoint Back to HF Format
+
+Convert a trained PyTorch checkpoint back to HuggingFace safetensors format:
+
+```bash
+# Set input/output paths
+export LOAD=/path/to/pi05_torch/
+export SAVE=/path/to/pi05_huggingface/
+
+sh examples/pi05/checkpoint_convert/convert_pi05_torch_to_hf.sh
+```
+
+After conversion, the output directory will contain sharded safetensors files:
+
+```
+pi05_huggingface/
+├── model-00001-of-00003.safetensors
+├── model-00002-of-00003.safetensors
+├── model-00003-of-00003.safetensors
+└── model.safetensors.index.json
 ```
