@@ -35,6 +35,13 @@ class BCBaseTrainer(BaseTrainer):
         super().__init__(cfg, model, accelerator, optimizer, lr_scheduler)
         self._external_dataloaders: Dict[str, DataLoader] = dataloaders
 
+    def prepare_training(self):
+        """Parse BC-specific CLI args and merge into cfg, then call base prepare_training."""
+        from training.trainers.bc.bc_args import parse_bc_args, merge_bc_args_to_cfg
+        bc_args = parse_bc_args()
+        self.cfg = merge_bc_args_to_cfg(bc_args, self.cfg)
+        super().prepare_training()
+
     # ═══════════════════════════════════════════════════════════════
     # BaseTrainer abstract method implementations
     # ═══════════════════════════════════════════════════════════════

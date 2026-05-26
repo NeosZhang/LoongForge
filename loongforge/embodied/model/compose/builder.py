@@ -58,6 +58,11 @@ class ModelFrameworkBuilder:
     def build_condition(self) -> "ModelFrameworkBuilder":
         """Step 1: Build condition injection strategy from config."""
         condition_name = self.cfg.framework.compose.condition
+        if (condition_name is None or
+                (isinstance(condition_name, str) and
+                 condition_name.lower() in ("none", ""))):
+            self._condition = None
+            return self
         # Auto-import all condition implementations
         import model.compose.condition as condition_pkg
         import os
@@ -108,10 +113,12 @@ class ModelFrameworkBuilder:
 
     def validate(self) -> "ModelFrameworkBuilder":
         """Step 4: Validate compatibility between layers (dimension matching, etc.)."""
-        assert self._condition is not None, "Must call build_condition() first"
+        #assert self._condition is not None, "Must call build_condition() first"
         assert self._action is not None, "Must call build_action() first"
         assert self._architecture is not None, "Must call build_architecture() first"
 
+        if self._condition is None:
+            return self
         # Validate condition output compatibility with action_loss expectations
         spec = self._condition.get_action_head_input_spec()
         # Basic type check (specific strategies can extend with more refined validation)
@@ -164,7 +171,7 @@ class ModelFrameworkBuilder:
 
 
 def build_framework(cfg) -> ModelFramework:
-    """
+    """build_framework
     Convenience function to build the model framework in one call.
 
     Args:

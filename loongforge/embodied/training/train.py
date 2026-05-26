@@ -279,6 +279,11 @@ def main():
     # load configuration
     cfg, config_path = load_config(sys.argv[1:])
 
+    # Parse and merge common CLI arguments (shared across all trainers)
+    from training.arguments import parse_common_args, merge_common_args_to_cfg
+    common_args = parse_common_args()
+    cfg = merge_common_args_to_cfg(common_args, cfg)
+
     logger.info(f"Config loaded: {config_path}")
     logger.info(f"Framework: {cfg.framework.get('name', 'unnamed')}")
     logger.info(f"Compose: {OmegaConf.to_container(cfg.framework.compose)}")
