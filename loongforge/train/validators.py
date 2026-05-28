@@ -214,6 +214,15 @@ def _validate_extra_sft_args(args):
     # set to True in megatron arguments.py, so we don't need to re-check it.
     # `data_parallel_size` is recomputed locally with megatron's formula.
     if getattr(args, "enable_chunkpipe", False):
+        if args.sft_data_streaming:
+            raise NotImplementedError(
+                "SFT chunkpipe does not support --sft-data-streaming."
+            )
+        if getattr(args, "dataloader_save", None):
+            raise NotImplementedError(
+                "SFT chunkpipe does not support --dataloader-save. "
+                "Please resume from iteration checkpoints via consumed_train_samples."
+            )
         if args.context_parallel_size != 1:
             raise NotImplementedError(
                 "SFT chunkpipe temporarily requires context_parallel_size == 1. "
@@ -270,11 +279,11 @@ def _validate_extra_sft_args(args):
         attn_dp = args.world_size // (tp * pp * cp)
         expert_dp = args.world_size // (etp * pp * ep)
         vpp = args.num_virtual_stages_per_pipeline_rank or 1
-        if (pp != 1 or vpp != 1) and attn_dp != expert_dp:
+        if vpp != 1 and attn_dp != expert_dp:
             raise NotImplementedError(
-                f"SFT chunkpipe with pipeline parallelism (pp={pp}, vpp={vpp}) is temporarily not supported "
+                f"SFT chunkpipe with virtual pipeline parallelism (vpp={vpp}) is temporarily not supported "
                 f"when attn_dp ({attn_dp}) != expert_dp ({expert_dp}). "
-                f"Please set pp=1, vpp=1, or ensure attn_dp == expert_dp."
+                f"Please set vpp=1, or ensure attn_dp == expert_dp."
             )
         args.chunkpipe_enable_synthesis = (attn_dp != expert_dp)
         if args.chunkpipe_enable_synthesis:
