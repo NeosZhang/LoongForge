@@ -41,7 +41,10 @@ class BCTrainer(BaseTrainer):
             dtype = _resolve_dtype(self.args.dtype)
             self._compute_dtype = dtype
 
-        with torch.autocast("cuda", dtype=dtype):
+        if self.args.enable_autocast:
+            with torch.autocast("cuda", dtype=dtype):
+                return self.model(batch)
+        else:
             return self.model(batch)
 
     def _on_train_begin(self):

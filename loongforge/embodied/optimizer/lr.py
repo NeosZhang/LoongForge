@@ -4,7 +4,7 @@
 """Per-module LR groups + scheduler factory."""
 
 import logging
-from typing import Dict, List
+from typing import Dict, List, Any
 
 import torch.nn as nn
 
@@ -72,6 +72,55 @@ def build_param_groups(model: nn.Module, args) -> List[Dict]:
         groups.append({"params": other, "lr": args.lr, "name": "base"})
 
     return groups
+
+
+def build_param_groups_xvla(model: nn.Module, args, model_cfg) -> List[Dict]:
+    """Build XVLA parameter groups with differential LRs for VLM, soft_prompt, and other params."""
+    module = unwrap_model(model)
+    params = dict(module.named_parameters())
+    optimizer_lr = model_cfg.get("backbone", {}).get("image_size", 1.0)
+    lr = args.lr if args.lr is not None else optimizer_lr
+    soft_prompt_lr_scale = 1.0
+    vlm_lr_scale = 0.1
+    weight_decay = model_cfg.get("backbone", {}).get("optimizer_weight_decay", 1.0)
+
+    vlm_group, soft_prompt_group, other_group = [], [], []
+    for name, p in params.items():
+        if not p.requires_grad:
+            continue
+        if "vlm" in name.lower():
+            vlm_group.append(p)
+        elif "soft_prompt" in name.lower():
+            soft_prompt_group.append(p)
+        else:
+            other_group.append(p)
+
+    # Determine soft-prompt LR
+    soft_prompt_lr = lr * soft_prompt_lr_scale
+
+    param_groups: list[dict[str, Any]] = [
+        {
+            "params": vlm_group,
+            "lr": lr * vlm_lr_scale,
+            "weight_decay": weight_decay * vlm_lr_scale,
+            "name": "vlm",
+        },
+        {
+            "params": soft_prompt_group,
+            "lr": soft_prompt_lr,
+            "weight_decay": weight_decay,
+            "name": "soft_prompts",
+        },
+        {
+            "params": other_group,
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "name": "other",
+        },
+    ]
+    # Filter out empty groups
+    param_groups = [g for g in param_groups if len(g["params"]) > 0]
+    return param_groups
 
 
 def build_scheduler(optimizer, args):

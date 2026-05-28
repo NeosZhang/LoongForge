@@ -51,6 +51,15 @@ from loongforge.embodied.data.transforms.fast import (
     FastPreparedBatch,
     FastKeyMappingTransform,
 )
+from loongforge.embodied.data.transforms.xvla import (
+    XVLABatch,
+    XVLAPreprocessor,
+    XVLACollateImagesTransform,
+    XVLAImageNetNormalizeTransform,
+    XVLAPromptTransform,
+    XVLATokenizeTransform,
+    XVLAAddDomainIdTransform,
+)
 
 __all__ = [
     # Per-sample transforms
@@ -78,4 +87,12 @@ __all__ = [
     "FastPreprocessor",
     "FastPreparedBatch",
     "FastKeyMappingTransform",
+    # XVLA collator
+    "XVLABatch",
+    "XVLAPreprocessor",
+    "XVLACollateImagesTransform",
+    "XVLAImageNetNormalizeTransform",
+    "XVLAPromptTransform",
+    "XVLATokenizeTransform",
+    "XVLAAddDomainIdTransform",
 ]
