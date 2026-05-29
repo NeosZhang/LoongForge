@@ -66,6 +66,18 @@ def _cyclic_iter(iter):
             yield x
 
 
+
+def _bind_chunkpipe_queue_iter(base_iter, step_g_queue, composite_queue):
+    """Bind this iterator's ChunkPipe queues before yielding each batch."""
+    args = get_args()
+    for batch in base_iter:
+        # get_batch_on_this_tp_rank() calls next(data_iterator) first, then pops
+        # args.chunkpipe_step_g_queue / args.chunkpipe_composite_queue.
+        args.chunkpipe_step_g_queue = step_g_queue
+        args.chunkpipe_composite_queue = composite_queue
+        yield batch
+
+
 def build_sft_data_collator(
     cls: Type[DataCollatorForSupervisedDataset], **kwargs
 ) -> DataCollatorForSupervisedDataset:
@@ -397,28 +409,19 @@ class ChunkPipeGroupBatchSampler:
             f"Increase global_batch_size or decrease seq_length/chunksize ratio."
         )
 
-        # Pre-compute usable samples per epoch for epoch/resume calculation.
-        # Use an unshuffled LPT partition + cross-rank min alignment as the
-        # stable baseline. The shuffled per-epoch schedule in __iter__ may
-        # yield slightly different step counts, but epoch/resume accounting
-        # needs a deterministic, shuffle-independent estimate shared by all
-        # ranks so that `_epoch = consumed_samples // usable_total` and the
-        # shuffle seed `seed + _epoch` agree across ranks. We deliberately
-        # use LPT (not the synthesis path) here to keep the baseline stable
-        # across the homogeneous/heterogeneous DP switch.
+        # Pre-compute a stable usable-sample estimate for external consumers
+        # that still inspect these attributes. Resume positioning below uses
+        # the exact shuffled schedule of each epoch instead.
         dummy_buckets = self._lpt_partition(range(len(self.groups)))
         _, _, _, _, dummy_aligned = self._schedule_buckets(dummy_buckets)
         self.usable_per_rank = dummy_aligned * self.step_capacity
         self.usable_total = self.usable_per_rank * self.data_parallel_size
 
-        # Determine initial epoch and within-epoch offset for checkpoint resume
-        if self.usable_total > 0:
-            self._epoch = consumed_samples // self.usable_total
-            self._resume_offset = (consumed_samples % self.usable_total) // self.data_parallel_size
-            self._resume_offset = (self._resume_offset // self.step_capacity) * self.step_capacity
-        else:
-            self._epoch = 0
-            self._resume_offset = 0
+        # Determine initial epoch and completed iteration offset for checkpoint
+        # resume. ChunkPipe SFT only supports resuming from full training
+        # iteration boundaries.
+        self._epoch, self._resume_step_in_epoch = self._locate_resume_position(consumed_samples)
+        self._resume_offset = self._resume_step_in_epoch * self.step_capacity
 
         # Per-microbatch G FIFO queue. Semantics: each entry is the GLOBAL
         # source group count G_total for the step that the corresponding
@@ -708,6 +711,37 @@ class ChunkPipeGroupBatchSampler:
         for sz, gid in reversed(consumed):
             pool[sz].appendleft(gid)
 
+    def _get_epoch_aligned_steps(self, epoch):
+        """Return aligned step count for the exact shuffled schedule of one epoch."""
+        total_groups = len(self.groups)
+        g = torch.Generator()
+        g.manual_seed(self.seed + epoch)
+        group_order = torch.randperm(total_groups, generator=g).tolist()
+        buckets = self._partition_groups(group_order)
+        _, _, _, _, aligned_count = self._schedule_buckets(buckets)
+        return aligned_count
+
+    def _locate_resume_position(self, consumed_samples):
+        """Locate resume epoch and completed step offset from consumed samples."""
+        if consumed_samples <= 0:
+            return 0, 0
+
+        global_step_capacity = self.step_capacity * self.data_parallel_size
+        assert consumed_samples % global_step_capacity == 0, (
+            "SFT chunkpipe only supports resuming from an iteration checkpoint. "
+            f"consumed_samples={consumed_samples} is not divisible by "
+            f"global step capacity={global_step_capacity}."
+        )
+
+        completed_steps = consumed_samples // global_step_capacity
+        epoch = 0
+        while True:
+            epoch_steps = self._get_epoch_aligned_steps(epoch)
+            if completed_steps < epoch_steps:
+                return epoch, completed_steps
+            completed_steps -= epoch_steps
+            epoch += 1
+
     def _schedule_buckets(self, buckets):
         """Schedule all buckets and cross-rank-align their step counts.
 
@@ -891,12 +925,12 @@ class ChunkPipeGroupBatchSampler:
         # G_total per step (cross-rank sum) for the per-sample loss path.
         my_steps, _, my_step_group_struct, g_total_per_step, _ = self._schedule_buckets(buckets)
 
-        # Resume skip in micro-batch granularity. _resume_offset was already
-        # rounded down to step_capacity boundary in __init__, and
-        # step_capacity % micro_batch_size == 0 holds by construction, so
-        # skip_mbs lands on a step boundary.
-        skip_mbs = self._resume_offset // self.micro_batch_size
-        self._resume_offset = 0  # only skip once
+        # Resume only from full training iteration boundaries. Skipped steps do
+        # not append queue entries, so chunkpipe metadata remains aligned with
+        # the first real batch consumed after resume.
+        skip_steps = self._resume_step_in_epoch
+        self._resume_step_in_epoch = 0
+        self._resume_offset = 0
 
         # Yield one micro-batch at a time. Every micro-batch within a step
         # shares the same G_total = total source groups in that step across
@@ -913,8 +947,11 @@ class ChunkPipeGroupBatchSampler:
         # chunks in the same slot share the same descriptor list (they're
         # parts of the same composite); the consumer side uses
         # chunk_idx_in_group==0 to decide when to (re-)apply the descriptor.
-        mb_idx = 0
-        for step, G_total, step_components in zip(my_steps, g_total_per_step, my_step_group_struct):
+        for step_idx, (step, G_total, step_components) in enumerate(
+            zip(my_steps, g_total_per_step, my_step_group_struct)
+        ):
+            if step_idx < skip_steps:
+                continue
             # Per-chunk attribution to enclosing slot. step_components[i] is
             # the components list of the i-th slot in this step; expand it
             # to one entry per chunk in the slot, sharing the same list.
@@ -924,10 +961,6 @@ class ChunkPipeGroupBatchSampler:
                 for _ in range(slot_k):
                     chunk_to_components.append(slot_components)
             for mb_start in range(0, len(step), self.micro_batch_size):
-                if mb_idx < skip_mbs:
-                    mb_idx += 1
-                    continue
-                mb_idx += 1
                 batch = step[mb_start:mb_start + self.micro_batch_size]
                 self._step_g_queue.append(G_total)
                 # First chunk in this micro-batch maps to its slot's
@@ -940,6 +973,8 @@ class ChunkPipeGroupBatchSampler:
 
         # Epoch complete — next __iter__ call will use a different shuffle
         self._epoch += 1
+        self._resume_step_in_epoch = 0
+        self._resume_offset = 0
 
 
 def _build_cylic_iterator(
@@ -987,16 +1022,6 @@ def _build_cylic_iterator(
                 seed=args.seed,
                 enable_synthesis=getattr(args, "chunkpipe_enable_synthesis", False),
             )
-            # Expose the per-step G FIFO queue to get_batch. Only the deque
-            # reference is shared; the sampler object itself stays private.
-            # The deque is created once in __init__ and never replaced, so
-            # this reference remains valid across epochs.
-
-            # However, when VPP is enabled, the chunkpipe_step_g_queue of the following vp_stage will overwrite the
-            # previous one, and the final args.chunkpipe_step_g_queue is a reference to the last vp_stage dataset,
-            # because all vp_stage share the same args
-            args.chunkpipe_step_g_queue = _batch_sampler._step_g_queue
-            args.chunkpipe_composite_queue = _batch_sampler._composite_queue
         else:
             _batch_sampler = MegatronPretrainingRandomSampler(
             dataset,
@@ -1025,6 +1050,13 @@ def _build_cylic_iterator(
         base_iter = SavableCyclicIterator(dataloader)
     else:
         base_iter = iter(_cyclic_iter(dataloader))
+
+    if args.enable_chunkpipe and not args.sft_data_streaming:
+        base_iter = _bind_chunkpipe_queue_iter(
+            base_iter,
+            _batch_sampler._step_g_queue,
+            _batch_sampler._composite_queue,
+        )
 
     return base_iter
 
