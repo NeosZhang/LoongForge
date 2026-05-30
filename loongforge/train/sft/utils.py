@@ -117,22 +117,16 @@ def build_sft_data_collator(
     # tokens back.
     max_length = args.chunksize if args.enable_chunkpipe else args.seq_length
 
+    if args.enable_chunkpipe and getattr(args, "sft_chunkpipe_mode", False):
+        kwargs["chunkpipe_base_length"] = args.chunksize
+        kwargs["chunkpipe_mtp_num_layers"] = args.mtp_num_layers or 0
+
     data_collator = cls(
         tokenizer=tokenizer.hf_tokenizer(),
         label_pad_token_id=constants.IGNORE_INDEX,
         pad_to_multiple_of=pad_to_multiple_of,
         padding=padding,
         max_length=max_length,
-        chunkpipe_base_length=(
-            args.chunksize
-            if args.enable_chunkpipe and getattr(args, "sft_chunkpipe_mode", False)
-            else None
-        ),
-        chunkpipe_mtp_num_layers=(
-            args.mtp_num_layers or 0
-            if args.enable_chunkpipe and getattr(args, "sft_chunkpipe_mode", False)
-            else 0
-        ),
         **kwargs,
     )
     return data_collator
