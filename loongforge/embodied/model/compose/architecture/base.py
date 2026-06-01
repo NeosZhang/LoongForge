@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Layer 2 - BaseArchitecture: Network structure base class
 
@@ -11,8 +14,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseAction
+from loongforge.embodied.model.compose.condition.base import BaseCondition
+from loongforge.embodied.model.compose.action.base import BaseAction
 
 
 class BaseArchitecture(ABC, nn.Module):

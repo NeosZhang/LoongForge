@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Pi0FlowMatchingLoss - Pi0/Pi0.5 Flow Matching Loss Strategy
 
@@ -30,8 +33,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.compose.registry import ACTION_REGISTRY
-from model.compose.action.base import BaseAction
+from loongforge.embodied.model.compose.registry import ACTION_REGISTRY
+from loongforge.embodied.model.compose.action.base import BaseAction
 
 
 @ACTION_REGISTRY.register("Pi0FlowMatching")

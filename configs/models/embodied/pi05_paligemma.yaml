@@ -1,0 +1,44 @@
+# Pi0.5 with PaliGemma backbone — model structure only
+# Training parameters are provided via CLI args (--lr, --batch-size, etc.)
+
+# Model family (used for trainer dispatch)
+model_type: pi05
+
+# Four-layer compose config
+architecture: PaliGemmaPi05
+condition: null    # PaliGemmaPi05 is end-to-end, no separate condition
+action: null       # PaliGemmaPi05 handles action internally
+
+# Pi0.5 mode (true=adaRMS normalization, false=pi0 state+time concat)
+pi05: true
+
+# Backbone (PaliGemma VLM)
+backbone:
+  paligemma_variant: gemma_2b
+  num_images: 2
+  image_mask: [true, true]
+  image_size: 224
+  max_token_len: 48
+  discrete_state_input: true
+  tokenizer_name: ""  # use TOKENIZER_PATH env var or pretrained checkpoint path
+  freeze_vision_encoder: false
+  train_expert_only: false
+
+# Action model (Pi0 Action Expert)
+action_model:
+  action_model_type: Pi0Expert
+  action_dim: 7
+  state_dim: 7
+  action_horizon: 10
+  max_action_dim: 32
+  max_state_dim: 32
+  action_expert_variant: gemma_300m
+  action_expert_width: 1024
+  action_expert_depth: 18
+  action_expert_mlp_dim: 4096
+  action_expert_num_heads: 8
+  action_expert_head_dim: 128
+  num_inference_steps: 10
+  noise_beta_alpha: 1.5
+  noise_beta_beta: 1.0
+  precision: bfloat16

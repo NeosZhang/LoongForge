@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 WorldModelActionModel - World Model + Action Model (Decoupled Architecture)
 
@@ -13,10 +16,10 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from model.compose.registry import ARCHITECTURE_REGISTRY
-from model.compose.architecture.base import BaseArchitecture
-from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseAction
+from loongforge.embodied.model.compose.registry import ARCHITECTURE_REGISTRY
+from loongforge.embodied.model.compose.architecture.base import BaseArchitecture
+from loongforge.embodied.model.compose.condition.base import BaseCondition
+from loongforge.embodied.model.compose.action.base import BaseAction
 
 
 @ARCHITECTURE_REGISTRY.register("WorldModelActionModel")

@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 PaliGemmaPi05 - PiVLA PI05Pytorch wrapped in LoongForgeVLA architecture interface.
 
@@ -23,11 +26,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.compose.registry import ARCHITECTURE_REGISTRY
-from model.compose.architecture.base import BaseArchitecture
-from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseAction
-from model.modules.pi05 import (
+from loongforge.embodied.model.compose.registry import ARCHITECTURE_REGISTRY
+from loongforge.embodied.model.compose.architecture.base import BaseArchitecture
+from loongforge.embodied.model.compose.condition.base import BaseCondition
+from loongforge.embodied.model.compose.action.base import BaseAction
+from loongforge.embodied.model.modules.pi05 import (
     PI05Config,
     PI05Pytorch,
     prepare_batch_state_prompts,
@@ -68,12 +71,11 @@ class PaliGemmaPi05(BaseArchitecture):
     def __init__(self, config, condition: BaseCondition, action: BaseAction):
         super().__init__(config, condition, action)
 
-        # Extract config values
-        fw_cfg = config.framework
-        backbone_cfg = fw_cfg.get("backbone", {})
-        action_cfg = fw_cfg.get("action_model", {})
+        # Extract config values (backbone/action_model are top-level keys in config)
+        backbone_cfg = config.get("backbone", {})
+        action_cfg = config.get("action_model", {})
 
-        self.pi05 = fw_cfg.get("pi05", True)
+        self.pi05 = config.get("pi05", True)
         self.image_size = backbone_cfg.get("image_size", 224)
         self.num_images = backbone_cfg.get("num_images", 2)
         self.image_mask = backbone_cfg.get("image_mask", [True] * self.num_images)
@@ -104,7 +106,7 @@ class PaliGemmaPi05(BaseArchitecture):
             tokenizer_max_length=self.max_token_len,
             freeze_vision_encoder=backbone_cfg.get("freeze_vision_encoder", False),
             train_expert_only=backbone_cfg.get("train_expert_only", False),
-            gradient_checkpointing=fw_cfg.get("gradient_checkpointing", False),
+            gradient_checkpointing=config.get("gradient_checkpointing", False),
         )
 
         # Core PI05 model from PiVLA
@@ -226,7 +228,7 @@ class PaliGemmaPi05(BaseArchitecture):
         loss_map = self.pi05_model(images_list, img_masks, tokens, masks, actions)
         loss_mean = loss_map.mean()
 
-        return {"action_loss": loss_mean, "flow_matching_loss": loss_mean.item()}
+        return {"action_loss": loss_mean, "flow_matching_loss": loss_mean.detach().item()}
 
     @torch.no_grad()
     def predict_action(self, **kwargs) -> Dict[str, np.ndarray]:
@@ -291,7 +293,8 @@ class PaliGemmaPi05(BaseArchitecture):
         )
         return {"normalized_actions": pred_actions.cpu().numpy()}
 
-    def load_pretrained(self, pretrained_path: str, strict: bool = False):
+    def load_pretrained(self, pretrained_path: str, strict: bool = False, **kwargs):
         """Load pretrained PI05 weights."""
         self.pi05_model.load_pretrained(pretrained_path, strict=strict)
         return self
+

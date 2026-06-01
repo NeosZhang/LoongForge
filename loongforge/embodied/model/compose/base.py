@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 ModelFramework - Top-level model wrapper after four-layer composition
 
@@ -10,7 +13,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from model.compose.architecture.base import BaseArchitecture
+from loongforge.embodied.model.compose.architecture.base import BaseArchitecture
 
 
 class ModelFramework(nn.Module):

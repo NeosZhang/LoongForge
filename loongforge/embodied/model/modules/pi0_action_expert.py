@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Pi0 Action Expert - Pi0/Pi0.5 Independent Action Expert Model
 

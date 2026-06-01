@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 ModelFrameworkBuilder - Builder pattern assembler
 
@@ -10,16 +13,16 @@ import importlib
 import pkgutil
 import torch.nn as nn
 
-from model.compose.registry import (
+from loongforge.embodied.model.compose.registry import (
     ARCHITECTURE_REGISTRY,
     CONDITION_REGISTRY,
     ACTION_REGISTRY,
     TRAINER_REGISTRY,
 )
-from model.compose.base import ModelFramework
-from model.compose.condition.base import BaseCondition
-from model.compose.action.base import BaseAction
-from model.compose.architecture.base import BaseArchitecture
+from loongforge.embodied.model.compose.base import ModelFramework
+from loongforge.embodied.model.compose.condition.base import BaseCondition
+from loongforge.embodied.model.compose.action.base import BaseAction
+from loongforge.embodied.model.compose.architecture.base import BaseArchitecture
 
 
 def _auto_import_submodules(package_path: str, package_name: str):
@@ -57,18 +60,18 @@ class ModelFrameworkBuilder:
 
     def build_condition(self) -> "ModelFrameworkBuilder":
         """Step 1: Build condition injection strategy from config."""
-        condition_name = self.cfg.framework.compose.condition
+        condition_name = self.cfg.get("condition", None)
         if (condition_name is None or
                 (isinstance(condition_name, str) and
                  condition_name.lower() in ("none", ""))):
             self._condition = None
             return self
         # Auto-import all condition implementations
-        import model.compose.condition as condition_pkg
+        import loongforge.embodied.model.compose.condition as condition_pkg
         import os
         _auto_import_submodules(
             os.path.dirname(condition_pkg.__file__),
-            "model.compose.condition",
+            "loongforge.embodied.model.compose.condition",
         )
         condition_cls = CONDITION_REGISTRY[condition_name]
         self._condition = condition_cls(config=self.cfg)
@@ -76,37 +79,37 @@ class ModelFrameworkBuilder:
 
     def build_action(self) -> "ModelFrameworkBuilder":
         """Step 2: Build action loss strategy + action head from config."""
-        action_name = self.cfg.framework.compose.get("action", None)
+        action_name = self.cfg.get("action", None)
         if (action_name is None or
                 (isinstance(action_name, str) and
                  action_name.lower() in ("none", ""))):
             self._action = None
             return self
         # Auto-import all action implementations
-        import model.compose.action as action_pkg
+        import loongforge.embodied.model.compose.action as action_pkg
         import os
         _auto_import_submodules(
             os.path.dirname(action_pkg.__file__),
-            "model.compose.action",
+            "loongforge.embodied.model.compose.action",
         )
         action_cls = ACTION_REGISTRY[action_name]
         # Build raw action head module
         action_head = self._build_action_head_module()
         self._action = action_cls(
-            config=self.cfg.framework.action_model,
+            config=self.cfg.action_model,
             action_head=action_head,
         )
         return self
 
     def build_architecture(self) -> "ModelFrameworkBuilder":
         """Step 3: Assemble backbone + condition + action from config."""
-        arch_name = self.cfg.framework.compose.architecture
+        arch_name = self.cfg.architecture
         # Auto-import all architecture implementations
-        import model.compose.architecture as arch_pkg
+        import loongforge.embodied.model.compose.architecture as arch_pkg
         import os
         _auto_import_submodules(
             os.path.dirname(arch_pkg.__file__),
-            "model.compose.architecture",
+            "loongforge.embodied.model.compose.architecture",
         )
         arch_cls = ARCHITECTURE_REGISTRY[arch_name]
         self._architecture = arch_cls(
@@ -144,11 +147,11 @@ class ModelFrameworkBuilder:
         Determines the specific network based on config.framework.action_model.action_model_type:
           - "Pi0Expert" → Pi0ActionExpert
         """
-        action_cfg = self.cfg.framework.action_model
+        action_cfg = self.cfg.action_model
         model_type = action_cfg.get("action_model_type", "MLPResNet")
 
         if model_type == "Pi0Expert":
-            from model.modules.pi0_action_expert import Pi0ActionExpert
+            from loongforge.embodied.model.modules.pi0_action_expert import Pi0ActionExpert
             return Pi0ActionExpert(
                 action_dim=action_cfg.get("action_dim", 7),
                 state_dim=action_cfg.get("state_dim", 7),
@@ -158,7 +161,7 @@ class ModelFrameworkBuilder:
                 expert_mlp_dim=action_cfg.get("action_expert_mlp_dim", 4096),
                 expert_num_heads=action_cfg.get("action_expert_num_heads", 8),
                 expert_head_dim=action_cfg.get("action_expert_head_dim", 128),
-                pi05=self.cfg.framework.get("pi05", True),
+                pi05=self.cfg.get("pi05", True),
                 num_inference_steps=action_cfg.get("num_inference_steps", 10),
                 noise_beta_alpha=action_cfg.get("noise_beta_alpha", 1.5),
                 noise_beta_beta=action_cfg.get("noise_beta_beta", 1.0),

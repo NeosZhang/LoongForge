@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 framework Layers - Four-layer composable abstractions
 
@@ -7,14 +10,14 @@ Layer 3: Condition    (model/compose/condition/)    - Condition injection (Strat
 Layer 4: Action       (model/compose/action/)       - Action  (Strategy)
 """
 
-from model.compose.registry import (
+from loongforge.embodied.model.compose.registry import (
     ARCHITECTURE_REGISTRY,
     CONDITION_REGISTRY,
     ACTION_REGISTRY,
     TRAINER_REGISTRY,
 )
-from model.compose.builder import ModelFrameworkBuilder, build_framework
-from model.compose.base import ModelFramework
+from loongforge.embodied.model.compose.builder import ModelFrameworkBuilder, build_framework
+from loongforge.embodied.model.compose.base import ModelFramework
 
 __all__ = [
     "ARCHITECTURE_REGISTRY",

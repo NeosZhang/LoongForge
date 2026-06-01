@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 Pi0JointAttention - Pi0/Pi0.5 Joint Attention Alignment Strategy
 
@@ -32,8 +35,8 @@ from typing import Dict, Any, Optional
 import torch
 import torch.nn as nn
 
-from model.compose.registry import CONDITION_REGISTRY
-from model.compose.condition.base import BaseCondition
+from loongforge.embodied.model.compose.registry import CONDITION_REGISTRY
+from loongforge.embodied.model.compose.condition.base import BaseCondition
 
 
 @CONDITION_REGISTRY.register("Pi0JointQKV")
