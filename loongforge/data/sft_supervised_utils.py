@@ -20,6 +20,7 @@
 
 import logging
 import bisect
+import json
 from functools import partial
 from collections import defaultdict
 
@@ -28,6 +29,7 @@ import datasets
 from datasets import Dataset, IterableDataset
 
 from loongforge.utils import constants
+from .chat_template import HFChatTemplate
 
 if TYPE_CHECKING:
     from datasets import Dataset, IterableDataset
@@ -137,6 +139,38 @@ def _encode_supervised_example(
         labels += [config.tokenizer.eos]
         loss_mask += [1]
 
+    return input_ids, labels, loss_mask, ori_total_len
+
+
+def _encode_openai_example(
+    messages_json: str,
+    tools_json: Optional[str],
+    config: "SFTDatasetConfig",
+) -> Tuple[List[int], List[int], List[int], int]:
+    """Preprocess a single OpenAI-style messages/tools sample."""
+    messages = (
+        json.loads(messages_json)
+        if isinstance(messages_json, str)
+        else messages_json
+    )
+    if tools_json in (None, ""):
+        tools = None
+    else:
+        tools = json.loads(tools_json) if isinstance(tools_json, str) else tools_json
+    if not isinstance(messages, list):
+        raise ValueError(
+            f"OpenAI-style sample messages must be a list, got {type(messages)}"
+        )
+
+    input_ids, labels, loss_mask, ori_total_len = config.chat_template.encode_openai(
+        tokenizer=config.tokenizer,
+        messages=messages,
+        tools=tools,
+        train_on_prompt=config.train_on_prompt,
+        history_mask_loss=config.history_mask_loss,
+        ignore_index=config.ignore_index,
+        max_length=config.sequence_length,
+    )
     return input_ids, labels, loss_mask, ori_total_len
 
 
@@ -304,21 +338,54 @@ def _preprocess_supervised_dataset(
         short_len_to_sample_indexs = defaultdict(list)
         short_index = 0
 
-    for i in range(len(samples["prompt"])):
-        if len(samples["prompt"][i]) % 2 != 1 or len(samples["response"][i]) != 1:
-            logger.warning(
-                f"Ignore invalid sample, prompt: {samples['prompt'][i]}, response: {samples['response'][i]}"
+    use_hf_chat_template = isinstance(config.chat_template, HFChatTemplate)
+    if use_hf_chat_template:
+        if "messages" not in samples:
+            raise ValueError(
+                "HFChatTemplate requires OpenAI Chat Completions-style "
+                "`messages` samples. Use dataset format "
+                "`openai_chat_completions` with a registered `*-hf` chat template."
             )
-            continue
+        sample_count = len(samples["messages"])
+    else:
+        if "prompt" not in samples or "response" not in samples:
+            raise ValueError(
+                "Legacy ChatTemplate preprocessing requires `prompt` and "
+                "`response` samples. Use a registered `*-hf` chat template for "
+                "OpenAI Chat Completions-style `messages` samples."
+            )
+        sample_count = len(samples["prompt"])
 
-        input_ids, labels, loss_mask, ori_total_len = _encode_supervised_example(
-            prompt=samples["prompt"][i],
-            response=samples["response"][i],
-            system=samples["system"][i],
-            images=samples["images"][i] or [],
-            videos=samples["videos"][i] or [],
-            config=config,
-        )
+    for i in range(sample_count):
+        if use_hf_chat_template:
+            input_ids, labels, loss_mask, ori_total_len = _encode_openai_example(
+                messages_json=samples["messages"][i],
+                tools_json=samples["tools"][i] if "tools" in samples else None,
+                config=config,
+            )
+        else:
+            if (
+                len(samples["prompt"][i]) % 2 != 1
+                or len(samples["response"][i]) != 1
+            ):
+                logger.warning(
+                    f"Ignore invalid sample, prompt: {samples['prompt'][i]}, "
+                    f"response: {samples['response'][i]}"
+                )
+                continue
+
+            input_ids, labels, loss_mask, ori_total_len = _encode_supervised_example(
+                prompt=samples["prompt"][i],
+                response=samples["response"][i],
+                system=samples["system"][i],
+                images=samples["images"][i] or [],
+                videos=samples["videos"][i] or [],
+                config=config,
+            )
+
+        if not input_ids:
+            logger.warning("Ignore sample with no tokens after preprocessing.")
+            continue
 
         if config.enable_discard_sample:
             if ori_total_len > config.sequence_length:
