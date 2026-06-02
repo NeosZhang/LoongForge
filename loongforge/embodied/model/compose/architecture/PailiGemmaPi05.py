@@ -134,6 +134,10 @@ class PaliGemmaPi05(BaseArchitecture):
         """PI05Pytorch is the action head itself (contains expert internally)."""
         return self.pi05_model
 
+    def load_pretrained(self, checkpoint_path: str, device=None):
+        """Load HuggingFace-format pi05 checkpoint into pi05_model."""
+        self.pi05_model.load_pretrained(checkpoint_path, strict=False, device=device)
+
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing."""
         self.pi05_model.gradient_checkpointing_enable()
@@ -228,7 +232,7 @@ class PaliGemmaPi05(BaseArchitecture):
 
         # 5. Forward through PI05Pytorch
         loss_map = self.pi05_model(images_list, img_masks, tokens, masks, actions)
-        loss_mean = loss_map.mean()
+        loss_mean = loss_map[:, :, :self.action_dim].mean()
 
         return {"action_loss": loss_mean, "flow_matching_loss": loss_mean.detach().item()}
 

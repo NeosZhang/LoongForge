@@ -18,14 +18,14 @@ backbone:
   num_images: 2
   image_mask: [true, true]
   image_size: 224
-  max_token_len: 48
+  max_token_len: 200
 
 # Action model (Pi0 Action Expert)
 action_model:
   action_model_type: Pi0Expert
   action_dim: 7
   state_dim: 7
-  action_horizon: 10
+  action_horizon: 50
   max_action_dim: 32
   max_state_dim: 32
   action_expert_variant: gemma_300m
