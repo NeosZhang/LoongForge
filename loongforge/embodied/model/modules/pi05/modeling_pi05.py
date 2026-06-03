@@ -576,8 +576,6 @@ class PaliGemmaWithExpertModel(nn.Module):
 
 class PI05Pytorch(nn.Module):
     """Core PI05 PyTorch model (standalone, no Megatron/lerobot dependency).
-
-    Migrated from loongforge/models/embodied/pi05/modeling_pi05.py.
     """
 
     _FP32_PARAM_SELECTORS = [

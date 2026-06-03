@@ -13,11 +13,10 @@ import importlib
 import pkgutil
 import torch.nn as nn
 
-from loongforge.embodied.model.compose.registry import (
+from loongforge.embodied.model.compose.model_registry import (
     ARCHITECTURE_REGISTRY,
     CONDITION_REGISTRY,
     ACTION_REGISTRY,
-    TRAINER_REGISTRY,
 )
 from loongforge.embodied.model.compose.base import ModelFramework
 from loongforge.embodied.model.compose.condition.base import BaseCondition
@@ -176,9 +175,8 @@ class ModelFrameworkBuilder:
         )
 
 
-def build_framework(cfg) -> ModelFramework:
-    """build_framework
-    Convenience function to build the model framework in one call.
+def build_model(cfg) -> ModelFramework:
+    """Build the model framework in one call.
 
     Args:
         cfg: OmegaConf configuration containing cfg.framework.compose

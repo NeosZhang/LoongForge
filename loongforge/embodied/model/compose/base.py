@@ -8,7 +8,7 @@ Inherits nn.Module (does not depend on transformers.PreTrainedModel in standalon
 compatible forward/predict_action interface
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 import torch
 import torch.nn as nn
 import numpy as np

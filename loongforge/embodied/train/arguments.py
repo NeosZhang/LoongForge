@@ -28,8 +28,9 @@ def add_model_args(parser: argparse.ArgumentParser):
                    help="Direct path to YAML config (overrides --model-name)")
     g.add_argument("--tokenizer-path", type=str, default=None,
                    help="Path to tokenizer directory. Also settable via TOKENIZER_PATH env var.")
-    g.add_argument("--trainer-type", type=str, default=None,
-                   help="Trainer class override (e.g. BCTrainer). If None, uses registry dispatch.")
+    g.add_argument("--trainer-type", type=str, required=True,
+                   help="Trainer class name to use (e.g. BCTrainer). "
+                        "See _TRAINER_CLASSES in trainer_builder.py for supported values.")
     g.add_argument("--freeze-vision-encoder", action="store_true",
                    help="Freeze the vision tower (eval + requires_grad=False).")
     g.add_argument("--train-expert-only", action="store_true",

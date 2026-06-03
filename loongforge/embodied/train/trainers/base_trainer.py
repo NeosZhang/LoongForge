@@ -308,22 +308,22 @@ class BaseTrainer(ABC):
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
         """Build AdamW with per-module LR groups."""
-        from embodied.optimizer import build_optimizer
+        from loongforge.embodied.optimizer import build_optimizer
         return build_optimizer(self.model, self.args)
 
     def _build_scheduler(self):
         """Build LR scheduler."""
-        from embodied.optimizer import build_scheduler
+        from loongforge.embodied.optimizer import build_scheduler
         return build_scheduler(self.optimizer, self.args)
 
     def _clip_gradients(self, max_norm: float):
         """Gradient clipping."""
-        from embodied.optimizer import clip_gradients
+        from loongforge.embodied.optimizer import clip_gradients
         clip_gradients(self.model, max_norm)
 
     def _clean_nan_gradients(self):
         """Replace NaN/Inf gradients with 0."""
-        from embodied.optimizer import clean_nan_gradients
+        from loongforge.embodied.optimizer import clean_nan_gradients
         clean_nan_gradients(self.model)
 
     def _init_data_iterator(self, name: str):

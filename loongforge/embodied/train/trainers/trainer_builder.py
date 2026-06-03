@@ -1,59 +1,38 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Trainer registration and construction — mirrors main framework pattern."""
+"""Trainer construction via --trainer-type argument."""
 
 import logging
-from typing import Callable, List, Union
+
+from loongforge.embodied.train.trainers.bc.bc_trainer import BCTrainer
 
 logger = logging.getLogger(__name__)
 
-_TRAINER_REGISTRY = {}
-
-
-def register_model_trainer(model_family: Union[str, List[str]], training_phase: str):
-    """
-    Decorator: register a trainer builder function for (model_family, training_phase).
-
-    Usage:
-        @register_model_trainer("pi05", "finetune")
-        def pi05_finetune(args):
-            return BCTrainer(args)
-    """
-
-    def decorator(fn: Callable):
-        families = [model_family] if isinstance(model_family, str) else model_family
-        for family in families:
-            key = (family.lower(), training_phase.lower())
-            if key in _TRAINER_REGISTRY:
-                logger.warning(f"Overriding trainer for {key}")
-            _TRAINER_REGISTRY[key] = fn
-        return fn
-
-    return decorator
+_TRAINER_CLASSES = {
+    "BCTrainer": BCTrainer,
+}
 
 
 def build_model_trainer(args):
-    """Look up and build Trainer by model_cfg.model_type + args.training_phase."""
-    # Ensure all trainer modules are imported (triggers @register decorators)
-    _auto_import_trainers()
+    """Build Trainer from --trainer-type argument.
 
-    model_type = args.model_cfg.model_type
-    phase = args.training_phase
-    key = (model_type.lower(), phase.lower())
+    Resolves the trainer class from args.trainer_type (e.g. "BCTrainer")
+    via _TRAINER_CLASSES, instantiates with args.
+    """
+    trainer_type = getattr(args, "trainer_type", None)
 
-    if key not in _TRAINER_REGISTRY:
-        available = [f"{k[0]}:{k[1]}" for k in sorted(_TRAINER_REGISTRY.keys())]
+    if not trainer_type:
         raise ValueError(
-            f"No trainer registered for (model_type={model_type}, phase={phase}). "
-            f"Available: {available}"
+            "--trainer-type is required. "
+            f"Available: {list(_TRAINER_CLASSES.keys())}"
         )
 
-    builder_fn = _TRAINER_REGISTRY[key]
-    return builder_fn(args)
+    trainer_cls = _TRAINER_CLASSES.get(trainer_type)
+    if trainer_cls is None:
+        raise ValueError(
+            f"Unknown --trainer-type '{trainer_type}'. "
+            f"Available: {list(_TRAINER_CLASSES.keys())}"
+        )
 
-
-def _auto_import_trainers():
-    """Auto-import trainer modules to trigger @register decorators."""
-    # pylint: disable=unused-import
-    import loongforge.embodied.train.trainers.bc.bc_trainer  # noqa: F401
+    return trainer_cls(args)

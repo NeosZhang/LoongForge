@@ -1,13 +1,12 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Registry - Registration center for each layer's implementations
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
 
-Uses Decorator pattern to register concrete implementations for each layer, Builder looks up by name
-"""
+"""Registry base class — general-purpose name-to-class mapping with decorator registration."""
 
-from typing import Dict, Any, Callable, Type
+from typing import Callable, Dict, Type
 
 
 class Registry:
@@ -21,8 +20,8 @@ class Registry:
         """Decorator: register a class to this registry.
 
         Usage:
-            @CONDITION_REGISTRY.register("GlobalProjection")
-            class GlobalProjection(BaseCondition):
+            @MY_REGISTRY.register("Foo")
+            class Foo:
                 ...
         """
         def decorator(cls):
@@ -48,29 +47,23 @@ class Registry:
         return key in self._registry
 
     def keys(self):
-        """keys"""
+        """Return all registered keys."""
         return self._registry.keys()
 
     def items(self):
-        """items"""
+        """Return all registered (key, class) pairs."""
         return self._registry.items()
 
     def __repr__(self):
         return f"Registry(name={self._name}, entries={list(self._registry.keys())})"
 
+"""Model-layer registry instances (architecture, condition, action)."""
 
-# ═══════════════════════════════════════════════════════════════
-# Independent Registry instances for each of the four layers
-# ═══════════════════════════════════════════════════════════════
-
-# Layer 1: Training paradigm
-TRAINER_REGISTRY = Registry("trainers")
-
-# Layer 2: Network structure
+# Network structure
 ARCHITECTURE_REGISTRY = Registry("architectures")
 
-# Layer 3: Modality alignment
+# Modality alignment / condition injection
 CONDITION_REGISTRY = Registry("conditions")
 
-# Layer 4: Action
+# Action strategy
 ACTION_REGISTRY = Registry("actions")

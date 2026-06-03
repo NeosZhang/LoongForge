@@ -33,7 +33,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from loongforge.embodied.model.compose.registry import ACTION_REGISTRY
+from loongforge.embodied.model.compose.model_registry import ACTION_REGISTRY
 from loongforge.embodied.model.compose.action.base import BaseAction
 
 

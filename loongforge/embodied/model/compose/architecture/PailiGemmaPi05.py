@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from loongforge.embodied.model.compose.registry import ARCHITECTURE_REGISTRY
+from loongforge.embodied.model.compose.model_registry import ARCHITECTURE_REGISTRY
 from loongforge.embodied.model.compose.architecture.base import BaseArchitecture
 from loongforge.embodied.model.compose.condition.base import BaseCondition
 from loongforge.embodied.model.compose.action.base import BaseAction

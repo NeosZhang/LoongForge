@@ -9,9 +9,9 @@ Design: args and cfg are strictly separated:
   - cfg  (OmegaConf):          model architecture params only (framework.*), stored globally
 
 Usage:
-    from embodied.train.parser import parse_train_args
+    from loongforge.embodied.train.parser import parse_train_args
     args = parse_train_args()
-    # cfg available via: from embodied.train.global_vars import get_model_config
+    # cfg available via: from loongforge.embodied.train.global_vars import get_model_config
 """
 
 import argparse

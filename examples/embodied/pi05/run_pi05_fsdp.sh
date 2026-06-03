@@ -32,6 +32,7 @@ DISTRIBUTED_ARGS=(
 TRAINING_ARGS=(
   --model-name pi05_paligemma
   --training-phase finetune
+  --trainer-type BCTrainer
   --distributed-strategy fsdp
   --fsdp-sharding FULL_SHARD
   --dtype bfloat16

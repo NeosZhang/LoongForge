@@ -11,15 +11,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from ..base_trainer import BaseTrainer
-from ..trainer_builder import register_model_trainer
 
 logger = logging.getLogger(__name__)
-
-
-@register_model_trainer(["pi05", "groot_n1_6"], "finetune")
-@register_model_trainer(["pi05", "groot_n1_6"], "pretrain")
-def _build_bc_trainer(args):
-    return BCTrainer(args)
 
 
 class BCTrainer(BaseTrainer):
@@ -31,12 +24,11 @@ class BCTrainer(BaseTrainer):
     """
 
     def _build_model(self) -> nn.Module:
-        from embodied.model import build_model
-
+        from loongforge.embodied.model import build_model
         return build_model(self.model_cfg)
 
     def _build_dataloaders(self) -> Dict[str, DataLoader]:
-        from embodied.data import build_dataloader
+        from loongforge.embodied.data import build_dataloader
 
         dl = build_dataloader(self.model_cfg, self.args, self.ctx)
         return {"vla": dl}
@@ -45,7 +37,7 @@ class BCTrainer(BaseTrainer):
         """BC forward: call model(batch), expect 'action_loss' in output."""
         dtype = getattr(self, "_compute_dtype", None)
         if dtype is None:
-            from embodied.distributed.parallel import _resolve_dtype
+            from loongforge.embodied.distributed.parallel import _resolve_dtype
             dtype = _resolve_dtype(self.args.dtype)
             self._compute_dtype = dtype
 
@@ -54,7 +46,7 @@ class BCTrainer(BaseTrainer):
 
     def _on_train_begin(self):
         if self.ctx.is_main:
-            from embodied.distributed.parallel import unwrap_model
+            from loongforge.embodied.distributed.parallel import unwrap_model
 
             model = unwrap_model(self.model)
             arch = getattr(model, "architecture", None)

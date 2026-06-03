@@ -35,7 +35,7 @@ from typing import Dict, Any, Optional
 import torch
 import torch.nn as nn
 
-from loongforge.embodied.model.compose.registry import CONDITION_REGISTRY
+from loongforge.embodied.model.compose.model_registry import CONDITION_REGISTRY
 from loongforge.embodied.model.compose.condition.base import BaseCondition
 
 

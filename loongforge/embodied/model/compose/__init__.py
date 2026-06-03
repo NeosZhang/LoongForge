@@ -10,21 +10,19 @@ Layer 3: Condition    (model/compose/condition/)    - Condition injection (Strat
 Layer 4: Action       (model/compose/action/)       - Action  (Strategy)
 """
 
-from loongforge.embodied.model.compose.registry import (
+from loongforge.embodied.model.compose.model_registry import (
     ARCHITECTURE_REGISTRY,
     CONDITION_REGISTRY,
     ACTION_REGISTRY,
-    TRAINER_REGISTRY,
 )
-from loongforge.embodied.model.compose.builder import ModelFrameworkBuilder, build_framework
+from loongforge.embodied.model.compose.model_builder import ModelFrameworkBuilder, build_model
 from loongforge.embodied.model.compose.base import ModelFramework
 
 __all__ = [
     "ARCHITECTURE_REGISTRY",
     "CONDITION_REGISTRY",
     "ACTION_REGISTRY",
-    "TRAINER_REGISTRY",
     "ModelFrameworkBuilder",
-    "build_framework",
+    "build_model",
     "ModelFramework",
 ]
