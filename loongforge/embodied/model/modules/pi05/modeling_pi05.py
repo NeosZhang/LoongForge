@@ -356,7 +356,6 @@ class PaliGemmaWithExpertModel(nn.Module):
         self.paligemma = PaliGemmaForConditionalGenerationWithPiGemma(config=vlm_config_hf)
         self.gemma_expert = PiGemmaForCausalLM(config=action_expert_config_hf)
         self.gemma_expert.model.embed_tokens = None
-        self._tie_paligemma_language_weights()
         self._text_hidden_size = vlm_config_hf.text_config.hidden_size
         self._num_hidden_layers = vlm_config_hf.text_config.num_hidden_layers
 
@@ -369,12 +368,6 @@ class PaliGemmaWithExpertModel(nn.Module):
             return next(self.parameters()).device.type == "meta"
         except StopIteration:
             return False
-
-    def _tie_paligemma_language_weights(self) -> None:
-        language_model = self.paligemma.model.language_model
-        if getattr(language_model, "embed_tokens", None) is None:
-            return
-        language_model.embed_tokens.weight = self.paligemma.lm_head.weight
 
     def to_bfloat16_for_selected_params(self, precision: Literal["bfloat16", "float32"] = "bfloat16"):
         """Convert model dtype to bfloat16, but keep selected params in float32."""
@@ -398,43 +391,6 @@ class PaliGemmaWithExpertModel(nn.Module):
             self.paligemma.eval()
             for param in self.paligemma.parameters():
                 param.requires_grad = False
-
-    def _apply(self, fn, recurse=True):
-        int_buf_dtypes = {
-            name: buf.dtype
-            for name, buf in self.named_buffers()
-            if buf is not None and not buf.is_floating_point() and not buf.is_complex()
-        }
-        fp32_param_names = [
-            name
-            for name, param in self.named_parameters()
-            if param is not None
-            and param.dtype == torch.float32
-            and any(sel in name for sel in self._FP32_PARAM_SELECTORS)
-        ]
-        super()._apply(fn, recurse)
-        buf_dict = dict(self.named_buffers())
-        for name, orig_dtype in int_buf_dtypes.items():
-            if name in buf_dict and buf_dict[name] is not None:
-                buf_dict[name].data = buf_dict[name].data.to(dtype=orig_dtype)
-        param_dict = dict(self.named_parameters())
-        for name in fp32_param_names:
-            if name in param_dict and param_dict[name] is not None:
-                param_dict[name].data = param_dict[name].data.to(dtype=torch.float32)
-        for module in self.modules():
-            if type(module).__name__ == "GemmaRotaryEmbedding" and hasattr(module, "inv_freq"):
-                inv_freq = module.inv_freq
-                if inv_freq.device.type == "meta":
-                    continue
-                if not inv_freq.any().item():
-                    new_inv_freq, _ = type(module).compute_default_rope_parameters(
-                        module.config, device=module.inv_freq.device
-                    )
-                    new_inv_freq = new_inv_freq.to(dtype=module.inv_freq.dtype)
-                    module.register_buffer("inv_freq", new_inv_freq, persistent=False)
-                    module.register_buffer("original_inv_freq", new_inv_freq.clone(), persistent=False)
-        self._tie_paligemma_language_weights()
-        return self
 
     def train(self, mode: bool = True):
         """Set the model in training mode"""
@@ -584,21 +540,6 @@ class PI05Pytorch(nn.Module):
         "time_mlp_in",
         "time_mlp_out",
     ]
-
-    def _apply(self, fn, recurse=True):
-        fp32_param_names = [
-            name
-            for name, param in self.named_parameters()
-            if param is not None
-            and param.dtype == torch.float32
-            and any(sel in name for sel in self._FP32_PARAM_SELECTORS)
-        ]
-        super()._apply(fn, recurse)
-        param_dict = dict(self.named_parameters())
-        for name in fp32_param_names:
-            if name in param_dict and param_dict[name] is not None:
-                param_dict[name].data = param_dict[name].data.to(dtype=torch.float32)
-        return self
 
     def __init__(self, config: PI05Config):
         super().__init__()
@@ -906,7 +847,7 @@ class PI05Pytorch(nn.Module):
         suffix_out = suffix_out.to(dtype=torch.float32)
         return self.action_out_proj(suffix_out)
 
-    def load_pretrained(self, pretrained_path: str, strict: bool = True):
+    def load_pretrained(self, pretrained_path: str, strict: bool = True, device=None):
         """Load weights from a safetensors checkpoint.
 
         Handles key remapping (lm_head <-> embed_tokens tie, action_time_mlp_* rename).
@@ -914,6 +855,9 @@ class PI05Pytorch(nn.Module):
         Args:
             pretrained_path: Path to directory containing model.safetensors, or direct file path.
             strict: Passed to load_state_dict.
+            device: Target device for weights (e.g. "cuda:0"). When the model was built
+                    with init_empty_weights (meta device), pass the target device here so
+                    weights are materialized directly on GPU without a CPU round-trip.
         """
         import re
         from pathlib import Path
@@ -923,7 +867,8 @@ class PI05Pytorch(nn.Module):
 
         try:
             from safetensors.torch import load_file
-            original_state_dict = load_file(str(safetensors_file))
+            load_kwargs = {"device": str(device)} if device is not None else {}
+            original_state_dict = load_file(str(safetensors_file), **load_kwargs)
         except Exception as e:
             raise RuntimeError(f"Could not load safetensors from {safetensors_file}: {e}") from e
 
@@ -946,17 +891,12 @@ class PI05Pytorch(nn.Module):
                 "paligemma_with_expert.paligemma.lm_head.weight",
             ):
                 fixed_state_dict[
-                    "model.paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight"
+                    "paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight"
                 ] = value.clone()
 
             fixed_state_dict[new_key] = value
 
-        # Add "model." prefix if missing
-        remapped = {}
-        for key, value in fixed_state_dict.items():
-            remapped[f"model.{key}" if not key.startswith("model.") else key] = value
-
-        missing_keys, unexpected_keys = self.load_state_dict(remapped, strict=strict)
+        missing_keys, unexpected_keys = self.load_state_dict(fixed_state_dict, strict=strict)
         if missing_keys:
             logger.warning("Missing keys (%d): %s ...", len(missing_keys), missing_keys[:3])
         if unexpected_keys:
