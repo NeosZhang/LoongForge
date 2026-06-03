@@ -2,62 +2,68 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-ActionTransform - Action/State preprocessing transform
+ActionTransform - Generic action preprocessing transform for VLA models.
 
-Supports:
-  - Action chunking (truncate/pad to fixed horizon)
-  - Action normalization (q99 / min_max / mean_std / binary)
-  - State normalization
-  - Gripper binary processing
+Supports configurable normalization, dimension padding, and horizon padding strategies.
+
+Core processing:
+  1. Convert to tensor [T, D]
+  2. Normalize using Normalizer (q99 / min_max / mean_std / scale)
+  3. Pad/truncate action dimension to max_action_dim
+  4. Pad/truncate action horizon with configurable strategy (zero / repeat_last / none)
+
+Output: torch.Tensor [action_horizon, max_action_dim]
 """
 
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from loongforge.embodied.data.transforms.base import BaseTransform
 from loongforge.embodied.data.transforms.normalizer import Normalizer
 
 
 class ActionTransform(BaseTransform):
-    """
-    Action/State normalization + chunking transform.
+    """Action normalization + dim padding + horizon padding transform.
 
-    Typical usage:
-        transform = ActionTransform(
-            apply_to=["action"],
-            action_horizon=7,
-            normalization_mode="q99",
-            statistics={"q01": [...], "q99": [...]},
-        )
+    Supports configurable padding strategies for horizon:
+        "zero" — Zero-pad shorter sequences (default)
+        "repeat_last" — Repeat last action frame to fill horizon
+        "none" — No horizon padding/truncation (pass through)
     """
+
+    PADDING_STRATEGIES = ["zero", "repeat_last", "none"]
 
     def __init__(
         self,
         apply_to: List[str],
-        action_horizon: int = 7,
+        action_horizon: int = 50,
+        max_action_dim: int = 32,
         normalization_mode: str = "q99",
         statistics: Optional[Dict[str, Any]] = None,
-        gripper_indices: Optional[List[int]] = None,
-        gripper_binary_threshold: float = 0.5,
+        padding_strategy: str = "zero",
         training: bool = True,
     ):
         """
         Args:
-            apply_to: Sample keys to apply this transform to
-            action_horizon: Fixed action chunk length (truncate/pad)
-            normalization_mode: Normalization strategy (q99/min_max/mean_std/binary)
-            statistics: Pre-computed action statistics dict (q01, q99, min, max, mean, std)
-            gripper_indices: Indices of gripper dimensions for binary thresholding
-            gripper_binary_threshold: Threshold to binarize gripper values
-            training: Whether in training mode (enables augmentation)
+            apply_to: Keys in data dict to transform
+            action_horizon: Target action sequence length
+            max_action_dim: Target action dimension (zero-padded if smaller)
+            normalization_mode: Normalizer mode (q99, min_max, mean_std, scale, binary)
+            statistics: Dataset statistics for normalization (None to skip)
+            padding_strategy: Horizon padding strategy ("zero", "repeat_last", "none")
+            training: Whether in training mode
         """
         super().__init__(apply_to=apply_to, training=training)
         self.action_horizon = action_horizon
-        self.normalization_mode = normalization_mode
-        self.gripper_indices = gripper_indices or []
-        self.gripper_binary_threshold = gripper_binary_threshold
+        self.max_action_dim = max_action_dim
+        self.padding_strategy = padding_strategy
+
+        assert padding_strategy in self.PADDING_STRATEGIES, (
+            f"Invalid padding_strategy: {padding_strategy}. Valid: {self.PADDING_STRATEGIES}"
+        )
 
         # Build normalizer
         self.normalizer = None
@@ -67,63 +73,50 @@ class ActionTransform(BaseTransform):
                 statistics=statistics,
             )
 
-        # Gripper normalizer (binary)
-        self.gripper_normalizer = None
-        if self.gripper_indices and statistics is not None:
-            gripper_stats = {}
-            for key, val in statistics.items():
-                if isinstance(val, (list, np.ndarray)):
-                    arr = np.array(val)
-                    if len(arr) > max(self.gripper_indices):
-                        gripper_stats[key] = arr[self.gripper_indices]
-            if gripper_stats:
-                self.gripper_normalizer = Normalizer(
-                    mode="binary",
-                    statistics=gripper_stats,
-                    binary_threshold=gripper_binary_threshold,
-                )
-
     def apply(self, data: Dict[str, Any]) -> Dict[str, Any]:
         for key in self.apply_to:
-            if key not in data:
+            if key not in data or data[key] is None:
                 continue
             value = data[key]
-            if value is None:
-                continue
 
-            # Convert to numpy
-            if isinstance(value, torch.Tensor):
-                value = value.numpy()
-            elif isinstance(value, list):
-                value = np.array(value, dtype=np.float32)
+            # Convert to torch tensor
+            if isinstance(value, np.ndarray):
+                value = torch.from_numpy(value).float()
+            elif isinstance(value, (list, tuple)):
+                value = torch.tensor(value, dtype=torch.float32)
+            elif isinstance(value, torch.Tensor):
+                value = value.float()
 
-            # Ensure 2D: [horizon, dim]
+            # Ensure 2D: [T, D]
             if value.ndim == 1:
-                value = value[np.newaxis, :]
-
-            # Action chunking: pad/truncate to action_horizon
-            if key == "action":
-                value = self._chunk_action(value)
+                value = value.unsqueeze(0)
 
             # Normalize
             if self.normalizer is not None:
-                value_tensor = torch.from_numpy(value).float()
+                value = self.normalizer.forward(value)
 
-                if self.gripper_indices and self.gripper_normalizer:
-                    # Normalize all with main normalizer first
-                    normalized = self.normalizer.forward(value_tensor)
+            # Pad/truncate action dimension (always zero-pad)
+            D = value.shape[-1]
+            if D < self.max_action_dim:
+                value = F.pad(value, (0, self.max_action_dim - D))
+            elif D > self.max_action_dim:
+                value = value[..., :self.max_action_dim]
 
-                    # Override gripper dims with binary
-                    gripper_values = value_tensor[..., self.gripper_indices]
-                    normalized[..., self.gripper_indices] = (
-                        gripper_values > self.gripper_binary_threshold
-                    ).float()
+            # Pad/truncate action horizon
+            if self.padding_strategy != "none":
+                T = value.shape[0]
+                if T > self.action_horizon:
+                    value = value[:self.action_horizon]
+                elif T < self.action_horizon:
+                    if self.padding_strategy == "zero":
+                        pad = torch.zeros(
+                            self.action_horizon - T, value.shape[-1], dtype=value.dtype
+                        )
+                    elif self.padding_strategy == "repeat_last":
+                        pad = value[-1:].expand(self.action_horizon - T, -1)
+                    value = torch.cat([value, pad], dim=0)
 
-                    value = normalized.numpy()
-                else:
-                    value = self.normalizer.forward(value_tensor).numpy()
-
-            data[key] = value.astype(np.float32)
+            data[key] = value
         return data
 
     def unapply(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -135,15 +128,5 @@ class ActionTransform(BaseTransform):
                 value = data[key]
                 if isinstance(value, np.ndarray):
                     value = torch.from_numpy(value).float()
-                data[key] = self.normalizer.inverse(value).numpy()
+                data[key] = self.normalizer.inverse(value)
         return data
-
-    def _chunk_action(self, action: np.ndarray) -> np.ndarray:
-        """Truncate or pad action to action_horizon length."""
-        T, D = action.shape
-        if T >= self.action_horizon:
-            return action[: self.action_horizon]
-        else:
-            pad_len = self.action_horizon - T
-            padding = np.tile(action[-1:], (pad_len, 1))
-            return np.concatenate([action, padding], axis=0)

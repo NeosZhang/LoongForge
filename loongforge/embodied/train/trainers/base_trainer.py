@@ -374,14 +374,19 @@ class BaseTrainer(ABC):
     def _fetch_batch(self, dl_name: str):
         """Fetch next batch, handle epoch boundary by cycling the iterator."""
         try:
-            return next(self._data_iters[dl_name])
+            batch = next(self._data_iters[dl_name])
         except StopIteration:
             self.current_epoch += 1
             dl = self.dataloaders[dl_name]
             if hasattr(dl, "sampler") and hasattr(dl.sampler, "set_epoch"):
                 dl.sampler.set_epoch(self.current_epoch)
             self._data_iters[dl_name] = iter(dl)
-            return next(self._data_iters[dl_name])
+            batch = next(self._data_iters[dl_name])
+
+        device = next(self.model.parameters()).device
+        if hasattr(batch, "to"):
+            batch = batch.to(device)
+        return batch
 
     def _save_checkpoint(self):
         save_checkpoint(

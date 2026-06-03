@@ -4,27 +4,25 @@
 """
 PaliGemmaPi05 - PiVLA PI05Pytorch wrapped in LoongForgeVLA architecture interface.
 
-Reuses PiVLA's full model (PaliGemma VLM + Gemma action expert + joint attention),
-adapts LoongForgeVLA dataloader output format to PI05Pytorch's input interface.
+Reuses PiVLA's full model (PaliGemma VLM + Gemma action expert + joint attention).
 
-Dataloader provides:
-    {"image": [PIL.Image, ...], "lang": str, "action": ndarray[T, D], "state": ndarray|None}
+DataLoader provides Pi05PreparedBatch (from Pi05Preprocessor collate_fn):
+    .images_list: List[Tensor (B, 3, H, W)] in [-1, 1]
+    .img_masks:   List[Tensor (B,) bool]
+    .input_ids:   Tensor (B, seq_len)
+    .attention_mask: Tensor (B, seq_len) bool
+    .actions:     Tensor (B, T, D)
 
-This architecture handles:
-    1. PIL Image -> tensor conversion + resize
-    2. State discretization + prompt construction (pi0.5)
-    3. Tokenization
-    4. Action padding
-    5. Delegates to PI05Pytorch.forward() for joint-attention flow matching
+This architecture simply delegates to PI05Pytorch.forward() for joint-attention flow matching.
 """
 
 import logging
-from typing import Dict, List, Any
+import os
+from typing import Dict, Any
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from loongforge.embodied.model.compose.model_registry import ARCHITECTURE_REGISTRY
 from loongforge.embodied.model.compose.architecture.base import BaseArchitecture
@@ -33,31 +31,14 @@ from loongforge.embodied.model.compose.action.base import BaseAction
 from loongforge.embodied.model.modules.pi05 import (
     PI05Config,
     PI05Pytorch,
-    prepare_batch_state_prompts,
     tokenize_prompts,
     build_tokenizer,
 )
+from loongforge.embodied.data.transforms import ImageTransform, StateDiscretizationTransform
+from loongforge.embodied.data.transforms.pipeline import convert_stats
 from loongforge.embodied.train.global_vars import get_args
 
 logger = logging.getLogger(__name__)
-
-
-def _pil_to_tensor(images_pil: list, image_size: int, device: torch.device) -> torch.Tensor:
-    """Convert list of PIL Images to (B, 3, H, W) float32 tensor."""
-    from torchvision.transforms.functional import to_tensor, resize
-
-    tensors = []
-    for img in images_pil:
-        if not isinstance(img, torch.Tensor):
-            t = to_tensor(img)  # (3, H, W) float [0,1]
-        else:
-            t = img.float()
-            if t.max() > 1.0:
-                t = t / 255.0
-        if t.shape[-2] != image_size or t.shape[-1] != image_size:
-            t = resize(t, [image_size, image_size])
-        tensors.append(t)
-    return torch.stack(tensors).to(device)
 
 
 @ARCHITECTURE_REGISTRY.register("PaliGemmaPi05")
@@ -117,6 +98,9 @@ class PaliGemmaPi05(BaseArchitecture):
         # Tokenizer (lazy init)
         self._tokenizer = None
 
+        # Image transform for inference (same as training pipeline)
+        self._image_transform = ImageTransform(apply_to=[], image_size=self.image_size)
+
     @property
     def tokenizer(self):
         """Lazy tokenizer build."""
@@ -153,84 +137,29 @@ class PaliGemmaPi05(BaseArchitecture):
             "Use forward() or predict_action() directly."
         )
 
-    def forward(self, examples: List[Dict[str, Any]], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, batch, **kwargs) -> Dict[str, torch.Tensor]:
         """Training forward pass.
 
         Args:
-            examples: list of dicts with keys: image, lang, action, (state)
+            batch: Pi05PreparedBatch from dataloader preprocessor, must have attributes:
+                   images_list, img_masks, input_ids, attention_mask, actions
+                   All tensors should already be on the correct device (via batch.to(device)).
 
         Returns:
             {"action_loss": scalar, "flow_matching_loss": float}
         """
-        device = next(self.parameters()).device
-        B = len(examples)
-
-        # 1. Process images: list of (B, 3, H, W) tensors, one per view
-        images_list = []
-        img_masks = []
-        for view_idx in range(self.num_images):
-            view_images = []
-            for ex in examples:
-                img_list = ex["image"]
-                if view_idx < len(img_list):
-                    view_images.append(img_list[view_idx])
-                else:
-                    # Pad with black image if view missing
-                    view_images.append(torch.zeros(3, self.image_size, self.image_size))
-            images_list.append(_pil_to_tensor(view_images, self.image_size, device))
-            mask_val = self.image_mask[view_idx] if view_idx < len(self.image_mask) else False
-            img_masks.append(
-                torch.full((B,), mask_val, dtype=torch.bool, device=device)
-            )
-
-        # 2. Build prompts: if discrete_state_input is handled by dataloader,
-        #    lang already contains the full prompt; otherwise build it here.
-        instructions = [ex["lang"] for ex in examples]
-        if self.pi05 and "state" in examples[0] and examples[0]["state"] is not None:
-            # Check if dataloader already processed (prompt starts with "Task:")
-            if not instructions[0].startswith("Task:"):
-                states = torch.stack([
-                    torch.as_tensor(ex["state"], dtype=torch.float32).flatten()
-                    for ex in examples
-                ])
-                prompts = prepare_batch_state_prompts(
-                    states, instructions, max_state_dim=self.max_state_dim
-                )
-            else:
-                prompts = instructions
-        else:
-            if not instructions[0].startswith("Task:"):
-                prompts = [f"Task: {lang.strip()};\nAction: " for lang in instructions]
-            else:
-                prompts = instructions
-
-        # 3. Tokenize
-        tok_out = tokenize_prompts(
-            prompts, self.tokenizer, max_length=self.max_token_len
+        assert hasattr(batch, "images_list"), (
+            "forward() expects a Pi05PreparedBatch from Pi05Preprocessor, "
+            "got raw data instead. Ensure DataLoader uses the registered preprocessor as collate_fn."
         )
-        tokens = tok_out["input_ids"].to(device)
-        masks = tok_out["attention_mask"].bool().to(device)
 
-        # 4. Process actions: pad to max_action_dim, truncate/pad to action_horizon
-        actions = torch.stack([
-            torch.as_tensor(ex["action"], dtype=torch.float32) for ex in examples
-        ]).to(device)  # (B, T, D)
+        images_list = batch.images_list
+        img_masks = batch.img_masks
+        tokens = batch.input_ids
+        masks = batch.attention_mask
+        actions = batch.actions
 
-        if actions.shape[-1] < self.max_action_dim:
-            actions = F.pad(actions, (0, self.max_action_dim - actions.shape[-1]))
-        elif actions.shape[-1] > self.max_action_dim:
-            actions = actions[..., :self.max_action_dim]
-
-        if actions.shape[1] > self.action_horizon:
-            actions = actions[:, :self.action_horizon]
-        elif actions.shape[1] < self.action_horizon:
-            pad = torch.zeros(
-                B, self.action_horizon - actions.shape[1], actions.shape[2],
-                device=device, dtype=actions.dtype
-            )
-            actions = torch.cat([actions, pad], dim=1)
-
-        # 5. Forward through PI05Pytorch
+        # Forward through PI05Pytorch
         loss_map = self.pi05_model(images_list, img_masks, tokens, masks, actions)
         loss_mean = loss_map[:, :, :self.action_dim].mean()
 
@@ -244,6 +173,7 @@ class PaliGemmaPi05(BaseArchitecture):
             images: list of PIL Images (multi-view)
             instructions: list of str
             state: optional (B, D) tensor or ndarray
+            dataset_stats: optional dict of dataset statistics for state normalization
 
         Returns:
             {"normalized_actions": ndarray (B, action_horizon, max_action_dim)}
@@ -252,44 +182,52 @@ class PaliGemmaPi05(BaseArchitecture):
         images_raw = kwargs.get("images", kwargs.get("batch_images"))
         instructions = kwargs.get("instructions", [])
         state = kwargs.get("state", None)
+        dataset_stats = kwargs.get("dataset_stats", None)
 
         if not isinstance(images_raw[0], list):
             images_raw = [[img] for img in images_raw]
 
         B = len(images_raw)
 
-        # Process images
+        # Process images using ImageTransform (same as training)
         images_list = []
         img_masks = []
         for view_idx in range(self.num_images):
-            view_images = []
-            for img_list in images_raw:
-                if view_idx < len(img_list):
-                    view_images.append(img_list[view_idx])
-                else:
-                    view_images.append(torch.zeros(3, self.image_size, self.image_size))
-            images_list.append(_pil_to_tensor(view_images, self.image_size, device))
+            view_images = [
+                img_list[view_idx] if view_idx < len(img_list)
+                else torch.zeros(3, self.image_size, self.image_size)
+                for img_list in images_raw
+            ]
+            images_list.append(self._image_transform.process_batch(view_images).to(device))
             mask_val = self.image_mask[view_idx] if view_idx < len(self.image_mask) else False
-            img_masks.append(
-                torch.full((B,), mask_val, dtype=torch.bool, device=device)
-            )
+            img_masks.append(torch.full((B,), mask_val, dtype=torch.bool, device=device))
 
-        # Build prompts
+        # Build prompts using StateDiscretizationTransform (same as training)
         if self.pi05 and state is not None:
             if not isinstance(state, torch.Tensor):
                 state = torch.as_tensor(state, dtype=torch.float32)
             if state.dim() == 1:
                 state = state.unsqueeze(0)
-            prompts = prepare_batch_state_prompts(
-                state, instructions, max_state_dim=self.max_state_dim
+            state_stats = convert_stats(dataset_stats.get("observation.state")) if dataset_stats else None
+            state_transform = StateDiscretizationTransform(
+                apply_to=["prompt"],
+                state_key="observation.state",
+                task_key="task",
+                num_bins=256,
+                max_state_dim=None,
+                normalization_mode="q99",
+                statistics=state_stats,
             )
+            prompts = []
+            for i in range(B):
+                sample = {"observation.state": state[i], "task": instructions[i]}
+                result = state_transform.apply(sample)
+                prompts.append(result["prompt"])
         else:
             prompts = [f"Task: {lang.strip()};\nAction: " for lang in instructions]
 
         # Tokenize
-        tok_out = tokenize_prompts(
-            prompts, self.tokenizer, max_length=self.max_token_len
-        )
+        tok_out = tokenize_prompts(prompts, self.tokenizer, max_length=self.max_token_len)
         tokens = tok_out["input_ids"].to(device)
         masks = tok_out["attention_mask"].bool().to(device)
 
@@ -303,4 +241,3 @@ class PaliGemmaPi05(BaseArchitecture):
         """Load pretrained PI05 weights."""
         self.pi05_model.load_pretrained(pretrained_path, strict=strict)
         return self
-

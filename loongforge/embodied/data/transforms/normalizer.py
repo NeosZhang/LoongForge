@@ -2,16 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Normalizer - Multi-mode normalizer
+Normalizer - Multi-mode normalizer for state/action data.
 
-Supports 4 normalization modes:
-  - q99:     2*(x - q01) / (q99 - q01) - 1  → [-1, 1]
+Supports 5 normalization modes:
+  - q99:     2*(x - q01) / (q99 - q01) - 1  → [-1, 1] (NO clamp, values can exceed)
   - min_max: 2*(x - min) / (max - min) - 1  → [-1, 1]
   - mean_std: (x - mean) / std              → unbounded
+  - scale:   x / max(|min|, |max|)          → [-1, 1]
   - binary:  x > threshold                  → {0, 1}
 
 Statistics dict format:
     {"mean": [...], "std": [...], "min": [...], "max": [...], "q01": [...], "q99": [...]}
+
+Degenerate case handling: eps-based (zero-range denominators replaced with eps).
 """
 
 from typing import Dict
@@ -23,28 +26,20 @@ import torch
 class Normalizer:
     """General normalizer, supports forward/inverse."""
 
-    VALID_MODES = ["q99", "min_max", "mean_std", "binary"]
+    VALID_MODES = ["q99", "min_max", "mean_std", "binary", "scale"]
 
-    def __init__(self, mode: str, statistics: Dict[str, np.ndarray], binary_threshold: float = 0.5):
+    def __init__(self, mode: str, statistics: Dict[str, np.ndarray], binary_threshold: float = 0.5, eps: float = 1e-8):
         """
         Args:
-            mode: Normalization mode, one of "q99", "min_max", "mean_std", "binary".
-                - q99:     Normalize to [-1, 1] using 1st and 99th percentiles; robust to outliers
-                - min_max: Normalize to [-1, 1] using min and max values
-                - mean_std: Zero-mean unit-variance standardization; output is unbounded
-                - binary:  Binarize values; outputs 1 if above threshold, else 0
-            statistics: Dict of statistics required for normalization.
-                Required keys depend on mode:
-                - q99:     requires "q01", "q99"
-                - min_max: requires "min", "max"
-                - mean_std: requires "mean", "std"
-                - binary:  no statistics needed (dict can be empty)
-                Values can be np.ndarray, list, torch.Tensor, or scalar.
-            binary_threshold: Threshold for binary mode, default 0.5.
+            mode: Normalization mode (q99, min_max, mean_std, binary)
+            statistics: Dataset statistics dictionary
+            binary_threshold: Threshold for binary mode
+            eps: Epsilon for zero-range denominator handling (matches base framework)
         """
         assert mode in self.VALID_MODES, f"Invalid mode: {mode}. Valid: {self.VALID_MODES}"
         self.mode = mode
         self.binary_threshold = binary_threshold
+        self.eps = eps
 
         # Convert to tensors
         self.statistics = {}
@@ -66,36 +61,32 @@ class Normalizer:
         if self.mode == "q99":
             q01 = self.statistics["q01"].to(x.dtype)
             q99 = self.statistics["q99"].to(x.dtype)
-            mask = q01 != q99
-            normalized = torch.zeros_like(x)
-            normalized[..., mask] = (
-                2 * (x[..., mask] - q01[..., mask]) / (q99[..., mask] - q01[..., mask]) - 1
-            )
-            normalized[..., ~mask] = x[..., ~mask]
-            return torch.clamp(normalized, -1, 1)
+            denom = q99 - q01
+            denom = torch.where(denom == 0, torch.tensor(self.eps, dtype=x.dtype), denom)
+            return 2.0 * (x - q01) / denom - 1.0
 
         elif self.mode == "min_max":
             mn = self.statistics["min"].to(x.dtype)
             mx = self.statistics["max"].to(x.dtype)
-            mask = mn != mx
-            normalized = torch.zeros_like(x)
-            normalized[..., mask] = (
-                2 * (x[..., mask] - mn[..., mask]) / (mx[..., mask] - mn[..., mask]) - 1
-            )
-            normalized[..., ~mask] = 0
-            return normalized
+            denom = mx - mn
+            denom = torch.where(denom == 0, torch.tensor(self.eps, dtype=x.dtype), denom)
+            return 2.0 * (x - mn) / denom - 1.0
 
         elif self.mode == "mean_std":
             mean = self.statistics["mean"].to(x.dtype)
             std = self.statistics["std"].to(x.dtype)
-            mask = std != 0
-            normalized = torch.zeros_like(x)
-            normalized[..., mask] = (x[..., mask] - mean[..., mask]) / std[..., mask]
-            normalized[..., ~mask] = x[..., ~mask]
-            return normalized
+            std = torch.where(std == 0, torch.tensor(self.eps, dtype=x.dtype), std)
+            return (x - mean) / std
 
         elif self.mode == "binary":
             return (x > self.binary_threshold).to(x.dtype)
+
+        elif self.mode == "scale":
+            mn = self.statistics["min"].to(x.dtype)
+            mx = self.statistics["max"].to(x.dtype)
+            abs_max = torch.max(torch.abs(mn), torch.abs(mx))
+            denom = torch.where(abs_max == 0, torch.tensor(self.eps, dtype=x.dtype), abs_max)
+            return x / denom
 
         raise ValueError(f"Invalid mode: {self.mode}")
 
@@ -121,6 +112,12 @@ class Normalizer:
 
         elif self.mode == "binary":
             return (x > self.binary_threshold).to(x.dtype)
+
+        elif self.mode == "scale":
+            mn = self.statistics["min"].to(x.dtype)
+            mx = self.statistics["max"].to(x.dtype)
+            abs_max = torch.max(torch.abs(mn), torch.abs(mx))
+            return x * abs_max
 
         raise ValueError(f"Invalid mode: {self.mode}")
 

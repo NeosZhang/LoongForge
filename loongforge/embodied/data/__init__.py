@@ -2,19 +2,30 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Data loading framework with built-in DistributedSampler.
+LoongForge VLA Data Engine
 
-Provides:
-  - build_dataloader(): Unified factory, dispatches to dataset backends
-  - Supports: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets
+Data loading for VLA (Vision-Language-Action) training.
 
-Sample output format (__getitem__):
-    {
-        "image": [PIL.Image, ...],
-        "lang": str,
-        "action": np.ndarray [action_horizon, action_dim],
-        "state": np.ndarray | None,
-    }
+Public API:
+    - build_dataloader(model_cfg, args, ctx): Factory that builds DataLoader with
+      model-specific preprocessor as collate_fn
+    - build_vla_dataset: Build raw dataset (without preprocessor)
+    - save_dataset_statistics: Save stats to JSON
+    - BasePreprocessor / PreparedBatch: Base classes for extension
+    - register_preprocessor / get_preprocessor: Registry API
+
+DataLoader output:
+    Pi05PreparedBatch (CPU tensors):
+        .images_list: List[Tensor (B, 3, H, W)]
+        .img_masks:   List[Tensor (B,) bool]
+        .input_ids:   Tensor (B, seq_len)
+        .attention_mask: Tensor (B, seq_len) bool
+        .actions:     Tensor (B, T, D)
+
+    Usage:
+        for batch in dataloader:
+            batch = batch.to(device)
+            output = model.forward(batch)
 """
 
 import json
@@ -24,46 +35,71 @@ from pathlib import Path
 from typing import Dict
 
 import numpy as np
+import torch
 from torch.utils.data import DataLoader, IterableDataset
 from torch.utils.data.distributed import DistributedSampler
 
 from loongforge.embodied.distributed import DistributedContext
+from loongforge.embodied.data.transforms import (
+    BasePreprocessor,
+    PreparedBatch,
+    Pi05Preprocessor,
+    Pi05PreparedBatch,
+    convert_stats,
+    StateDiscretizationTransform,
+)
+from loongforge.embodied.data.transforms.pipeline import build_transforms_from_args
 
 logger = logging.getLogger(__name__)
 
 
-def collate_fn(batch):
-    """Default collate: return list directly, batching handled by model."""
-    return batch
-
-
 def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
-    """
-    Unified dataloader factory with native DistributedSampler.
+    """Build DataLoader with model-specific preprocessor as collate_fn.
+
+    The returned DataLoader yields PreparedBatch objects (CPU tensors).
+    Call batch.to(device) before passing to model.forward().
 
     Args:
-        model_cfg: OmegaConf model config (for transforms that need model info)
-        args: CLI args namespace (contains dataset path, batch size, etc.)
+        model_cfg: OmegaConf/dict model config (backbone, action_model at top level)
+        args: CLI args namespace (dataset path, batch size, etc.)
         ctx: DistributedContext
-    """
-    module = args.dataloader_module
-    batch_size = args.per_device_batch_size
-    num_workers = args.num_workers
 
+    Returns:
+        torch.utils.data.DataLoader (yielding PreparedBatch subclass)
+    """
+    module = getattr(args, "dataloader_module", "lerobot_datasets")
+    batch_size = args.per_device_batch_size
+    num_workers = getattr(args, "num_workers", 4)
+
+    # Build dataset
     dataset = _build_dataset(model_cfg, args, module)
 
-    # IterableDataset (e.g. RLDS streaming) does not support sampler/shuffle
+    # Get dataset stats
+    dataset_stats = {}
+    if hasattr(dataset, "meta") and hasattr(dataset.meta, "stats"):
+        dataset_stats = dataset.meta.stats
+
+    # Build preprocessor (collate_fn)
+    preprocessor = _build_preprocessor(model_cfg, args, dataset, dataset_stats)
+
+    # Save statistics
+    if ctx.is_main:
+        output_dir = getattr(args, "output_dir", "")
+        if output_dir and dataset_stats:
+            stats_path = os.path.join(output_dir, "dataset_statistics.json")
+            save_dataset_statistics(dataset_stats, stats_path)
+
+    # Build DataLoader
     if isinstance(dataset, IterableDataset):
         dl = DataLoader(
             dataset,
             batch_size=batch_size,
             num_workers=num_workers,
-            collate_fn=collate_fn,
+            collate_fn=preprocessor,
             pin_memory=True,
             drop_last=True,
         )
     else:
-        # DistributedSampler for multi-GPU (map-style datasets only)
         sampler = None
         shuffle = True
         if ctx.is_distributed:
@@ -76,22 +112,103 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
             sampler=sampler,
             shuffle=shuffle,
             num_workers=num_workers,
-            collate_fn=collate_fn,
+            collate_fn=preprocessor,
             pin_memory=True,
             drop_last=True,
+            persistent_workers=num_workers > 0,
         )
 
-    # Save dataset statistics if available
-    if ctx.is_main and hasattr(dataset, "dataset_statistics"):
-        output_dir = getattr(args, "output_dir", "")
-        if output_dir:
-            stats_path = os.path.join(output_dir, "dataset_statistics.json")
-            save_dataset_statistics(dataset.dataset_statistics, stats_path)
-
-    # Append Pi05StateTransform if discrete_state_input is enabled
-    _maybe_append_pi05_state_transform(model_cfg, args, dl)
-
     return dl
+
+
+def _build_preprocessor(model_cfg, args, dataset, dataset_stats):
+    """Build Pi05Preprocessor with unified transforms pipeline.
+
+    Constructs per-sample transforms (image + action + state discretization) via
+    build_transforms_from_args and injects them into the preprocessor. The preprocessor
+    only handles batch-level collation (stack + tokenize).
+    """
+    backbone_cfg = model_cfg.get("backbone", {}) if hasattr(model_cfg, "get") else {}
+
+    tokenizer_path = (
+        getattr(args, "tokenizer_path", None)
+        or backbone_cfg.get("tokenizer_name", "")
+        or os.environ.get("TOKENIZER_PATH", "")
+    )
+
+    norm_mode = getattr(args, "normalization_mode", "q99")
+    max_token_len = backbone_cfg.get("max_token_len", 200)
+
+    # Build state transform as pi05-specific extra
+    state_stats = convert_stats(dataset_stats.get("observation.state")) if dataset_stats else None
+    state_transform = StateDiscretizationTransform(
+        apply_to=["prompt"],
+        state_key="observation.state",
+        task_key="task",
+        num_bins=256,
+        max_state_dim=None,
+        normalization_mode=norm_mode,
+        statistics=state_stats,
+    )
+
+    # Build unified per-sample transforms pipeline (image + action + state)
+    transform = build_transforms_from_args(
+        model_cfg, args, dataset, dataset_stats,
+        extra_transforms=[state_transform],
+    )
+
+    preprocessor = Pi05Preprocessor(
+        image_size=getattr(args, "image_size", backbone_cfg.get("image_size", 224)),
+        num_images=backbone_cfg.get("num_images", 2),
+        image_mask=backbone_cfg.get("image_mask", None),
+        max_token_len=max_token_len,
+        tokenizer_path=tokenizer_path,
+        transform=transform,
+    )
+
+    logger.info(f"Using preprocessor: Pi05Preprocessor (transforms pipeline, max_token_len={max_token_len})")
+    return preprocessor
+
+
+def _build_dataset(model_cfg, args, module: str):
+    """Build dataset instance based on dataloader_module."""
+    if module == "lerobot_datasets":
+        return _build_lerobot_dataset(model_cfg, args)
+    else:
+        raise ValueError(
+            f"Unknown dataloader_module: '{module}'. "
+            f"Supported: lerobot_datasets"
+        )
+
+
+def _build_lerobot_dataset(model_cfg, args):
+    """Build lerobot-based VLA dataset."""
+    from loongforge.embodied.data.datasets.lerobot_dataset import build_vla_dataset
+
+    dataset_path = getattr(args, "dataset_path", None)
+    if not dataset_path:
+        raise ValueError("Must specify --dataset-path")
+
+    dataset_path = Path(dataset_path)
+    repo_id = dataset_path.name
+
+    action_cfg = model_cfg.get("action_model", {}) if hasattr(model_cfg, "get") else {}
+    action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", 50))
+
+    dataset = build_vla_dataset(
+        repo_id=repo_id,
+        root=str(dataset_path),
+        action_horizon=action_horizon,
+        streaming=False,
+        episodes=None,
+        video_backend="torchcodec",
+        tolerance_s=1e-4,
+        download_videos=False,
+        use_imagenet_stats=True,
+        num_workers=getattr(args, "num_workers", 4),
+    )
+
+    return dataset
 
 
 def save_dataset_statistics(dataset_statistics: Dict, output_path):
@@ -103,7 +220,9 @@ def save_dataset_statistics(dataset_statistics: Dict, output_path):
     for key, stats in dataset_statistics.items():
         serializable[key] = {}
         for stat_name, stat_val in stats.items():
-            if isinstance(stat_val, np.ndarray):
+            if isinstance(stat_val, torch.Tensor):
+                serializable[key][stat_name] = stat_val.cpu().tolist()
+            elif isinstance(stat_val, np.ndarray):
                 serializable[key][stat_name] = stat_val.tolist()
             else:
                 serializable[key][stat_name] = stat_val
@@ -113,6 +232,10 @@ def save_dataset_statistics(dataset_statistics: Dict, output_path):
     logger.info(f"Saved dataset statistics to {output_path}")
 
 
+def build_vla_dataset(*a, **kw):
+    """Re-export factory function from datasets.lerobot_dataset."""
+    from loongforge.embodied.data.datasets.lerobot_dataset import build_vla_dataset as _build
+    return _build(*a, **kw)
 def _build_dataset(model_cfg, args, module: str):
     """Build dataset instance based on dataloader_module."""
     if module == "lerobot_datasets":
@@ -147,23 +270,12 @@ def _build_dataset(model_cfg, args, module: str):
         )
 
 
-def _maybe_append_pi05_state_transform(model_cfg, args, dataloader: DataLoader):
-    """Conditionally append Pi05StateTransform to dataset's transform pipeline."""
-    if not getattr(args, "discrete_state_input", False):
-        return
-
-    from .transforms import ComposedTransform, Pi05StateTransform
-
-    action_model_cfg = model_cfg.get("framework", {}).get("action_model", {})
-    max_state_dim = action_model_cfg.get("max_state_dim", 32)
-
-    dataset = dataloader.dataset
-    transform = Pi05StateTransform(apply_to=["lang"], max_state_dim=max_state_dim)
-
-    if hasattr(dataset, "transform") and dataset.transform is not None:
-        if isinstance(dataset.transform, ComposedTransform):
-            dataset.transform.transforms.append(transform)
-        else:
-            dataset.transform = ComposedTransform([dataset.transform, transform])
-    else:
-        dataset.transform = transform
+__all__ = [
+    "build_dataloader",
+    "build_vla_dataset",
+    "save_dataset_statistics",
+    "BasePreprocessor",
+    "PreparedBatch",
+    "Pi05Preprocessor",
+    "Pi05PreparedBatch",
+]

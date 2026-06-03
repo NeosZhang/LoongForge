@@ -5,24 +5,12 @@
 
 from loongforge.embodied.data.datasets.lerobot_dataset import (
     LeRobotVLADataset,
-    LeRobotMixtureDataset,
-    build_lerobot_dataset,
-)
-from loongforge.embodied.data.datasets.hdf5_dataset import (
-    HDF5VLADataset,
-    build_hdf5_dataset,
-)
-from loongforge.embodied.data.datasets.dummy_dataset import (
-    DummyVLADataset,
-    build_dummy_dataset,
+    StreamingLeRobotVLADataset,
+    build_vla_dataset,
 )
 
 __all__ = [
     "LeRobotVLADataset",
-    "LeRobotMixtureDataset",
-    "build_lerobot_dataset",
-    "HDF5VLADataset",
-    "build_hdf5_dataset",
-    "DummyVLADataset",
-    "build_dummy_dataset",
+    "StreamingLeRobotVLADataset",
+    "build_vla_dataset",
 ]

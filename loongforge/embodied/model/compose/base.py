@@ -8,7 +8,7 @@ Inherits nn.Module (does not depend on transformers.PreTrainedModel in standalon
 compatible forward/predict_action interface
 """
 
-from typing import Dict, List, Any
+from typing import Dict, Any
 import torch
 import torch.nn as nn
 import numpy as np
@@ -42,17 +42,18 @@ class ModelFramework(nn.Module):
         self.architecture = architecture
         self.config = config
 
-    def forward(self, examples: List[Dict[str, Any]], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, batch, **kwargs) -> Dict[str, torch.Tensor]:
         """
         Training forward pass — delegates to architecture.
 
         Args:
-            examples: Batch list, each dict contains 'image', 'lang', 'action', optional 'state'
+            batch: PreparedBatch from dataloader preprocessor (Pi05PreparedBatch),
+                   with attributes: images_list, img_masks, input_ids, attention_mask, actions
 
         Returns:
-            Dict containing 'action' (required) and other optional loss terms
+            Dict containing 'action_loss' (required) and other optional loss terms
         """
-        return self.architecture.forward(examples, **kwargs)
+        return self.architecture.forward(batch, **kwargs)
 
     def predict_action(self, **kwargs) -> Dict[str, np.ndarray]:
         """

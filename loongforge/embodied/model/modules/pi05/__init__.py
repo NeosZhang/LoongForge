@@ -7,7 +7,6 @@ Public API:
     PI05Config              - dataclass of all hyperparameters
     PI05Pytorch             - core PyTorch model (training + inference)
     PaliGemmaWithExpertModel - joint-attention PaliGemma + Gemma expert
-    prepare_state_prompt / prepare_batch_state_prompts - prompt construction
     tokenize_prompts        - HuggingFace tokenizer wrapper
     build_tokenizer         - build tokenizer from PI05Config
 """
@@ -25,12 +24,9 @@ from .modeling_pi05 import (
     resize_with_pad_torch,
     OPENPI_ATTENTION_MASK_VALUE,
 )
-from .processor_pi05 import (
-    prepare_state_prompt,
-    prepare_batch_state_prompts,
+from loongforge.embodied.data.transforms.pi05_collator import (
     tokenize_prompts,
     build_tokenizer,
-    discretize_state,
 )
 
 __all__ = [
@@ -46,9 +42,6 @@ __all__ = [
     "make_att_2d_masks",
     "resize_with_pad_torch",
     "OPENPI_ATTENTION_MASK_VALUE",
-    "prepare_state_prompt",
-    "prepare_batch_state_prompts",
     "tokenize_prompts",
     "build_tokenizer",
-    "discretize_state",
 ]
