@@ -61,7 +61,7 @@ class BaseTrainer(ABC):
         # Training state
         self.completed_steps: int = 0
         self.current_epoch: int = 0
-        self.max_steps: int = args.max_train_steps
+        self.train_iters: int = args.train_iters
 
         # Data iterators (managed by _fetch_batch for epoch cycling)
         self._data_iters: Dict[str, Any] = {}
@@ -152,16 +152,16 @@ class BaseTrainer(ABC):
     def _training_loop(self):
         args = self.args
         grad_accum = args.gradient_accumulation_steps
-        grad_clip = args.gradient_clipping
-        log_interval = args.logging_frequency
-        save_interval = args.save_steps
+        grad_clip = args.clip_grad
+        log_interval = args.log_interval
+        save_interval = args.save_interval
         loss_spike_threshold = args.loss_spike_threshold
 
         self._init_data_iterator("vla")
         pbar = self._make_pbar()
         self._log_training_config()
 
-        while self.completed_steps < self.max_steps:
+        while self.completed_steps < self.train_iters:
             self.optimizer.zero_grad()
             t0 = time.perf_counter()
 
@@ -436,7 +436,7 @@ class BaseTrainer(ABC):
         logger.info(f"  Strategy:        {args.distributed_strategy}")
         logger.info(f"  Dtype:           {args.dtype}")
         logger.info(f"  World size:      {self.ctx.world_size}")
-        logger.info(f"  Max steps:       {args.max_train_steps}")
+        logger.info(f"  Train iters:     {args.train_iters}")
         logger.info(f"  Batch/GPU:       {args.per_device_batch_size}")
         logger.info(f"  Grad accum:      {args.gradient_accumulation_steps}")
         logger.info(f"  LR:              {args.lr}")
@@ -459,7 +459,7 @@ class BaseTrainer(ABC):
         try:
             from tqdm import tqdm
 
-            return tqdm(range(self.max_steps), initial=self.completed_steps, desc="Training")
+            return tqdm(range(self.train_iters), initial=self.completed_steps, desc="Training")
         except ImportError:
             return None
 

@@ -90,7 +90,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
             save_dataset_statistics(dataset.dataset_statistics, stats_path)
 
     # Append Pi05StateTransform if discrete_state_input is enabled
-    _maybe_append_pi05_state_transform(model_cfg, dl)
+    _maybe_append_pi05_state_transform(model_cfg, args, dl)
 
     return dl
 
@@ -143,10 +143,9 @@ def _build_dataset(model_cfg, args, module: str):
         )
 
 
-def _maybe_append_pi05_state_transform(model_cfg, dataloader: DataLoader):
+def _maybe_append_pi05_state_transform(model_cfg, args, dataloader: DataLoader):
     """Conditionally append Pi05StateTransform to dataset's transform pipeline."""
-    backbone_cfg = model_cfg.get("framework", {}).get("backbone", {})
-    if not backbone_cfg.get("discrete_state_input", False):
+    if not getattr(args, "discrete_state_input", False):
         return
 
     from .transforms import ComposedTransform, Pi05StateTransform

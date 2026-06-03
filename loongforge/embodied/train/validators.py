@@ -35,11 +35,11 @@ def validate_args(args, cfg):
         )
 
     # Steps
-    if args.max_train_steps <= 0:
-        raise ValueError(f"--max-train-steps must be positive, got {args.max_train_steps}")
-    if args.warmup_steps >= args.max_train_steps:
+    if args.train_iters <= 0:
+        raise ValueError(f"--train-iters must be positive, got {args.train_iters}")
+    if args.lr_warmup_iters >= args.train_iters:
         logger.warning(
-            f"--warmup-steps ({args.warmup_steps}) >= --max-train-steps ({args.max_train_steps})"
+            f"--lr-warmup-iters ({args.lr_warmup_iters}) >= --train-iters ({args.train_iters})"
         )
 
     # Checkpoint

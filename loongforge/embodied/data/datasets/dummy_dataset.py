@@ -7,7 +7,7 @@ Dummy Dataset - Synthetic data for debugging and CI testing
 Generates random image/action/state/lang samples without real data files.
 
 Usage (CLI):
-    --dataloader-module dummy_datasets --action-horizon 7 --image-size 224
+    --dataloader-module dummy_datasets action_model.action_horizon=7 backbone.image_size=224
 """
 
 import logging
@@ -80,12 +80,13 @@ class DummyVLADataset(Dataset):
 # ═══════════════════════════════════════════════════════════════
 
 def build_dummy_dataset(model_cfg, args) -> Dataset:
-    """Build dummy dataset from CLI args."""
+    """Build dummy dataset from CLI args and YAML model config."""
     num_samples = getattr(args, "num_samples", 100)
-    action_dim = getattr(args, "action_dim", 7)
-    state_dim = getattr(args, "state_dim", 7)
-    action_horizon = getattr(args, "action_horizon", 7)
-    image_size = getattr(args, "image_size", 224)
+    action_cfg = model_cfg.get("action_model", {})
+    action_dim = action_cfg.get("action_dim", 7)
+    state_dim = action_cfg.get("state_dim", 7)
+    action_horizon = action_cfg.get("action_horizon", 7)
+    image_size = model_cfg.get("action_model", {}).get("image_size", 224)
 
     return DummyVLADataset(
         num_samples=num_samples,

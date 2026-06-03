@@ -20,16 +20,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-def is_lora_enabled(cfg: Any) -> bool:
-    """Return True iff cfg.lora.enabled is set."""
-    if cfg is None:
-        return False
-    lora_cfg = cfg.get("lora", {}) if hasattr(cfg, "get") else getattr(cfg, "lora", {})
-    if lora_cfg is None:
-        return False
-    if hasattr(lora_cfg, "get"):
-        return bool(lora_cfg.get("enabled", False))
-    return bool(getattr(lora_cfg, "enabled", False))
+def is_lora_enabled(args: Any) -> bool:
+    """Return True iff LoRA is enabled via --lora CLI flag."""
+    return bool(getattr(args, "lora", False))
 
 
 @dataclass
@@ -45,47 +38,16 @@ class LoRASpec:
     freeze_extra_modules: list[str] = field(default_factory=list)
 
     @classmethod
-    def from_omega(cls, cfg: Any) -> "LoRASpec":
-        """Parse from yaml/OmegaConf `lora:` block."""
-        lora_cfg = (
-            cfg.get("lora", {}) if hasattr(cfg, "get") else getattr(cfg, "lora", {})
-        )
-        if lora_cfg is None:
-            lora_cfg = {}
-        get = (
-            lora_cfg.get
-            if hasattr(lora_cfg, "get")
-            else (lambda k, d=None: getattr(lora_cfg, k, d))
-        )
-
-        # Parse freeze_extra_modules
-        freeze_extra = get("freeze_extra_modules", []) or []
-        if isinstance(freeze_extra, str):
-            freeze_extra = [m.strip() for m in freeze_extra.split(",") if m.strip()]
-        elif isinstance(freeze_extra, (list, tuple)):
-            freeze_extra = list(freeze_extra)
-        else:
-            try:
-                freeze_extra = list(freeze_extra)
-            except TypeError:
-                freeze_extra = []
-
-        # Parse target_modules
-        target = get("target_modules", "all-linear")
-        if not isinstance(target, str):
-            try:
-                target = list(target)
-            except TypeError:
-                pass
+    def from_args(cls, args: Any) -> "LoRASpec":
+        """Build LoRASpec from CLI args (--lora-rank/--lora-alpha/--lora-target-modules)."""
+        target = getattr(args, "lora_target_modules", "all-linear")
+        if isinstance(target, str) and "," in target:
+            target = [m.strip() for m in target.split(",") if m.strip()]
 
         return cls(
-            rank=int(get("rank", 32)),
-            alpha=int(get("alpha", 16)),
-            dropout=float(get("dropout", 0.05)),
+            rank=int(getattr(args, "lora_rank", 32)),
+            alpha=int(getattr(args, "lora_alpha", 16)),
             target_modules=target,
-            init_lora_weights=str(get("init_lora_weights", "gaussian")),
-            vlm_module=get("vlm_module", None),
-            freeze_extra_modules=freeze_extra,
         )
 
     def peft_config(self):

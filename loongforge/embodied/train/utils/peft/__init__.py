@@ -5,8 +5,8 @@
 LoRA / PEFT helpers for LoongForge Embodied.
 
 Public API:
-    is_lora_enabled(cfg)                 -> bool
-    apply_lora(model, cfg)               -> model (in-place)
+    is_lora_enabled(args)                -> bool
+    apply_lora(model, cfg, args=None)    -> model (in-place)
     save_lora_checkpoint(model, ...)
     load_and_merge(...)
 """

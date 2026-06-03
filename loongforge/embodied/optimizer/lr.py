@@ -83,9 +83,9 @@ def build_scheduler(optimizer, args):
         kwargs["min_lr"] = args.min_lr
 
     return get_scheduler(
-        name=args.lr_scheduler_type,
+        name=args.lr_decay_style,
         optimizer=optimizer,
-        num_warmup_steps=args.warmup_steps,
-        num_training_steps=args.max_train_steps,
+        num_warmup_steps=args.lr_warmup_iters,
+        num_training_steps=args.train_iters,
         scheduler_specific_kwargs=kwargs,
     )

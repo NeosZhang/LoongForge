@@ -20,7 +20,7 @@ import os
 
 from omegaconf import OmegaConf
 
-from .arguments import add_model_args, add_model_override_args, add_training_args
+from .arguments import add_model_override_args, embodied_args_provider
 from .config_map import get_config_path
 from .global_vars import set_args, set_model_config
 from .validators import validate_args
@@ -45,11 +45,8 @@ def parse_train_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # Model routing + switches
-    add_model_args(parser)
-
-    # Training control args (all from CLI)
-    add_training_args(parser)
+    # Model routing + switches + training + distributed
+    embodied_args_provider(parser)
 
     # Model field overrides (positional dotlist)
     add_model_override_args(parser)
@@ -87,8 +84,8 @@ def parse_train_args():
     args.config_path = config_path
 
     logger.info(f"Model config loaded: {config_path}")
-    logger.info(f"  model_type={model_cfg.get('model_type', 'unknown')}")
-    logger.info(f"Training: max_steps={args.max_train_steps}, lr={args.lr}, "
+    logger.info(f"model_type={model_cfg.get('model_type', 'unknown')}")
+    logger.info(f"Training: train_iters={args.train_iters}, lr={args.lr}, "
                 f"batch_size={args.per_device_batch_size}")
 
     return args

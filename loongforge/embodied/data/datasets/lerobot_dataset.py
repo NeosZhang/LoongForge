@@ -417,14 +417,15 @@ def build_lerobot_dataset(model_cfg, args) -> Dataset:
     Required args attributes:
       - data_root_dir: root directory for datasets
       - dataset_mix OR dataset_path: which dataset(s) to load
-      - action_horizon, image_size: data format params
+    Required model_cfg fields:
+      - action_model.action_horizon, backbone.image_size: data format params
     """
     data_root_dir = getattr(args, "data_root_dir", "/data/lerobot")
     dataset_mix = getattr(args, "dataset_mix", None)
     dataset_path = getattr(args, "dataset_path", None)
     robot_type = getattr(args, "robot_type", "libero_franka")
-    action_horizon = getattr(args, "action_horizon", 7)
-    image_size = getattr(args, "image_size", 224)
+    action_horizon = model_cfg.get("action_model", {}).get("action_horizon", 7)
+    image_size = model_cfg.get("backbone", {}).get("image_size", 224)
     normalization_mode = getattr(args, "normalization_mode", None)
 
     if dataset_mix and dataset_mix in DATASET_NAMED_MIXTURES:

@@ -19,10 +19,6 @@ backbone:
   image_mask: [true, true]
   image_size: 224
   max_token_len: 48
-  discrete_state_input: true
-  tokenizer_name: ""  # use TOKENIZER_PATH env var or pretrained checkpoint path
-  freeze_vision_encoder: false
-  train_expert_only: false
 
 # Action model (Pi0 Action Expert)
 action_model:
@@ -33,12 +29,4 @@ action_model:
   max_action_dim: 32
   max_state_dim: 32
   action_expert_variant: gemma_300m
-  action_expert_width: 1024
-  action_expert_depth: 18
-  action_expert_mlp_dim: 4096
-  action_expert_num_heads: 8
-  action_expert_head_dim: 128
-  num_inference_steps: 10
-  noise_beta_alpha: 1.5
-  noise_beta_beta: 1.0
   precision: bfloat16

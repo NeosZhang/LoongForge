@@ -216,12 +216,13 @@ def build_rlds_dataset(model_cfg, args) -> IterableDataset:
 
     Required args attributes:
       - dataset_name: HuggingFace dataset name or OXE registry key
-      - action_horizon, image_size: data format params
+    Required model_cfg fields:
+      - action_model.action_horizon, backbone.image_size: data format params
     """
     dataset_name = getattr(args, "dataset_name", "bridge_v2")
     split = getattr(args, "split", "train")
-    action_horizon = getattr(args, "action_horizon", 7)
-    image_size = getattr(args, "image_size", 224)
+    action_horizon = model_cfg.get("action_model", {}).get("action_horizon", 7)
+    image_size = model_cfg.get("backbone", {}).get("image_size", 224)
     streaming = getattr(args, "streaming", True)
     normalization_mode = getattr(args, "normalization_mode", "min_max")
 

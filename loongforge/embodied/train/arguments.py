@@ -10,6 +10,12 @@ Parameter ownership:
 
 import argparse
 
+def embodied_args_provider(parser: argparse.ArgumentParser):
+    """Register model / training / distributed argument groups onto parser."""
+    add_model_args(parser)
+    add_training_args(parser)
+    add_distributed_args(parser)
+
 
 def add_model_args(parser: argparse.ArgumentParser):
     """Model configuration: model-name routing + training-time model switches."""
@@ -24,14 +30,10 @@ def add_model_args(parser: argparse.ArgumentParser):
                    help="Path to tokenizer directory. Also settable via TOKENIZER_PATH env var.")
     g.add_argument("--trainer-type", type=str, default=None,
                    help="Trainer class override (e.g. BCTrainer). If None, uses registry dispatch.")
-    g.add_argument("--gradient-checkpointing", action="store_true",
-                   help="Enable gradient checkpointing (memory <-> compute trade-off).")
     g.add_argument("--freeze-vision-encoder", action="store_true",
                    help="Freeze the vision tower (eval + requires_grad=False).")
     g.add_argument("--train-expert-only", action="store_true",
                    help="Train only the action expert; freeze the VLM backbone.")
-    g.add_argument("--discrete-state-input", action="store_true",
-                   help="Discretize robot state into 256 bins and embed in prompt (PI0.5 style).")
 
 
 def add_training_args(parser: argparse.ArgumentParser):
@@ -39,60 +41,54 @@ def add_training_args(parser: argparse.ArgumentParser):
 
     # ── Basic Training ──
     g = parser.add_argument_group("Training")
-    g.add_argument("--max-train-steps", type=int, default=150000)
-    g.add_argument("--save-steps", type=int, default=10000)
-    g.add_argument("--logging-frequency", type=int, default=50)
+    g.add_argument("--train-iters", type=int, default=150000)
+    g.add_argument("--save-interval", type=int, default=10000)
     g.add_argument("--seed", type=int, default=3047)
-    g.add_argument("--output-dir", type=str, default="outputs/default")
+    g.add_argument("--output-dir", type=str, default="outputs/default",
+                   help="Root output directory for checkpoints, logs and run artifacts.")
     g.add_argument("--gradient-accumulation-steps", type=int, default=2)
-    g.add_argument("--gradient-clipping", type=float, default=1.0)
+    g.add_argument("--gradient-checkpointing", action="store_true",
+                   help="Enable gradient checkpointing (memory <-> compute trade-off).")
     g.add_argument("--loss-spike-threshold", type=float, default=100.0)
 
     # ── Learning Rate ──
     g = parser.add_argument_group("Learning Rate")
     g.add_argument("--lr", type=float, default=2.5e-5, help="Base learning rate")
-    g.add_argument("--lr-vlm", type=float, default=None, help="VLM interface LR override")
-    g.add_argument("--lr-backbone", type=float, default=None, help="Backbone LR override (alias for --lr-vlm)")
+    g.add_argument("--lr-backbone", type=float, default=None, help="Backbone LR override")
     g.add_argument("--lr-action-model", type=float, default=None, help="Action model LR override")
-    g.add_argument("--lr-scheduler-type", type=str, default="cosine_with_min_lr")
-    g.add_argument("--warmup-steps", type=int, default=2000)
+    g.add_argument("--lr-decay-style", type=str, default="cosine_with_min_lr")
+    g.add_argument("--lr-warmup-iters", type=int, default=2000)
     g.add_argument("--min-lr", type=float, default=1e-6)
 
     # ── Optimizer ──
     g = parser.add_argument_group("Optimizer")
+    g.add_argument("--optimizer", type=str, default="AdamW")
+    g.add_argument("--clip-grad", type=float, default=1.0,
+                   help="Gradient clipping norm.")
     g.add_argument("--weight-decay", type=float, default=0.01)
     g.add_argument("--adam-beta1", type=float, default=0.9)
     g.add_argument("--adam-beta2", type=float, default=0.95)
     g.add_argument("--adam-eps", type=float, default=1e-8)
-
-    # ── Distributed ──
-    g = parser.add_argument_group("Distributed")
-    g.add_argument("--distributed-strategy", type=str, default="fsdp",
-                   choices=["ddp", "fsdp"])
-    g.add_argument("--fsdp-sharding", type=str, default="FULL_SHARD",
-                   choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"])
-    g.add_argument("--fsdp-wrap-modules", type=str, default=None,
-                   help="Comma-separated class names for FSDP auto-wrap")
-    g.add_argument("--dtype", type=str, default="bfloat16",
-                   choices=["bfloat16", "float16", "float32"])
 
     # ── Data ──
     g = parser.add_argument_group("Data")
     g.add_argument("--dataloader-module", type=str, default="lerobot_datasets")
     g.add_argument("--dataset-path", type=str, default=None)
     g.add_argument("--dataset-mix", type=str, default=None,
-                   help="Named dataset mixture (e.g., libero_spatial, oxe_magic_soup)")
-    g.add_argument("--data-root-dir", type=str, default="/data/lerobot")
+                   help="Name of a registered dataset mixture to load; expands to one or more datasets "
+                        "under --data-root-dir (e.g., libero_spatial, oxe_magic_soup). Mutually "
+                        "exclusive with --dataset-path.")
+    g.add_argument("--data-root-dir", type=str, default="/data/lerobot",
+                   help="Root directory used to resolve datasets in --dataset-mix; each registered "
+                        "dataset path is joined with this directory (default: /data/lerobot).")
     g.add_argument("--robot-type", type=str, default="libero_franka")
     g.add_argument("--task-name", type=str, default="perform the task",
                    help="Language task description (for HDF5 datasets)")
     g.add_argument("--per-device-batch-size", type=int, default=4)
     g.add_argument("--num-workers", type=int, default=4)
-    g.add_argument("--action-horizon", type=int, default=10)
-    g.add_argument("--action-dim", type=int, default=7)
-    g.add_argument("--state-dim", type=int, default=7)
-    g.add_argument("--image-size", type=int, default=224)
     g.add_argument("--normalization-mode", type=str, default="q99")
+    g.add_argument("--discrete-state-input", action="store_true",
+                   help="Discretize robot state into 256 bins and embed in prompt (PI0.5 style).")
     g.add_argument("--num-samples", type=int, default=100,
                    help="Number of samples for dummy dataset")
 
@@ -123,9 +119,23 @@ def add_training_args(parser: argparse.ArgumentParser):
 
     # ── Logging ──
     g = parser.add_argument_group("W&B")
+    g.add_argument("--log-interval", type=int, default=50)
     g.add_argument("--wandb-project", type=str, default="loongforge-vla")
     g.add_argument("--wandb-mode", type=str, default="disabled",
                    choices=["online", "offline", "disabled"])
+    
+
+def add_distributed_args(parser: argparse.ArgumentParser):
+    """Add all distributed training CLI arguments."""
+    g = parser.add_argument_group("Distributed")
+    g.add_argument("--distributed-strategy", type=str, default="fsdp",
+                   choices=["ddp", "fsdp"])
+    g.add_argument("--fsdp-sharding", type=str, default="FULL_SHARD",
+                   choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"])
+    g.add_argument("--fsdp-wrap-modules", type=str, default=None,
+                   help="Comma-separated class names for FSDP auto-wrap")
+    g.add_argument("--dtype", type=str, default="bfloat16",
+                   choices=["bfloat16", "float16", "float32"])
 
 
 def add_model_override_args(parser: argparse.ArgumentParser):

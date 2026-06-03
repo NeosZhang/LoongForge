@@ -1,89 +1,111 @@
-#!/bin/bash
-# Pi0.5 Flow Matching VLA Training — DDP, Single Node
-
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════
+# run_pi05_ddp.sh - π₀.₅ VLA Training Launch Script (DDP, Single Node)
+#
+# Usage:
+#   bash run_pi05_ddp.sh                                        # paligemma default
+#   bash run_pi05_ddp.sh --lr 1e-4                              # override training param
+#   bash run_pi05_ddp.sh backbone.image_size=448                # override YAML field
+# ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+export LOONGFORGE_PATH="/home/users/zhaoyizhan/baidu/hac-aiacc/AIAK-Training-Omni"
 
-export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"$PROJECT_ROOT"}
-EMBODIED_ROOT="$PROJECT_ROOT/loongforge/embodied"
-
-PRETRAINED_CHECKPOINT=${PRETRAINED_CHECKPOINT:-"/ssd1/yexiaochuan/pi05_base/"}
-export TOKENIZER_PATH=${TOKENIZER_PATH:-"/ssd1/yexiaochuan/paligemma-3b-pt-224"}
-
-DATASET_PATH=${DATASET_PATH:-"/ssd1/yexiaochuan/libero"}
-DATA_ROOT_DIR=${DATA_ROOT_DIR:-"/ssd1/yexiaochuan"}
-
+# ── Paths ─────────────────────────────────────────────────────
+TOKENIZER_PATH=${TOKENIZER_PATH:-"/ssd1/zhaoyizhan/paligemma-3b-pt-224"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-""}
+DATA_PATH=${DATA_PATH:-"/ssd1/zhaoyizhan/libero"}
 OUTPUT_DIR=${OUTPUT_DIR:-"outputs/pi05_ddp_$(date +%Y%m%d_%H%M%S)"}
 
-GPUS_PER_NODE=${NUM_GPUS:-8}
-MASTER_PORT=${MASTER_PORT:-29501}
-
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3,4,5,6,7"}
-export CUDA_DEVICE_MAX_CONNECTIONS=1
+# ── Distributed ───────────────────────────────────────────────
+GPUS_PER_NODE=8
+MASTER_ADDR=${MASTER_ADDR:-"localhost"}
+MASTER_PORT=${MASTER_PORT:-"29500"}
+NNODES=${WORLD_SIZE:-"1"}
+NODE_RANK=${RANK:-"0"}
 
 DISTRIBUTED_ARGS=(
-  --nproc_per_node $GPUS_PER_NODE
-  --nnodes 1
-  --master_port $MASTER_PORT
+    --nproc_per_node $GPUS_PER_NODE
+    --nnodes $NNODES
+    --node_rank $NODE_RANK
+    --master_addr $MASTER_ADDR
+    --master_port $MASTER_PORT
 )
 
-TRAINING_ARGS=(
-  --model-name pi05_paligemma
-  --training-phase finetune
-  --distributed-strategy ddp
-  --dtype bfloat16
-  --max-train-steps 20
-  --save-steps 10
-  --gradient-clipping 1.0
-  --gradient-accumulation-steps 2
-  --logging-frequency 50
-  --seed 3047
-  --output-dir $OUTPUT_DIR
-  --pretrained-checkpoint $PRETRAINED_CHECKPOINT
+# ── Model config ──────────────────────────────────────────────
+MODEL_NAME=${MODEL_NAME:-"pi05_paligemma"}
+MODEL_CONFIG_ARGS=(
+    --model-name $MODEL_NAME
 )
 
-LR_ARGS=(
-  --lr 2.5e-05
-  --lr-backbone 1.0e-05
-  --lr-action-model 1.0e-04
-  --lr-scheduler-type cosine_with_min_lr
-  --warmup-steps 2000
-  --min-lr 1.0e-06
-  --weight-decay 0.01
-  --adam-beta1 0.9
-  --adam-beta2 0.95
-)
-
-EMA_ARGS=(
-  --ema
-  --ema-decay 0.9999
-)
-
+# ── Data params ───────────────────────────────────────────────
 DATA_ARGS=(
-  --dataloader-module lerobot_datasets
-  --data-root-dir $DATA_ROOT_DIR
-  --dataset-path $DATASET_PATH
-  --robot-type libero_franka
-  --per-device-batch-size 4
-  --num-workers 4
-  --action-horizon 10
-  --image-size 224
-  --normalization-mode q99
+    --dataloader-module lerobot_datasets
+    --dataset-path $DATA_PATH
+    --tokenizer-path $TOKENIZER_PATH
+    --robot-type libero_franka
+    --normalization-mode q99
+    --num-workers 4
 )
 
-LOGGING_ARGS=(
-  --wandb-project loongforge-vla
-  --wandb-mode disabled
+# ── Training params ───────────────────────────────────────────
+TRAINING_ARGS=(
+    --training-phase finetune
+    --trainer-type BCTrainer
+    --train-iters 20
+    --per-device-batch-size 4
+    --gradient-accumulation-steps 2
+    --seed 42
+    --output-dir $OUTPUT_DIR
+    # Learning rate
+    --lr 2.5e-5
+    --lr-backbone 1.0e-5
+    --lr-action-model 1.0e-4
+    --lr-decay-style cosine_with_min_lr
+    --lr-warmup-iters 10
+    --min-lr 1.0e-6
+    # Optimizer
+    --optimizer AdamW
+    --clip-grad 1.0
+    --weight-decay 0.01
+    --adam-beta1 0.9
+    --adam-beta2 0.95
+    --adam-eps 1e-8
+    # EMA
+    --ema
+    --ema-decay 0.9999
+    # Checkpoint
+    --save-interval 10
+    # --pretrained-checkpoint $CHECKPOINT_PATH
 )
+
+DISTRIBUTED_TRAINING_ARGS=(
+    --distributed-strategy ddp
+    --dtype bfloat16
+)
+
+# ── Logging params ────────────────────────────────────────────
+LOGGING_ARGS=(
+    --log-interval 50
+    --wandb-project loongforge-vla
+    --wandb-mode disabled
+)
+
+# ── Launch ────────────────────────────────────────────────────
+echo "════════════════════════════════════════════════════════════"
+echo "  LoongForgeVLA π₀.₅ Training (DDP)"
+echo "  Model:      $MODEL_NAME"
+echo "  GPUs:       $GPUS_PER_NODE"
+echo "  Data:       $DATA_PATH"
+echo "  Output:     $OUTPUT_DIR"
+echo "════════════════════════════════════════════════════════════"
 
 PYTHONPATH=$LOONGFORGE_PATH:${PYTHONPATH:-} \
-  torchrun ${DISTRIBUTED_ARGS[@]} \
-  $EMBODIED_ROOT/train.py \
-  ${TRAINING_ARGS[@]} \
-  ${LR_ARGS[@]} \
-  ${EMA_ARGS[@]} \
-  ${DATA_ARGS[@]} \
-  ${LOGGING_ARGS[@]} \
-  "$@"
+    torchrun "${DISTRIBUTED_ARGS[@]}" \
+    "$LOONGFORGE_PATH/loongforge/embodied/train.py" \
+    "${MODEL_CONFIG_ARGS[@]}" \
+    "${DATA_ARGS[@]}" \
+    "${TRAINING_ARGS[@]}" \
+    "${DISTRIBUTED_TRAINING_ARGS[@]}" \
+    "${LOGGING_ARGS[@]}" \
+    "$@"   # pass-through: --lr 1e-4  OR  backbone.image_size=448

@@ -10,7 +10,6 @@ _CONFIGS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "configs" 
 MODEL_CONFIG_MAP = {
     # Pi0.5 series
     "pi05_paligemma": "pi05_paligemma.yaml",
-    "pi05_qwen2_5_vl": "pi05_qwen2_5_vl.yaml",
     # GR00T series
     "groot_n1_6": "groot_n1_6.yaml",
 }

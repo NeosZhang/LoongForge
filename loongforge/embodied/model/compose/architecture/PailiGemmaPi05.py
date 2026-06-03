@@ -37,6 +37,7 @@ from loongforge.embodied.model.modules.pi05 import (
     tokenize_prompts,
     build_tokenizer,
 )
+from loongforge.embodied.train.global_vars import get_args
 
 logger = logging.getLogger(__name__)
 
@@ -90,8 +91,9 @@ class PaliGemmaPi05(BaseArchitecture):
         paligemma_variant = backbone_cfg.get("paligemma_variant", "gemma_2b")
         action_expert_variant = action_cfg.get("action_expert_variant", "gemma_300m")
         precision = action_cfg.get("precision", "bfloat16")
-        import os
-        tokenizer_name = backbone_cfg.get("tokenizer_name", "") or os.environ.get("TOKENIZER_PATH", "")
+        args = get_args()
+        tokenizer_name = getattr(args, "tokenizer_path", None)
+        assert tokenizer_name, "tokenizer_path must be provided via --tokenizer-path"
 
         self.pi05_config = PI05Config(
             paligemma_variant=paligemma_variant,
@@ -104,8 +106,8 @@ class PaliGemmaPi05(BaseArchitecture):
             image_resolution=(self.image_size, self.image_size),
             tokenizer_name=tokenizer_name,
             tokenizer_max_length=self.max_token_len,
-            freeze_vision_encoder=backbone_cfg.get("freeze_vision_encoder", False),
-            train_expert_only=backbone_cfg.get("train_expert_only", False),
+            freeze_vision_encoder=getattr(args, "freeze_vision_encoder", False),
+            train_expert_only=getattr(args, "train_expert_only", False),
             gradient_checkpointing=config.get("gradient_checkpointing", False),
         )
 

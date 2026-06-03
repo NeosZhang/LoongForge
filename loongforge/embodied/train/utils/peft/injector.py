@@ -45,11 +45,13 @@ def _detect_vlm_interface(model: nn.Module):
 def apply_lora(
     model: nn.Module,
     cfg: Any,
+    args: Any = None,
     *,
     print_summary: bool = True,
 ) -> nn.Module:
     """
-    Apply LoRA in-place per spec.
+    Apply LoRA in-place per spec. CLI args (when provided) override the YAML
+    `lora:` block for `enabled` / `rank` / `alpha` / `target_modules`.
 
     Steps:
       1. Resolve VLM interface (from lora.vlm_module or auto-detect)
@@ -60,12 +62,12 @@ def apply_lora(
 
     Returns the same model instance (mutated in place).
     """
-    if not is_lora_enabled(cfg):
+    if not is_lora_enabled(args):
         return model
 
     from peft import get_peft_model
 
-    spec = LoRASpec.from_omega(cfg)
+    spec = LoRASpec.from_args(args)
     lora_config = spec.peft_config()
 
     # 1. Resolve VLM interface

@@ -209,11 +209,11 @@ class HDF5VLADataset(Dataset):
 # ═══════════════════════════════════════════════════════════════
 
 def build_hdf5_dataset(model_cfg, args) -> Dataset:
-    """Build HDF5 dataset from CLI args."""
+    """Build HDF5 dataset from CLI args and YAML model config."""
     data_dir = getattr(args, "dataset_path", "")
     task_name = getattr(args, "task_name", "perform the task")
-    action_horizon = getattr(args, "action_horizon", 10)
-    image_size = getattr(args, "image_size", 224)
+    action_horizon = model_cfg.get("action_model", {}).get("action_horizon", 10)
+    image_size = model_cfg.get("backbone", {}).get("image_size", 224)
     normalization_mode = getattr(args, "normalization_mode", "min_max")
 
     # Support both single file and directory of files
