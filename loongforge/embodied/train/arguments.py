@@ -137,6 +137,9 @@ def add_distributed_args(parser: argparse.ArgumentParser):
                    help="Comma-separated class names for FSDP auto-wrap")
     g.add_argument("--dtype", type=str, default="bfloat16",
                    choices=["bfloat16", "float16", "float32"])
+    g.add_argument("--zero-optimizer", action="store_true",
+                   help="Wrap optimizer with ZeroRedundancyOptimizer (ZeRO Stage-1). "
+                        "Shards optimizer states across ranks. Only effective with DDP.")
 
 
 def add_model_override_args(parser: argparse.ArgumentParser):

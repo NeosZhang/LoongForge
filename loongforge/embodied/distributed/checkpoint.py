@@ -163,6 +163,12 @@ def _is_fsdp2(model: nn.Module) -> bool:
     return hasattr(model, "_fsdp_state")
 
 
+def _is_zero_optimizer(optimizer) -> bool:
+    """Check if optimizer is a ZeroRedundancyOptimizer."""
+    from torch.distributed.optim import ZeroRedundancyOptimizer
+    return isinstance(optimizer, ZeroRedundancyOptimizer)
+
+
 def _save_training_state(model, optimizer, scheduler, step, path, ctx):
     """Save optimizer + scheduler state."""
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -171,6 +177,10 @@ def _save_training_state(model, optimizer, scheduler, step, path, ctx):
         from torch.distributed.checkpoint.state_dict import get_state_dict, StateDictOptions
         options = StateDictOptions(full_state_dict=True, cpu_offload=True)
         _, optim_sd = get_state_dict(model, optimizers=[optimizer], options=options)
+    elif _is_zero_optimizer(optimizer):
+        # ZeRO: consolidate sharded optimizer state to rank 0
+        optimizer.consolidate_state_dict()
+        optim_sd = optimizer.state_dict() if ctx.is_main else None
     else:
         optim_sd = optimizer.state_dict()
 
