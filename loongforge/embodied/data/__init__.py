@@ -135,10 +135,15 @@ def _build_dataset(model_cfg, args, module: str):
 
         return build_dummy_dataset(model_cfg, args)
 
+    elif module == "mock_lerobotv2_datasets":
+        from .datasets.mock_lerobot_v2_dataset import build_mock_lerobot_v2_dataset
+
+        return build_mock_lerobot_v2_dataset(model_cfg, args)
+
     else:
         raise ValueError(
             f"Unknown dataloader_module: '{module}'. "
-            f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets"
+            f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets, mock_lerobotv2_datasets"
         )
 
 

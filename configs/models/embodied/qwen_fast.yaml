@@ -1,0 +1,31 @@
+
+model_type: Fast
+
+# Four-layer compose config
+architecture: QwenFast
+condition: null    # QwenFast is end-to-end, no separate condition
+action: null       # QwenFast dericetly output actions via Compression and tokenizer
+
+# Pi0.5 mode (true=adaRMS normalization, false=pi0 state+time concat)
+# pi05: true
+
+# Backbone (Qwen VLM)
+backbone:
+  paligemma_variant: Qwen
+  num_images: 2                
+  image_mask: [true, true]     
+  image_size: 224              
+  max_token_len: 200           
+  attn_implementation: eager   
+
+# Action model (FAST Action Expert)
+action_model:
+  action_model_type: Fast
+  action_dim: 7
+  state_dim: 7
+  action_horizon: 50
+  max_action_dim: 32
+  max_state_dim: 32
+  # action_expert_variant: gemma_300m
+  precision: bfloat16           
+
