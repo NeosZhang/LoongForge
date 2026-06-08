@@ -12,6 +12,7 @@ MODEL_CONFIG_MAP = {
     "pi05_paligemma": "pi05_paligemma.yaml",
     # GR00T series
     "groot_n1_6": "groot_n1_6.yaml",
+    "qwen_fast": "qwen_fast.yaml",
 }
 
 
