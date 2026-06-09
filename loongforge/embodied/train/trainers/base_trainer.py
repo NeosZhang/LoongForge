@@ -3,6 +3,7 @@
 
 """BaseTrainer — pure native PyTorch distributed training skeleton."""
 
+import contextlib
 import copy
 import gc
 import json
@@ -24,7 +25,7 @@ from loongforge.embodied.distributed.checkpoint import (
     resume_training_state,
     save_checkpoint,
 )
-from loongforge.embodied.distributed.utils import set_seed, setup_logging
+from loongforge.embodied.train.utils.utils import log_effective_config, log_stage, set_seed, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -102,35 +103,73 @@ class BaseTrainer(ABC):
         self.ctx.barrier()
         setup_logging(self.output_dir, self.ctx.rank)
 
+        # Dump fully-resolved CLI args + model config now that the file
+        # handler is attached, so the effective config also lands in the log.
+        log_effective_config(args)
+
         # 4. Build model (from YAML model_cfg)
-        self.model = self._build_model()
+        mt = getattr(self.model_cfg, "model_type", "?")
+        arch = getattr(self.model_cfg, "architecture", "?")
+        with log_stage(
+            "model",
+            start_msg=f"building: model_type={mt}  architecture={arch}",
+            end_msg="built in {elapsed}",
+        ):
+            self.model = self._build_model()
 
         # 5. Pretrained weights / Resume (before wrapping)
         if args.resume:
-            self._handle_resume()
+            with log_stage(
+                "ckpt",
+                start_msg=f"resume requested: dir={self.checkpoint_dir}",
+                end_msg="resume done in {elapsed}",
+            ):
+                self._handle_resume()
+            if self.ctx.is_main:
+                logger.info(f"[ckpt] resumed completed_steps={self.completed_steps}")
         elif args.pretrained_checkpoint:
-            self._load_pretrained(args.pretrained_checkpoint)
+            with log_stage(
+                "ckpt",
+                start_msg=f"loading pretrained: {args.pretrained_checkpoint}",
+                end_msg="pretrained loaded in {elapsed}",
+            ):
+                self._load_pretrained(args.pretrained_checkpoint)
 
         # 6. Freeze modules
         self._freeze_modules(args.freeze_modules)
 
-        # 7. Parallel wrapping (DDP/FSDP + mixed precision via policy)
-        self.model = wrap_model(self.model, args, self.ctx)
+        with log_stage(
+            "wrap_model",
+            start_msg=f"wrap_model: strategy={args.distributed_strategy}, dtype={args.dtype}",
+            end_msg="done in {elapsed}",
+        ):
+            # 7. Parallel wrapping (DDP/FSDP + mixed precision via policy)
+            self.model = wrap_model(self.model, args, self.ctx)
 
-        # 8. Optimizer + Scheduler (after wrapping; FSDP use_orig_params=True)
-        self.optimizer = self._build_optimizer()
-        self.lr_scheduler = self._build_scheduler()
+        with log_stage(
+            "optimizer", 
+            start_msg="building optimizer", end_msg="optimizer built in {elapsed}"
+        ):
+            # 8. Optimizer + Scheduler (after wrapping; FSDP use_orig_params=True)
+            self.optimizer = self._build_optimizer()
+            self.lr_scheduler = self._build_scheduler()
 
         # 9. Resume optimizer/scheduler state (after wrapping + optimizer creation)
         if args.resume and self.completed_steps > 0:
             latest_path, _ = get_latest_checkpoint(self.checkpoint_dir)
             if latest_path:
-                resume_training_state(
-                    self.model, self.optimizer, self.lr_scheduler, latest_path, self.ctx
-                )
+                with log_stage(
+                    "ckpt",
+                    start_msg=f"restoring optimizer/scheduler state from {latest_path}",
+                    end_msg="optimizer/scheduler state restored in {elapsed}",
+                ):
+                    resume_training_state(
+                        self.model, self.optimizer, self.lr_scheduler, latest_path, self.ctx
+                    )
 
         # 10. Data
-        self.dataloaders = self._build_dataloaders()
+        with log_stage("data", start_msg="building dataloaders"):
+            self.dataloaders = self._build_dataloaders()
 
         # 11. EMA
         if args.ema:
@@ -213,6 +252,16 @@ class BaseTrainer(ABC):
             metrics = self._collect_metrics(output, accum_loss, time.perf_counter() - t0)
             self._on_step_end(metrics)
 
+            # ── Progress bar ── (update before logging so pbar reflects current step)
+            if pbar:
+                from datetime import datetime as _dt
+                pbar.set_description_str(f"{_dt.now():%Y-%m-%d %H:%M:%S} Training")
+                pbar.update(1)
+                pbar.set_postfix(
+                    loss=f"{metrics.get('action_loss', 0):.4f}",
+                    lr=f"{metrics.get('lr', 0):.2e}",
+                )
+
             # ── Logging ──
             if self.completed_steps % log_interval == 0:
                 self._log_metrics(metrics)
@@ -220,14 +269,6 @@ class BaseTrainer(ABC):
             # ── Checkpoint ──
             if self.completed_steps % save_interval == 0:
                 self._save_checkpoint()
-
-            # ── Progress bar ──
-            if pbar:
-                pbar.update(1)
-                pbar.set_postfix(
-                    loss=f"{metrics.get('action_loss', 0):.4f}",
-                    lr=f"{metrics.get('lr', 0):.2e}",
-                )
 
         if pbar:
             pbar.close()
@@ -387,12 +428,37 @@ class BaseTrainer(ABC):
         metrics["lr"] = self.lr_scheduler.get_last_lr()[0]
         return metrics
 
+    def _log_to_file_only(self, msg: str):
+        """Emit a line to the FileHandler(s) on root logger but skip stdout.
+
+        tqdm already prints per-step loss/lr in its postfix; mirroring the
+        same line through the StreamHandler produces the visible duplicate
+        seen alongside the pbar. We temporarily detach StreamHandlers, log,
+        then restore them.
+        """
+        root = logging.getLogger()
+        detached = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
+                    and not isinstance(h, logging.FileHandler)]
+        for h in detached:
+            root.removeHandler(h)
+        try:
+            logger.info(msg)
+        finally:
+            for h in detached:
+                root.addHandler(h)
+
     def _log_metrics(self, metrics: Dict[str, float]):
         if not self.ctx.is_main:
             return
-        loss = metrics.get("action_loss", float("nan"))
-        lr = metrics.get("lr", 0)
-        logger.info(f"step {self.completed_steps:>6d}  loss={loss:.5f}  lr={lr:.2e}")
+        # Mirror the current pbar line into the log file (file only — stdout
+        # already shows the in-place updating pbar). Throttled by log_interval
+        # via the caller in _training_loop.
+        pbar = getattr(self, "_pbar", None)
+        if pbar is not None:
+            try:
+                self._log_to_file_only(str(pbar))
+            except Exception:
+                pass
 
         # W&B
         try:
@@ -459,7 +525,17 @@ class BaseTrainer(ABC):
         try:
             from tqdm import tqdm
 
-            return tqdm(range(self.train_iters), initial=self.completed_steps, desc="Training")
+            # dynamic_ncols + leave=True; description is refreshed each step
+            # in _training_loop with current timestamp so the line reads e.g.
+            #   "2026-06-08 19:52:11 Training:  1%|... loss=... lr=..."
+            return tqdm(
+                range(self.train_iters),
+                initial=self.completed_steps,
+                desc="Training",
+                dynamic_ncols=True,
+                bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
+                           "[{elapsed}<{remaining}, {rate_fmt}{postfix}]",
+            )
         except ImportError:
             return None
 

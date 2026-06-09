@@ -15,7 +15,6 @@ Usage:
 """
 
 import argparse
-import logging
 import os
 
 from omegaconf import OmegaConf
@@ -24,8 +23,6 @@ from .arguments import add_model_override_args, embodied_args_provider
 from .config_map import get_config_path
 from .global_vars import set_args, set_model_config
 from .validators import validate_args
-
-logger = logging.getLogger(__name__)
 
 
 def parse_train_args():
@@ -82,10 +79,5 @@ def parse_train_args():
     # Backward compat: attach to args for trainer access
     args.model_cfg = model_cfg
     args.config_path = config_path
-
-    logger.info(f"Model config loaded: {config_path}")
-    logger.info(f"model_type={model_cfg.get('model_type', 'unknown')}")
-    logger.info(f"Training: train_iters={args.train_iters}, lr={args.lr}, "
-                f"batch_size={args.per_device_batch_size}")
 
     return args

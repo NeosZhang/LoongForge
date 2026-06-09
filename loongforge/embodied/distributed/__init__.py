@@ -5,12 +5,9 @@
 
 from .context import DistributedContext
 from .parallel import wrap_model, unwrap_model
-from .utils import set_seed, setup_logging
 
 __all__ = [
     "DistributedContext",
     "wrap_model",
     "unwrap_model",
-    "set_seed",
-    "setup_logging",
 ]
