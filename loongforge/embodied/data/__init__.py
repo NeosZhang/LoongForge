@@ -90,6 +90,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
             save_dataset_statistics(dataset_stats, stats_path)
 
     # Build DataLoader
+    seed = getattr(args, "seed", 0) or 0
     if isinstance(dataset, IterableDataset):
         dl = DataLoader(
             dataset,
@@ -97,13 +98,13 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
             num_workers=num_workers,
             collate_fn=preprocessor,
             pin_memory=True,
-            drop_last=True,
+            drop_last=False,
         )
     else:
         sampler = None
         shuffle = True
         if ctx.is_distributed:
-            sampler = DistributedSampler(dataset, shuffle=True)
+            sampler = DistributedSampler(dataset, shuffle=True, seed=seed)
             shuffle = False
 
         dl = DataLoader(
@@ -114,7 +115,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
             num_workers=num_workers,
             collate_fn=preprocessor,
             pin_memory=True,
-            drop_last=True,
+            drop_last=False,
             persistent_workers=num_workers > 0,
         )
 
