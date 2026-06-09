@@ -58,10 +58,6 @@ LR_ARGS=(
   --adam-beta2 0.95
 )
 
-EMA_ARGS=(
-  --ema
-  --ema-decay 0.9999
-)
 
 DATA_ARGS=(
   --dataloader-module lerobot_datasets
@@ -85,7 +81,6 @@ PYTHONPATH=$LOONGFORGE_PATH:${PYTHONPATH:-} \
   $EMBODIED_ROOT/train.py \
   ${TRAINING_ARGS[@]} \
   ${LR_ARGS[@]} \
-  ${EMA_ARGS[@]} \
   ${DATA_ARGS[@]} \
   ${LOGGING_ARGS[@]} \
   "$@"

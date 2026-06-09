@@ -3,10 +3,8 @@
 
 """BaseTrainer — pure native PyTorch distributed training skeleton."""
 
-import contextlib
 import copy
 import gc
-import json
 import logging
 import os
 import time
@@ -25,12 +23,11 @@ from loongforge.embodied.distributed.checkpoint import (
     resume_training_state,
     save_checkpoint,
 )
-from loongforge.embodied.train.utils.utils import (
-    log_effective_config,
-    log_stage, set_seed,
-    set_deterministic,
-    setup_logging
-)
+
+
+from loongforge.embodied.train.utils.utils import log_stage, set_seed, setup_logging, set_deterministic
+from loongforge.embodied.train.utils.logging import TrainingLogger, log_effective_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,6 +59,7 @@ class BaseTrainer(ABC):
         self.optimizer: Optional[torch.optim.Optimizer] = None
         self.lr_scheduler = None
         self.dataloaders: Dict[str, DataLoader] = {}
+        self.logger: Optional[TrainingLogger] = None
 
         # Training state
         self.completed_steps: int = 0
@@ -114,7 +112,17 @@ class BaseTrainer(ABC):
         # handler is attached, so the effective config also lands in the log.
         log_effective_config(args)
 
-        # 4. Build model (from YAML model_cfg)
+        # 4. TrainingLogger (initialize early for logging during setup)
+        self.logger = TrainingLogger(
+            output_dir=self.output_dir,
+            wandb_project=args.wandb_project,
+            wandb_mode=args.wandb_mode,
+            is_main=self.ctx.is_main,
+            model_cfg=self.model_cfg,
+        )
+        self.logger.init_wandb(os.path.basename(self.output_dir))
+
+        # 5. Build model (from YAML model_cfg)
         mt = getattr(self.model_cfg, "model_type", "?")
         arch = getattr(self.model_cfg, "architecture", "?")
         with log_stage(
@@ -182,11 +190,8 @@ class BaseTrainer(ABC):
         if args.ema:
             self._init_ema()
 
-        # 12. W&B
-        self._init_wandb()
-
-        # 13. Print stats
-        self._log_param_stats()
+        # 12. Print stats
+        self.logger.log_param_stats(self.model)
 
         # Hook
         self._on_train_begin()
@@ -204,8 +209,6 @@ class BaseTrainer(ABC):
         loss_spike_threshold = args.loss_spike_threshold
 
         self._init_data_iterator("vla")
-        pbar = self._make_pbar()
-        self._log_training_config()
 
         while self.completed_steps < self.train_iters:
             self.optimizer.zero_grad()
@@ -220,12 +223,9 @@ class BaseTrainer(ABC):
                 loss = output["action_loss"] / grad_accum
 
                 # Loss spike protection: zero out to prevent NaN propagation
-                loss_val = loss.detach().item() * grad_accum
+                loss_val = output["action_loss"].detach().item()
                 if torch.isnan(loss) or torch.isinf(loss) or loss_val > loss_spike_threshold:
-                    if self.ctx.is_main:
-                        logger.warning(
-                            f"[step {self.completed_steps}] Loss spike: {loss_val:.4f}, zeroing"
-                        )
+                    self.logger.log_loss_spike(self.completed_steps, loss_val)
                     loss = loss * 0.0
 
                 # Backward with no_sync for non-last micro steps
@@ -241,7 +241,7 @@ class BaseTrainer(ABC):
                 else:
                     loss.backward()
 
-                accum_loss += loss.detach().item()
+                accum_loss += loss_val
 
             # ── NaN gradient cleanup ──
             self._clean_nan_gradients()
@@ -256,29 +256,26 @@ class BaseTrainer(ABC):
             self.completed_steps += 1
 
             # ── Metrics ──
-            metrics = self._collect_metrics(output, accum_loss, time.perf_counter() - t0)
+            step_time = time.perf_counter() - t0
+            batch_size = grad_accum * args.per_device_batch_size
+            metrics = self.logger.collect_metrics(
+                output, accum_loss, step_time,
+                self.completed_steps, self.lr_scheduler,
+                self.completed_steps * batch_size,
+                self.model, batch_size,
+            )
             self._on_step_end(metrics)
-
-            # ── Progress bar ── (update before logging so pbar reflects current step)
-            if pbar:
-                from datetime import datetime as _dt
-                pbar.set_description_str(f"{_dt.now():%Y-%m-%d %H:%M:%S} Training")
-                pbar.update(1)
-                pbar.set_postfix(
-                    loss=f"{metrics.get('action_loss', 0):.4f}",
-                    lr=f"{metrics.get('lr', 0):.2e}",
-                )
 
             # ── Logging ──
             if self.completed_steps % log_interval == 0:
-                self._log_metrics(metrics)
+                self.logger.log_metrics(
+                    metrics, self.completed_steps, self.train_iters,
+                    args.per_device_batch_size, self.ctx.world_size, self.ctx.is_distributed,
+                )
 
             # ── Checkpoint ──
             if self.completed_steps % save_interval == 0:
                 self._save_checkpoint()
-
-        if pbar:
-            pbar.close()
 
     # ═══════════════════════════════════════════════
     # Abstract methods — subclass must implement
@@ -320,10 +317,10 @@ class BaseTrainer(ABC):
         arch = getattr(self.model, "architecture", None)
         if arch and hasattr(arch, "load_pretrained"):
             arch.load_pretrained(path, device=self.ctx.device)
-            if self.ctx.is_main:
-                logger.info(f"Pretrained loaded via architecture: {path}")
+            self.logger.log_pretrained_loaded(path, via_architecture=True)
         else:
             load_pretrained(self.model, path, self.ctx)
+            self.logger.log_pretrained_loaded(path, via_architecture=False)
 
     def _handle_resume(self):
         """Resume from latest checkpoint."""
@@ -331,11 +328,9 @@ class BaseTrainer(ABC):
         if path:
             load_pretrained(self.model, path, self.ctx)
             self.completed_steps = step
-            if self.ctx.is_main:
-                logger.info(f"Resumed model weights from step {step}")
+            self.logger.log_resume(step)
         else:
-            if self.ctx.is_main:
-                logger.warning("--resume set but no checkpoint found, starting from scratch")
+            self.logger.log_resume_not_found()
 
     def _freeze_modules(self, freeze_str: str):
         """Freeze specified modules by dot-path."""
@@ -348,11 +343,9 @@ class BaseTrainer(ABC):
                     module = getattr(module, attr)
                 for p in module.parameters():
                     p.requires_grad = False
-                if self.ctx.is_main:
-                    logger.info(f"Frozen: {path}")
+                self.logger.log_frozen_module(path)
             except AttributeError:
-                if self.ctx.is_main:
-                    logger.warning(f"Freeze target not found: {path}")
+                self.logger.log_freeze_not_found(path)
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
         """Build AdamW with per-module LR groups."""
@@ -409,14 +402,14 @@ class BaseTrainer(ABC):
         # FSDP shards parameters — EMA needs full params.
         # Skip EMA when FSDP is active (proper FSDP EMA requires summon_full_params).
         if self.args.distributed_strategy == "fsdp":
-            logger.warning("EMA disabled under FSDP (requires summon_full_params). Skipping.")
+            self.logger.log_ema_disabled_fsdp()
             self.ema_model = None
             return
         raw = unwrap_model(self.model)
         self.ema_model = copy.deepcopy(raw).cpu().eval()
         for p in self.ema_model.parameters():
             p.requires_grad_(False)
-        logger.info(f"EMA initialized, decay={self.args.ema_decay}")
+        self.logger.log_ema_initialized(self.args.ema_decay)
 
     def _ema_update(self):
         if not self.ema_model or not self.ctx.is_main:
@@ -425,131 +418,6 @@ class BaseTrainer(ABC):
         with torch.no_grad():
             for ep, mp in zip(self.ema_model.parameters(), raw.parameters()):
                 ep.data.mul_(self.args.ema_decay).add_(mp.data.cpu(), alpha=1 - self.args.ema_decay)
-
-    # ── Logging ──
-
-    def _collect_metrics(self, output: Dict, accum_loss: float, step_time: float) -> Dict[str, float]:
-        metrics = {"action_loss": accum_loss, "step_time": step_time, "step": self.completed_steps}
-        for k, v in output.items():
-            if k == "action_loss":
-                continue
-            if isinstance(v, torch.Tensor) and v.numel() == 1:
-                metrics[k] = v.item()
-            elif isinstance(v, (int, float)):
-                metrics[k] = v
-        metrics["lr"] = self.lr_scheduler.get_last_lr()[0]
-        return metrics
-
-    def _log_to_file_only(self, msg: str):
-        """Emit a line to the FileHandler(s) on root logger but skip stdout.
-
-        tqdm already prints per-step loss/lr in its postfix; mirroring the
-        same line through the StreamHandler produces the visible duplicate
-        seen alongside the pbar. We temporarily detach StreamHandlers, log,
-        then restore them.
-        """
-        root = logging.getLogger()
-        detached = [h for h in root.handlers if isinstance(h, logging.StreamHandler)
-                    and not isinstance(h, logging.FileHandler)]
-        for h in detached:
-            root.removeHandler(h)
-        try:
-            logger.info(msg)
-        finally:
-            for h in detached:
-                root.addHandler(h)
-
-    def _log_metrics(self, metrics: Dict[str, float]):
-        if not self.ctx.is_main:
-            return
-        # Mirror the current pbar line into the log file (file only — stdout
-        # already shows the in-place updating pbar). Throttled by log_interval
-        # via the caller in _training_loop.
-        pbar = getattr(self, "_pbar", None)
-        if pbar is not None:
-            try:
-                self._log_to_file_only(str(pbar))
-            except Exception:
-                pass
-
-        # W&B
-        try:
-            import wandb
-
-            if wandb.run:
-                wandb.log(metrics, step=self.completed_steps)
-        except Exception:
-            pass
-
-        # JSONL
-        metrics_file = os.path.join(self.output_dir, "metrics.jsonl")
-        try:
-            with open(metrics_file, "a") as f:
-                f.write(json.dumps(metrics) + "\n")
-        except Exception:
-            pass
-
-    def _init_wandb(self):
-        if self.args.wandb_mode == "disabled" or not self.ctx.is_main:
-            return
-        try:
-            import wandb
-
-            wandb.init(
-                project=self.args.wandb_project,
-                name=os.path.basename(self.output_dir),
-                mode=self.args.wandb_mode,
-            )
-        except Exception as e:
-            logger.warning(f"W&B init failed: {e}")
-
-    def _log_training_config(self):
-        if not self.ctx.is_main:
-            return
-        args = self.args
-        logger.info("=" * 60)
-        logger.info(f"  Model type:      {self.model_cfg.model_type}")
-        logger.info(f"  Architecture:    {self.model_cfg.architecture}")
-        logger.info(f"  Phase:           {args.training_phase}")
-        logger.info(f"  Strategy:        {args.distributed_strategy}")
-        logger.info(f"  Dtype:           {args.dtype}")
-        logger.info(f"  World size:      {self.ctx.world_size}")
-        logger.info(f"  Train iters:     {args.train_iters}")
-        logger.info(f"  Batch/GPU:       {args.per_device_batch_size}")
-        logger.info(f"  Grad accum:      {args.gradient_accumulation_steps}")
-        logger.info(f"  LR:              {args.lr}")
-        logger.info(f"  Freeze:          {args.freeze_modules or '(none)'}")
-        logger.info("=" * 60)
-
-    def _log_param_stats(self):
-        if not self.ctx.is_main:
-            return
-        total = sum(p.numel() for p in self.model.parameters())
-        trainable = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        logger.info(
-            f"Parameters: {total / 1e6:.1f}M total, {trainable / 1e6:.1f}M trainable "
-            f"({100 * trainable / max(total, 1):.1f}%)"
-        )
-
-    def _make_pbar(self):
-        if not self.ctx.is_main:
-            return None
-        try:
-            from tqdm import tqdm
-
-            # dynamic_ncols + leave=True; description is refreshed each step
-            # in _training_loop with current timestamp so the line reads e.g.
-            #   "2026-06-08 19:52:11 Training:  1%|... loss=... lr=..."
-            return tqdm(
-                range(self.train_iters),
-                initial=self.completed_steps,
-                desc="Training",
-                dynamic_ncols=True,
-                bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
-                           "[{elapsed}<{remaining}, {rate_fmt}{postfix}]",
-            )
-        except ImportError:
-            return None
 
     # ── Finalize ──
 
@@ -568,17 +436,10 @@ class BaseTrainer(ABC):
             gc.collect()
             ema_cpu = copy.deepcopy(self.ema_model).cpu()
             save_model(ema_cpu, os.path.join(final_path, "model.safetensors"))
-            logger.info(f"EMA final model saved: {final_path}")
+            self.logger.log_final_model_saved(final_path)
 
         # Close W&B
-        if self.ctx.is_main:
-            try:
-                import wandb
-
-                if wandb.run:
-                    wandb.finish()
-            except Exception:
-                pass
+        self.logger.finish_wandb()
 
         self.ctx.barrier()
         self.ctx.destroy()

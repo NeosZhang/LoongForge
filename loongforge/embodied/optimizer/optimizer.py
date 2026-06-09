@@ -40,14 +40,28 @@ def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
     if use_zero:
         strategy = getattr(args, "distributed_strategy", "ddp")
         if strategy == "ddp":
-            from torch.distributed.optim import ZeroRedundancyOptimizer
-            logger.info("Using ZeroRedundancyOptimizer (ZeRO Stage-1) with DDP")
-            return ZeroRedundancyOptimizer(
-                groups,
-                optimizer_class=optimizer_cls,
-                parameters_as_bucket_view=True,
-                **kwargs,
-            )
+            # Check for mixed dtype parameters - ZeroRedundancyOptimizer requires uniform dtype
+            param_dtypes = set()
+            for group in groups:
+                for p in group.get("params", []):
+                    if p.requires_grad:
+                        param_dtypes.add(p.dtype)
+            if len(param_dtypes) > 1:
+                logger.warning(
+                    f"ZeroRedundancyOptimizer requires uniform parameter dtype, but got {param_dtypes}. "
+                    f"Models like pi05 keep some parameters in fp32 (vision tower, layernorms) while "
+                    f"others are in bf16. Falling back to standard optimizer. "
+                    f"To fix this, remove --zero-optimizer flag or ensure all parameters have the same dtype."
+                )
+            else:
+                from torch.distributed.optim import ZeroRedundancyOptimizer
+                logger.info("Using ZeroRedundancyOptimizer (ZeRO Stage-1) with DDP")
+                return ZeroRedundancyOptimizer(
+                    groups,
+                    optimizer_class=optimizer_cls,
+                    parameters_as_bucket_view=True,
+                    **kwargs,
+                )
         else:
             logger.warning(
                 f"--zero-optimizer ignored: only effective with --distributed-strategy ddp, "

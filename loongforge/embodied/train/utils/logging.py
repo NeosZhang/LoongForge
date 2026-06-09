@@ -1,0 +1,455 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Training logging utilities for metrics, W&B, and progress tracking."""
+
+import json
+import logging
+import os
+from typing import Any, Dict, Optional
+
+from omegaconf import DictConfig, ListConfig, OmegaConf
+
+import numpy as np
+import torch
+
+logger = logging.getLogger(__name__)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Config formatting utilities
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _format_block(title: str, items: dict) -> str:
+    """Render a Megatron-style key/value block.
+
+    Layout:
+        ------------------------ {title} ------------------------
+          key1 ...................................... value
+          key2 ...................................... value
+        -------------------- end of {title} ---------------------
+    """
+    lines = [f"------------------------ {title} ------------------------"]
+    for key in sorted(items.keys(), key=str.lower):
+        dots = "." * max(1, 48 - len(key))
+        lines.append(f"  {key} {dots} {items[key]}")
+    lines.append(f"-------------------- end of {title} ---------------------")
+    return "\n".join(lines)
+
+
+def _flatten_omegaconf(cfg, prefix: str = "") -> dict:
+    """Flatten OmegaConf into a dotted dict: {'a.b.c': value, ...}."""
+    out = {}
+    if isinstance(cfg, DictConfig):
+        for k, v in cfg.items():
+            key = f"{prefix}.{k}" if prefix else str(k)
+            out.update(_flatten_omegaconf(v, key))
+    elif isinstance(cfg, ListConfig):
+        out[prefix] = OmegaConf.to_container(cfg, resolve=True)
+    else:
+        out[prefix] = cfg
+    return out
+
+
+def log_effective_config(args):
+    """Log fully-resolved CLI args + model YAML config in Megatron-style format.
+
+    Output is gated by the logger level: rank 0 is set to INFO and others to
+    WARNING (see setup_logging / parser bootstrap), so non-rank-0 logger.info
+    calls are filtered automatically — no explicit rank check needed here.
+    """
+    # CLI args (skip the attached OmegaConf to render it separately)
+    args_items = {
+        k: v for k, v in vars(args).items() if k != "model_cfg"
+    }
+    logger.info("\n%s", _format_block("arguments", args_items))
+
+    # Flatten model YAML config to dotted keys
+    cfg_items = _flatten_omegaconf(args.model_cfg)
+    logger.info("\n%s", _format_block("model config", cfg_items))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TrainingLogger class
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TrainingLogger:
+    """Handles training metrics logging, W&B integration, and progress tracking.
+
+    This class centralizes all logging-related functionality that was previously
+    scattered in BaseTrainer. It provides:
+      - Metrics collection and formatting
+      - W&B integration
+      - JSONL metrics export
+      - Progress bar management
+      - Training configuration logging
+    """
+
+    def __init__(
+        self,
+        output_dir: str,
+        wandb_project: Optional[str] = None,
+        wandb_mode: str = "disabled",
+        is_main: bool = True,
+        model_cfg: Optional[Any] = None,
+    ):
+        """Initialize the training logger.
+
+        Args:
+            output_dir: Directory for output files (metrics.jsonl, etc.)
+            wandb_project: W&B project name (None to disable)
+            wandb_mode: W&B mode ("online", "offline", "disabled")
+            is_main: Whether this is the main process (only main logs)
+            model_cfg: Model config for image size estimation
+        """
+        self.output_dir = output_dir
+        self.wandb_project = wandb_project
+        self.wandb_mode = wandb_mode
+        self.is_main = is_main
+        self.model_cfg = model_cfg
+        self._wandb_initialized = False
+
+    # ═══════════════════════════════════════════════════════════════
+    # W&B Integration
+    # ═══════════════════════════════════════════════════════════════
+
+    def init_wandb(self, run_name: Optional[str] = None):
+        """Initialize Weights & Biases tracking.
+
+        Args:
+            run_name: Name for the W&B run (defaults to output_dir basename)
+        """
+        if self.wandb_mode == "disabled" or not self.is_main:
+            return
+        try:
+            import wandb
+
+            wandb.init(
+                project=self.wandb_project,
+                name=run_name or os.path.basename(self.output_dir),
+                mode=self.wandb_mode,
+            )
+            self._wandb_initialized = True
+        except Exception as e:
+            logger.warning(f"W&B init failed: {e}")
+
+    def log_to_wandb(self, metrics: Dict[str, float], step: int):
+        """Log metrics to W&B.
+
+        Args:
+            metrics: Dictionary of metric names and values
+            step: Current training step
+        """
+        if not self.is_main or not self._wandb_initialized:
+            return
+        try:
+            import wandb
+
+            if wandb.run:
+                wandb.log(metrics, step=step)
+        except Exception:
+            pass
+
+    def finish_wandb(self):
+        """Finish W&B run."""
+        if not self.is_main:
+            return
+        try:
+            import wandb
+
+            if wandb.run:
+                wandb.finish()
+        except Exception:
+            pass
+
+    # ═══════════════════════════════════════════════════════════════
+    # Metrics Collection
+    # ═══════════════════════════════════════════════════════════════
+
+    def count_batch_size(self, batch) -> int:
+        """Count batch size from batch data.
+
+        Supports:
+          - list of samples
+          - dict with tensor values
+          - dataclass/obj with tensor attributes
+
+        Args:
+            batch: Batch data
+
+        Returns:
+            Number of samples in the batch.
+        """
+        # 1. List format: len(batch)
+        if isinstance(batch, list):
+            return len(batch)
+
+        # 2. Dict format: check common keys for batch dimension
+        if isinstance(batch, dict):
+            for key in ("actions", "action", "input_ids", "attention_mask", "state"):
+                if key in batch and batch[key] is not None:
+                    return self._get_batch_dim(batch[key])
+            return 0
+
+        # 3. Dataclass/object format: check common attributes for batch dimension
+        for key in ("actions", "input_ids", "attention_mask", "state"):
+            if hasattr(batch, key):
+                val = getattr(batch, key)
+                if val is not None:
+                    return self._get_batch_dim(val)
+        return 0
+
+    def _get_batch_dim(self, value) -> int:
+        """Get batch dimension from tensor/ndarray.
+
+        Returns 0 if value is not a tensor/ndarray or has no batch dim.
+        """
+        if isinstance(value, torch.Tensor):
+            return value.shape[0] if value.ndim > 0 else 0
+        elif isinstance(value, np.ndarray):
+            return value.shape[0] if value.ndim > 0 else 0
+        elif isinstance(value, list) and len(value) > 0:
+            # Handle list of tensors (e.g., images_list)
+            first = value[0]
+            if isinstance(first, torch.Tensor):
+                return first.shape[0] if first.ndim > 0 else 0
+            elif isinstance(first, np.ndarray):
+                return first.shape[0] if first.ndim > 0 else 0
+        return 0
+
+    def collect_metrics(
+        self,
+        output: Dict[str, Any],
+        accum_loss: float,
+        step_time: float,
+        completed_steps: int,
+        lr_scheduler: Any,
+        consumed_samples: int,
+        model: torch.nn.Module,
+        batch_size: int = 0,
+    ) -> Dict[str, float]:
+        """Collect metrics, including loss, step time, and gradient norm.
+
+        Args:
+            output: Output dict from forward pass (must contain 'action_loss')
+            accum_loss: Accumulated loss value
+            step_time: Time taken for the step
+            completed_steps: Current training step
+            lr_scheduler: Learning rate scheduler
+            consumed_samples: Total consumed samples so far
+            model: Model for gradient norm calculation
+            batch_size: Batch size (for throughput calculation)
+
+        Returns:
+            Dictionary of collected metrics
+        """
+        metrics = {
+            "action_loss": accum_loss,
+            "step_time": step_time,
+            "step": completed_steps,
+        }
+
+        # Add output metrics (excluding action_loss which we already have)
+        for k, v in output.items():
+            if k == "action_loss":
+                continue
+            if isinstance(v, torch.Tensor) and v.numel() == 1:
+                metrics[k] = v.item()
+            elif isinstance(v, (int, float)):
+                metrics[k] = v
+
+        metrics["lr"] = lr_scheduler.get_last_lr()[0]
+        metrics["consumed_samples"] = consumed_samples
+
+        # Calculate samples/second throughput
+        if batch_size > 0 and step_time > 0:
+            samples_per_sec = batch_size / step_time
+            metrics["samples_per_sec"] = samples_per_sec
+        else:
+            metrics["samples_per_sec"] = 0.0
+
+        # Calculate gradient norm
+        from loongforge.embodied.optimizer import get_grad_norm
+
+        grad_norm = get_grad_norm(model)
+        metrics["grad_norm"] = grad_norm
+
+        return metrics
+
+    # ═══════════════════════════════════════════════════════════════
+    # Logging Output
+    # ═══════════════════════════════════════════════════════════════
+
+    def log_metrics(
+        self,
+        metrics: Dict[str, float],
+        completed_steps: int,
+        train_iters: int,
+        per_device_batch_size: int,
+        world_size: int = 1,
+        is_distributed: bool = False,
+    ):
+        """Log metrics to console, W&B, and JSONL file.
+
+        Args:
+            metrics: Dictionary of metrics
+            completed_steps: Current training step
+            train_iters: Total training iterations
+            per_device_batch_size: Batch size per device
+            world_size: Number of distributed workers
+            is_distributed: Whether running in distributed mode
+        """
+        if not self.is_main:
+            return
+
+        loss = metrics.get("action_loss", float("nan"))
+        lr = metrics.get("lr", 0)
+        samples_per_sec = metrics.get("samples_per_sec", 0)
+        step_time = metrics.get("step_time", 0)
+        consumed_samples = metrics.get("consumed_samples", 0)
+        grad_norm = metrics.get("grad_norm", 0)
+
+        # Global batch size
+        global_batch_size = per_device_batch_size
+        if is_distributed:
+            global_batch_size *= world_size
+
+        # Format aligned with main framework
+        log_string = "iteration {:8d}/{:8d} |".format(completed_steps, train_iters)
+        log_string += " consumed samples: {:12d} |".format(consumed_samples)
+        log_string += " elapsed time per iteration (ms): {:.1f} |".format(step_time * 1000)
+        log_string += " throughput (samples/sec): {:.1f} |".format(samples_per_sec)
+        log_string += " learning rate: {:.6E} |".format(lr)
+        log_string += " global batch size: {:5d} |".format(global_batch_size)
+        log_string += " action loss: {:.6E} |".format(loss)
+        log_string += " loss scale: 1.0 |"
+        if grad_norm is not None and grad_norm > 0:
+            log_string += " grad norm: {:.6f} |".format(grad_norm)
+        log_string += " number of skipped iterations:   0 |"
+        log_string += " number of nan iterations:   0 |"
+
+        logger.info(log_string)
+
+        # W&B
+        self.log_to_wandb(metrics, completed_steps)
+
+        # JSONL
+        self._append_metrics_jsonl(metrics)
+
+    def _append_metrics_jsonl(self, metrics: Dict[str, float]):
+        """Append metrics to JSONL file."""
+        metrics_file = os.path.join(self.output_dir, "metrics.jsonl")
+        try:
+            with open(metrics_file, "a") as f:
+                f.write(json.dumps(metrics) + "\n")
+        except Exception:
+            pass
+
+    # ═══════════════════════════════════════════════════════════════
+    # Logging Methods
+    # ═══════════════════════════════════════════════════════════════
+
+    def log_param_stats(self, model: torch.nn.Module):
+        """Log parameter statistics.
+
+        Args:
+            model: The model to analyze
+        """
+        if not self.is_main:
+            return
+
+        total = sum(p.numel() for p in model.parameters())
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info(
+            f"Parameters: {total / 1e6:.1f}M total, {trainable / 1e6:.1f}M trainable "
+            f"({100 * trainable / max(total, 1):.1f}%)"
+        )
+
+    def log_pretrained_loaded(self, path: str, via_architecture: bool = False):
+        """Log pretrained weight loading.
+
+        Args:
+            path: Path to pretrained weights
+            via_architecture: Whether loaded via architecture.load_pretrained
+        """
+        if not self.is_main:
+            return
+        if via_architecture:
+            logger.info(f"Pretrained loaded via architecture: {path}")
+        else:
+            logger.info(f"Pretrained loaded: {path}")
+
+    def log_resume(self, step: int):
+        """Log resume from checkpoint.
+
+        Args:
+            step: Step number resumed from
+        """
+        if not self.is_main:
+            return
+        logger.info(f"Resumed model weights from step {step}")
+
+    def log_resume_not_found(self):
+        """Log that resume was requested but no checkpoint found."""
+        if not self.is_main:
+            return
+        logger.warning("--resume set but no checkpoint found, starting from scratch")
+
+    def log_frozen_module(self, path: str):
+        """Log frozen module.
+
+        Args:
+            path: Dot-path of frozen module
+        """
+        if not self.is_main:
+            return
+        logger.info(f"Frozen: {path}")
+
+    def log_freeze_not_found(self, path: str):
+        """Log that freeze target was not found.
+
+        Args:
+            path: Dot-path that was not found
+        """
+        if not self.is_main:
+            return
+        logger.warning(f"Freeze target not found: {path}")
+
+    def log_loss_spike(self, step: int, loss_val: float):
+        """Log loss spike detection.
+
+        Args:
+            step: Current training step
+            loss_val: Loss value that triggered the spike
+        """
+        if not self.is_main:
+            return
+        logger.warning(f"[step {step}] Loss spike: {loss_val:.4f}, zeroing")
+
+    def log_ema_initialized(self, decay: float):
+        """Log EMA initialization.
+
+        Args:
+            decay: EMA decay value
+        """
+        if not self.is_main:
+            return
+        logger.info(f"EMA initialized, decay={decay}")
+
+    def log_ema_disabled_fsdp(self):
+        """Log that EMA is disabled under FSDP."""
+        if not self.is_main:
+            return
+        logger.warning("EMA disabled under FSDP (requires summon_full_params). Skipping.")
+
+    def log_final_model_saved(self, path: str):
+        """Log final model save.
+
+        Args:
+            path: Path where final model was saved
+        """
+        if not self.is_main:
+            return
+        logger.info(f"EMA final model saved: {path}")

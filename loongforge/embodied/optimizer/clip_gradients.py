@@ -7,6 +7,39 @@ import torch
 import torch.nn as nn
 
 
+def get_grad_norm(model: nn.Module) -> float:
+    """Compute global gradient norm, accounting for FSDP sharding.
+
+    For FSDP models, gradients are sharded across ranks. Each rank computes
+    its local norm squared, then all-reduce sums them to get the global norm.
+    For non-FSDP models, computes the norm directly.
+
+    Args:
+        model: The model whose gradients to analyze. Can be a vanilla PyTorch
+            module, FSDP-wrapped module, or module with FSDP sub-modules.
+
+    Returns:
+        The L2 norm of all model gradients (global norm for distributed).
+    """
+    import torch
+    import torch.distributed as dist
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    is_fsdp = isinstance(model, FSDP) or hasattr(model, "_fsdp_state")
+
+    total_norm_sq = torch.zeros(1, device=next(model.parameters()).device)
+
+    for p in model.parameters():
+        if p.grad is not None:
+            grad = p.grad.detach()
+            total_norm_sq += grad.float().pow(2).sum()
+
+    if is_fsdp and dist.is_initialized():
+        dist.all_reduce(total_norm_sq, op=dist.ReduceOp.SUM)
+
+    return total_norm_sq.sqrt().item()
+
+
 def clip_gradients(model: nn.Module, max_norm: float):
     """Gradient clipping for FSDP with mixed-dtype gradients (fp32 + bf16).
 
