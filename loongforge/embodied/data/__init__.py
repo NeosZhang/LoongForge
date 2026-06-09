@@ -9,7 +9,7 @@ Data loading for VLA (Vision-Language-Action) training.
 Public API:
     - build_dataloader(model_cfg, args, ctx): Factory that builds DataLoader with
       model-specific preprocessor as collate_fn
-    - build_vla_dataset: Build raw dataset (without preprocessor)
+    - build_lerobot_dataset: Build raw dataset (without preprocessor)
     - save_dataset_statistics: Save stats to JSON
     - BasePreprocessor / PreparedBatch: Base classes for extension
     - register_preprocessor / get_preprocessor: Registry API
@@ -183,7 +183,7 @@ def _build_dataset(model_cfg, args, module: str):
 
 def _build_lerobot_dataset(model_cfg, args):
     """Build lerobot-based VLA dataset."""
-    from loongforge.embodied.data.datasets.lerobot_dataset import build_vla_dataset
+    from loongforge.embodied.data.datasets.lerobot_dataset import build_lerobot_dataset
 
     dataset_path = getattr(args, "dataset_path", None)
     if not dataset_path:
@@ -195,7 +195,7 @@ def _build_lerobot_dataset(model_cfg, args):
     action_cfg = model_cfg.get("action_model", {}) if hasattr(model_cfg, "get") else {}
     action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", 50))
 
-    dataset = build_vla_dataset(
+    dataset = build_lerobot_dataset(
         repo_id=repo_id,
         root=str(dataset_path),
         action_horizon=action_horizon,
@@ -232,16 +232,10 @@ def save_dataset_statistics(dataset_statistics: Dict, output_path):
     logger.info(f"Saved dataset statistics to {output_path}")
 
 
-def build_vla_dataset(*a, **kw):
-    """Re-export factory function from datasets.lerobot_dataset."""
-    from loongforge.embodied.data.datasets.lerobot_dataset import build_vla_dataset as _build
-    return _build(*a, **kw)
 def _build_dataset(model_cfg, args, module: str):
     """Build dataset instance based on dataloader_module."""
     if module == "lerobot_datasets":
-        from .datasets.lerobot_dataset import build_lerobot_dataset
-
-        return build_lerobot_dataset(model_cfg, args)
+        return _build_lerobot_dataset(model_cfg, args)
 
     elif module == "rlds_datasets":
         from .datasets.rlds_dataset import build_rlds_dataset
@@ -272,7 +266,7 @@ def _build_dataset(model_cfg, args, module: str):
 
 __all__ = [
     "build_dataloader",
-    "build_vla_dataset",
+    "build_lerobot_dataset",
     "save_dataset_statistics",
     "BasePreprocessor",
     "PreparedBatch",

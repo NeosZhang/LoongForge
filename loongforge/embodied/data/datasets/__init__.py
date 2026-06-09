@@ -6,11 +6,11 @@
 from loongforge.embodied.data.datasets.lerobot_dataset import (
     LeRobotVLADataset,
     StreamingLeRobotVLADataset,
-    build_vla_dataset,
+    build_lerobot_dataset,
 )
 
 __all__ = [
     "LeRobotVLADataset",
     "StreamingLeRobotVLADataset",
-    "build_vla_dataset",
+    "build_lerobot_dataset",
 ]

@@ -4,7 +4,7 @@ LeRobot VLA Dataset - Decoupled wrappers around lerobot's dataset classes.
 Provides:
     - LeRobotVLADataset(LeRobotDataset): Map-style dataset
     - StreamingLeRobotVLADataset(StreamingLeRobotDataset): Iterable streaming dataset
-    - build_vla_dataset(): Factory function (mirrors lerobot's make_dataset without config chain)
+    - build_lerobot_dataset(): Factory function (mirrors lerobot's make_dataset without config chain)
 
 All classes inherit from official lerobot implementations to fully reuse their
 capabilities (delta_timestamps, video decoding, task text resolution, episode handling,
@@ -225,7 +225,7 @@ class StreamingLeRobotVLADataset(StreamingLeRobotDataset):
         )
 
 
-def build_vla_dataset(
+def build_lerobot_dataset(
     repo_id: str,
     root: str | Path | None = None,
     action_horizon: int = 50,
