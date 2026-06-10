@@ -25,8 +25,12 @@ from loongforge.embodied.distributed.checkpoint import (
     resume_training_state,
     save_checkpoint,
 )
-from loongforge.embodied.train.utils.utils import log_effective_config, log_stage, set_seed, setup_logging
-
+from loongforge.embodied.train.utils.utils import (
+    log_effective_config,
+    log_stage, set_seed,
+    set_deterministic,
+    setup_logging
+)
 logger = logging.getLogger(__name__)
 
 
@@ -92,8 +96,11 @@ class BaseTrainer(ABC):
         self.ctx = DistributedContext()
         self.ctx.init()
 
-        # 2. Seed
-        set_seed(args.seed + self.ctx.rank)
+        # 2. Seed — use the same seed on all ranks (align with lerobot/accelerate baseline).
+        # DistributedSampler handles per-rank data partitioning internally via its own seed+rank offset.
+        set_seed(args.seed)
+        if getattr(args, "deterministic_mode", False):
+            set_deterministic()
 
         # 3. Output directories + logging
         self.output_dir = args.output_dir

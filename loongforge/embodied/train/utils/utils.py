@@ -36,6 +36,11 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
+def set_deterministic(enabled: bool = True):
+    """Enable or disable deterministic algorithms for reproducibility."""
+    torch.use_deterministic_algorithms(enabled)
+
+
 def setup_logging(output_dir: str, rank: int):
     """Configure logging: rank0 gets INFO + file handler, others get WARNING only.
 

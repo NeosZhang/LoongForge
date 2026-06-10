@@ -45,6 +45,8 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--train-iters", type=int, default=150000)
     g.add_argument("--save-interval", type=int, default=10000)
     g.add_argument("--seed", type=int, default=3047)
+    g.add_argument("--deterministic-mode", action="store_true",
+                   help="Force cuDNN deterministic mode for reproducibility (may slow training).")
     g.add_argument("--output-dir", type=str, default="outputs/default",
                    help="Root output directory for checkpoints, logs and run artifacts.")
     g.add_argument("--gradient-accumulation-steps", type=int, default=2)
