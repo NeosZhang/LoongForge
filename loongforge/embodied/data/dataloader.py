@@ -49,7 +49,11 @@ class _TransformedMapDataset(Dataset):
         return self._transform(data)
 
     def __getattr__(self, name):
-        return getattr(self._dataset, name)
+        try:
+            dataset = self.__dict__["_dataset"]
+        except KeyError:
+            raise AttributeError(name)
+        return getattr(dataset, name)
 
 
 class _TransformedIterableDataset(IterableDataset):
@@ -64,7 +68,11 @@ class _TransformedIterableDataset(IterableDataset):
             yield self._transform(data)
 
     def __getattr__(self, name):
-        return getattr(self._dataset, name)
+        try:
+            dataset = self.__dict__["_dataset"]
+        except KeyError:
+            raise AttributeError(name)
+        return getattr(dataset, name)
 
 
 def build_dataloader(model_cfg, data_cfg, training_args, ctx: DistributedContext) -> StatefulDataLoader:
@@ -125,6 +133,7 @@ def _build_stateful_dataloader(
     training_args,
     ctx: DistributedContext,
 ) -> StatefulDataLoader:
+    """_build_stateful_dataloader."""
     seed = training_args.seed
     seed_workers = training_args.dataloader_seed_workers
     if isinstance(dataset, IterableDataset):

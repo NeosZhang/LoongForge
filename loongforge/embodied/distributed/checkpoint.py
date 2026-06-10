@@ -37,6 +37,8 @@ from torch.distributed.checkpoint.state_dict import (
     set_state_dict,
 )
 from torch.distributed.fsdp import FSDPModule
+from safetensors.torch import load_file, save_file
+from torch.distributed.tensor import DTensor
 
 from .context import DistributedContext
 from .utils import unwrap_model
@@ -728,9 +730,6 @@ def _save_training_state(
 
 def _save_state_dict_safetensors(state_dict: dict, filepath: str):
     """Save state dict with safetensors, creating fresh tensors to avoid storage issues."""
-    from safetensors.torch import save_file
-    from torch.distributed.tensor import DTensor
-
     clean_sd = {}
     for k, v in state_dict.items():
         if isinstance(v, DTensor):
@@ -755,7 +754,5 @@ def _resolve_file(checkpoint_path: str) -> str:
 
 def _load_sd(path: str) -> dict:
     if path.endswith(".safetensors"):
-        from safetensors.torch import load_file
-
         return load_file(path)
     return torch.load(path, map_location="cpu", weights_only=True)

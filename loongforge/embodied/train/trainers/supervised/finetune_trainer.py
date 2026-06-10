@@ -9,6 +9,7 @@ only declares these as abstract methods.
 """
 
 import logging
+import types
 from typing import Dict, Tuple
 
 import torch
@@ -201,6 +202,9 @@ class FinetuneTrainer(BaseTrainer):
     def _freeze_modules(self, freeze_str: str):
         """Freeze specified modules by dot-path."""
         if not freeze_str:
+            freeze_func = getattr(self.model, "freeze_modules", None)
+            if callable(freeze_func):
+                freeze_func()
             return
         for dot_path in [p.strip() for p in freeze_str.split(",") if p.strip()]:
             current_module = self.model

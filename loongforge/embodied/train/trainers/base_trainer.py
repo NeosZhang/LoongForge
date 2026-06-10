@@ -25,6 +25,7 @@ from loongforge.embodied.train.utils.logging import TrainingLogger, StageTimers,
 from loongforge.embodied.train.utils.utils import (
     log_stage,
     set_deterministic,
+    set_precision,
     set_seed,
     setup_logging,
     Profiler,
@@ -122,6 +123,8 @@ class BaseTrainer(ABC):
         set_seed(training_args.seed)
         if training_args.deterministic_mode:
             set_deterministic()
+        if training_args.disable_tf32:
+            set_precision(allow_tf32=False)
 
         # 3. Output directories + logging
         self.output_dir = training_args.output_dir
@@ -174,12 +177,13 @@ class BaseTrainer(ABC):
             ):
                 self._handle_resume(latest_path, latest_step, latest_epoch)
         elif training_args.pretrained_checkpoint:
-            with log_stage(
-                "ckpt",
-                start_msg=f"loading pretrained: {training_args.pretrained_checkpoint}",
-                end_msg="pretrained loaded in {elapsed}",
-            ):
-                self._load_pretrained(training_args.pretrained_checkpoint)
+            if not training_args.init_on_meta:
+                with log_stage(
+                    "ckpt",
+                    start_msg=f"loading pretrained: {training_args.pretrained_checkpoint}",
+                    end_msg="pretrained loaded in {elapsed}",
+                ):
+                    self._load_pretrained(training_args.pretrained_checkpoint)
         else:
             logger.info("No pretrained weights or resume checkpoint found. Using random initialization.")
 
@@ -195,6 +199,22 @@ class BaseTrainer(ABC):
             # Subclasses may override _wrap_model_for_training to take over the
             # wrapping step (e.g. to install a CUDA graph runner instead).
             self._wrap_model_for_training()
+
+        # 7.5 Deferred materialize + load_pretrained
+        if training_args.init_on_meta and not training_args.resume:
+            with log_stage(
+                "materialize",
+                start_msg=f"materializing meta tensors on {self.ctx.device}",
+                end_msg="materialized in {elapsed}",
+            ):
+                self.model.materialize(self.ctx.device)
+            if training_args.pretrained_checkpoint:
+                with log_stage(
+                    "ckpt",
+                    start_msg=f"loading pretrained (sharded): {training_args.pretrained_checkpoint}",
+                    end_msg="pretrained loaded in {elapsed}",
+                ):
+                    self.model.load_pretrained(training_args.pretrained_checkpoint, device=self.ctx.device)
 
         with log_stage(
             "optimizer",

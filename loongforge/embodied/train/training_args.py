@@ -155,6 +155,14 @@ class TrainingArgs:
                     "CUBLAS_WORKSPACE_CONFIG to be set."
         },
     )
+    disable_tf32: bool = field(
+        default=False,
+        metadata={
+            "help": "disable"
+                    "torch.backends.cudnn.allow_tf32"
+                    "torch.backends.cuda.matmul.allow_tf32"
+        },
+    )
     output_dir: str = field(
         default="outputs/default",
         metadata={
@@ -179,7 +187,6 @@ class TrainingArgs:
                     "optimizer iteration is counted as spiked/skipped."
         },
     )
-
     # ── Learning Rate ──
     lr_base: float = field(
         default=2.5e-5,
@@ -219,6 +226,12 @@ class TrainingArgs:
     min_lr: float = field(
         default=1e-6,
         metadata={"help": "Lower bound the LR schedule decays to (floor)."},
+    )
+    init_on_meta: bool = field(
+        default=False,
+        metadata={"help": "Allocate all params on 'meta' device."
+                          "Then weights are loaded into the sharded DTensors."
+        }
     )
 
     # ── Optimizer ──

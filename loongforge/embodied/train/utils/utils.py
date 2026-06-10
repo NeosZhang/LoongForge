@@ -41,9 +41,28 @@ def set_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-def set_deterministic(enabled: bool = True):
-    """Enable or disable deterministic algorithms for reproducibility."""
-    torch.use_deterministic_algorithms(enabled)
+def set_precision(allow_tf32):
+    """set_precision."""
+    torch.backends.cudnn.allow_tf32 = allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = allow_tf32
+
+
+def set_deterministic():
+    """Enable or disable deterministic algorithms for reproducibility.
+
+    """
+    if "PYTHONHASHSEED" not in os.environ:
+        logger.warning(
+            "PYTHONHASHSEED is not set; --deterministic-mode is best-effort without it. "
+            "For full reproducibility, prepend `PYTHONHASHSEED=42` (or any fixed value) "
+            "to your launch command ?~@~T Python's hash seed is fixed at interpreter startup "
+            "and cannot be set retroactively."
+        )
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    os.environ.setdefault("FLASH_ATTENTION_DETERMINISTIC", "1")
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True)
 
 
 def setup_logging(output_dir: str, rank: int):

@@ -125,8 +125,9 @@ def build_param_groups(model: nn.Module, training_args) -> List[Dict]:
         except AttributeError:
             continue
 
+        parameters = module.parameters() if isinstance(module, nn.Module) else [module]
         params = [
-            p for p in module.parameters()
+            p for p in parameters
             if p.requires_grad and id(p) not in frozen_ids and id(p) not in used_ids
         ]
         if params:
@@ -150,6 +151,31 @@ def build_param_groups(model: nn.Module, training_args) -> List[Dict]:
 
 def build_scheduler(optimizer, training_args):
     """Build LR scheduler from CLI training_args."""
+
+    if training_args.lr_decay_style == "lambda_linear":
+        from torch.optim.lr_scheduler import LambdaLR
+        from loongforge.embodied.optimizer.lr_scheduler import LambdaLinearScheduler
+
+        f_max = getattr(training_args, "lambda_f_max", 0.4)
+        f_min = getattr(training_args, "lambda_f_min", 0.0)
+        f_start = getattr(training_args, "lambda_f_start", 0.0)
+        cycle_len = getattr(training_args, "lambda_cycle_length", 10000) or training_args.train_iters
+
+        _scheduler = LambdaLinearScheduler(
+            warm_up_steps=[training_args.lr_warmup_iters],
+            f_min=[f_min],
+            f_max=[f_max],
+            f_start=[f_start],
+            cycle_lengths=[cycle_len]
+        )
+
+        logger.info(
+            f"LambdaLinear scheduler: f_max={f_max}, f_min={f_min}, warmup={training_args.lr_warmup_iters}, "
+            f"cycle_len={cycle_len}"
+        )
+
+        return LambdaLR(optimizer, _scheduler.schedule)
+
     from transformers import get_scheduler
 
     kwargs = {}
