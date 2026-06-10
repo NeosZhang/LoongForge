@@ -36,8 +36,9 @@ from typing import Dict
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, IterableDataset
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import IterableDataset
+from torchdata.stateful_dataloader import StatefulDataLoader
+from torchdata.stateful_dataloader.sampler import StatefulDistributedSampler
 
 from loongforge.embodied.distributed import DistributedContext
 from loongforge.embodied.data.transforms import (
@@ -53,7 +54,7 @@ from loongforge.embodied.data.transforms.pipeline import build_transforms_from_a
 logger = logging.getLogger(__name__)
 
 
-def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
+def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLoader:
     """Build DataLoader with model-specific preprocessor as collate_fn.
 
     The returned DataLoader yields PreparedBatch objects (CPU tensors).
@@ -92,7 +93,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
     # Build DataLoader
     seed = getattr(args, "seed", 0) or 0
     if isinstance(dataset, IterableDataset):
-        dl = DataLoader(
+        dl = StatefulDataLoader(
             dataset,
             batch_size=batch_size,
             num_workers=num_workers,
@@ -104,10 +105,17 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
         sampler = None
         shuffle = True
         if ctx.is_distributed:
-            sampler = DistributedSampler(dataset, shuffle=True, seed=seed)
+            sampler = StatefulDistributedSampler(
+                dataset,
+                num_replicas=ctx.world_size,
+                rank=ctx.rank,
+                shuffle=shuffle,
+                seed=seed,
+                drop_last=False,
+            )
             shuffle = False
 
-        dl = DataLoader(
+        dl = StatefulDataLoader(
             dataset,
             batch_size=batch_size,
             sampler=sampler,
@@ -118,6 +126,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> DataLoader:
             drop_last=False,
             persistent_workers=num_workers > 0,
         )
+        dl.steps_per_epoch = len(dl)
 
     return dl
 

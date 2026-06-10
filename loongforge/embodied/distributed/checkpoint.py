@@ -7,8 +7,10 @@ import gc
 import json
 import logging
 import os
-from typing import Optional, Tuple
+import random
+from typing import Dict, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -26,6 +28,8 @@ def save_checkpoint(
     checkpoint_dir: str,
     ctx: DistributedContext,
     args,
+    epoch: int = 0,
+    dataloader_state: Optional[Dict] = None,
 ):
     """Save checkpoint (rank0 for model weights, all ranks for FSDP optim state)."""
     path = os.path.join(checkpoint_dir, f"steps_{step}")
@@ -50,16 +54,26 @@ def save_checkpoint(
         # Resume metadata
         meta = {
             "completed_steps": step,
-            "num_gpus": ctx.world_size,
+            "epoch": epoch,
         }
         with open(os.path.join(path, "resume_meta.json"), "w") as f:
             json.dump(meta, f, indent=2)
 
         logger.info(f"Checkpoint saved: {path}")
 
-    # Optionally save training state (optimizer + scheduler)
-    if getattr(args, "save_training_state", False):
-        _save_training_state(model, optimizer, scheduler, step, path, ctx)
+    # Save training state (optimizer + scheduler + RNG) — required for true resume.
+    # Can be disabled by --no-save-training-state for weights-only export.
+    if getattr(args, "save_training_state", True):
+        _save_training_state(
+            model,
+            optimizer,
+            scheduler,
+            epoch,
+            path,
+            ctx,
+            args,
+            dataloader_state=dataloader_state,
+        )
 
     ctx.barrier()
 
@@ -93,40 +107,71 @@ def load_pretrained(model: nn.Module, checkpoint_path: str, ctx: DistributedCont
     return model
 
 
-def get_latest_checkpoint(checkpoint_dir: str) -> Tuple[Optional[str], int]:
-    """Find latest checkpoint directory."""
+def get_latest_checkpoint(
+    checkpoint_dir: str, require_training_state: bool = True
+) -> Tuple[Optional[str], int, int]:
+    """Find latest *resumable* checkpoint directory.
+
+    Picks the `steps_N` dir with the largest N by name parse, then validates
+    only that one (resume_meta.json present, plus training_state.pt when
+    `require_training_state`). No fallback to older dirs — if the latest is
+    incomplete the caller should fix it explicitly.
+
+    Returns: (path, completed_steps, epoch)
+    """
     if not os.path.isdir(checkpoint_dir):
-        return None, 0
+        return None, 0, 0
 
-    candidates = []
+    steps = []
     for d in os.listdir(checkpoint_dir):
-        meta_path = os.path.join(checkpoint_dir, d, "resume_meta.json")
-        if d.startswith("steps_") and os.path.exists(meta_path):
-            with open(meta_path) as f:
-                meta = json.load(f)
-            candidates.append((d, meta["completed_steps"]))
+        if d.startswith("steps_") and d[len("steps_"):].isdigit():
+            steps.append((int(d[len("steps_"):]), d))
+    if not steps:
+        return None, 0, 0
+    _, latest_d = max(steps)
 
-    if not candidates:
-        return None, 0
+    ckpt_dir = os.path.join(checkpoint_dir, latest_d)
+    meta_path = os.path.join(ckpt_dir, "resume_meta.json")
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(f"resume_meta.json not found in {ckpt_dir}")
+    if require_training_state and not os.path.exists(
+        os.path.join(ckpt_dir, "training_state.pt")
+    ):
+        raise FileNotFoundError(
+            f"training_state.pt not found in {ckpt_dir}; cannot resume "
+            f"(re-save with --save-training-state)."
+        )
+    with open(meta_path) as f:
+        meta = json.load(f)
+    return ckpt_dir, int(meta["completed_steps"]), int(meta.get("epoch", 0))
 
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    latest_dir, latest_steps = candidates[0]
-    return os.path.join(checkpoint_dir, latest_dir), latest_steps
 
+def resume_training_state(
+    model,
+    optimizer,
+    scheduler,
+    checkpoint_path,
+    ctx,
+    args=None,
+    restore_rng: bool = True,
+) -> Tuple[Optional[int], Dict, Optional[list]]:
+    """Load optimizer/scheduler/RNG state from checkpoint (call AFTER wrapping).
 
-def resume_training_state(model, optimizer, scheduler, checkpoint_path, ctx):
-    """Load optimizer/scheduler state from checkpoint (call AFTER wrapping)."""
+    Returns: (epoch index recorded at the saved step or None if not present,
+              dataloader state, per-rank RNG state).
+    """
     state_file = os.path.join(checkpoint_path, "training_state.pt")
     if not os.path.exists(state_file):
-        if ctx.is_main:
-            logger.warning(f"No training_state.pt in {checkpoint_path}, warm restart")
-        return
+        raise FileNotFoundError(
+            f"No training_state.pt in {checkpoint_path}; cannot resume training. "
+            f"Re-save the checkpoint with --save-training-state (default on)."
+        )
 
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
-    state = torch.load(state_file, map_location="cpu")
+    state = torch.load(state_file, map_location="cpu", weights_only=False)
 
-    if isinstance(model, FSDP):
+    if isinstance(model, FSDP) or _is_fsdp2(model):
         from torch.distributed.checkpoint.state_dict import set_state_dict, StateDictOptions
         options = StateDictOptions(full_state_dict=True, cpu_offload=True)
         set_state_dict(model, optimizers=[optimizer],
@@ -134,12 +179,58 @@ def resume_training_state(model, optimizer, scheduler, checkpoint_path, ctx):
                        options=options)
     else:
         optimizer.load_state_dict(state["optimizer"])
-
-    if "scheduler" in state:
-        scheduler.load_state_dict(state["scheduler"])
-
     if ctx.is_main:
-        logger.info(f"Training state resumed from {checkpoint_path}")
+        logger.info("optimizer resumed successfully")
+
+    if "scheduler" in state and state["scheduler"] is not None:
+        scheduler.load_state_dict(state["scheduler"])
+        if ctx.is_main:
+            logger.info("scheduler resumed successfully")
+
+    # Per-rank RNG state — packed inside training_state.pt under "rng_state_per_rank".
+    # When restore_rng=False, defer restoration to the caller (which will invoke
+    # `restore_rank_rng_state` later, after dataloader iter() init).
+    rng_per_rank = None
+    if restore_rng:
+        restore_rank_rng_state(state.get("rng_state_per_rank"), ctx, source=state_file)
+        if ctx.is_main:
+            logger.info("RNG state resumed successfully")
+    else:
+        rng_per_rank = state.get("rng_state_per_rank")
+
+    dataloader_state = {}
+    dataloader_state_per_rank = state.get("dataloader_state_per_rank")
+    if dataloader_state_per_rank is not None:
+        if len(dataloader_state_per_rank) != ctx.world_size:
+            raise RuntimeError(
+                f"Dataloader state was saved for world_size={len(dataloader_state_per_rank)} "
+                f"but current world_size={ctx.world_size}."
+            )
+        dataloader_state = dataloader_state_per_rank[ctx.rank] or {}
+
+    saved_epoch = state.get("epoch")
+    saved_epoch = int(saved_epoch) if saved_epoch is not None else None
+    return saved_epoch, dataloader_state, rng_per_rank
+
+
+def restore_rank_rng_state(rng_per_rank, ctx: DistributedContext, source: str = "checkpoint"):
+    """Validate per-rank RNG payload and restore this rank's stream."""
+    if rng_per_rank is None:
+        raise KeyError(
+            f"RNG state not present in {source} (older checkpoint format). "
+            f"Re-save with --save-training-state."
+        )
+    if len(rng_per_rank) != ctx.world_size:
+        raise RuntimeError(
+            f"RNG state was saved for world_size={len(rng_per_rank)} but current "
+            f"world_size={ctx.world_size}."
+        )
+    rng = rng_per_rank[ctx.rank]
+    random.setstate(rng["python"])
+    np.random.set_state(rng["numpy"])
+    torch.set_rng_state(rng["torch_cpu"])
+    if torch.cuda.is_available() and rng.get("torch_cuda") is not None:
+        torch.cuda.set_rng_state(rng["torch_cuda"], device=ctx.device)
 
 
 # ─── Internal Helpers ───
@@ -169,8 +260,22 @@ def _is_zero_optimizer(optimizer) -> bool:
     return isinstance(optimizer, ZeroRedundancyOptimizer)
 
 
-def _save_training_state(model, optimizer, scheduler, step, path, ctx):
-    """Save optimizer + scheduler state."""
+def _save_training_state(
+    model,
+    optimizer,
+    scheduler,
+    epoch,
+    path,
+    ctx,
+    args=None,
+    dataloader_state=None,
+):
+    """Save optimizer + scheduler + per-rank RNG state into a single file on rank0.
+
+    RNG state is collected from every rank via all_gather_object so a resumed
+    run with the same world_size can restore each rank's stream from the same
+    training_state.pt (no separate per-rank files).
+    """
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
     if isinstance(model, FSDP) or _is_fsdp2(model):
@@ -184,12 +289,39 @@ def _save_training_state(model, optimizer, scheduler, step, path, ctx):
     else:
         optim_sd = optimizer.state_dict()
 
+    # Collect per-rank RNG. Each rank captures its own four streams; rank0 gathers
+    # them into a list indexed by rank for embedding in the unified state file.
+    local_rng = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+        "torch_cuda": torch.cuda.get_rng_state(ctx.device) if torch.cuda.is_available() else None,
+    }
+    if ctx.is_distributed:
+        import torch.distributed as dist
+        rng_per_rank = [None] * ctx.world_size
+        dist.all_gather_object(rng_per_rank, local_rng)
+    else:
+        rng_per_rank = [local_rng]
+
+    dataloader_state_per_rank = None
+    if dataloader_state:
+        if ctx.is_distributed:
+            import torch.distributed as dist
+            dataloader_state_per_rank = [None] * ctx.world_size
+            dist.all_gather_object(dataloader_state_per_rank, dataloader_state)
+        else:
+            dataloader_state_per_rank = [dataloader_state]
+
     if ctx.is_main:
+        os.makedirs(path, exist_ok=True)
         torch.save(
             {
                 "optimizer": optim_sd,
-                "scheduler": scheduler.state_dict(),
-                "step": step,
+                "scheduler": scheduler.state_dict() if scheduler is not None else None,
+                "epoch": epoch,
+                "dataloader_state_per_rank": dataloader_state_per_rank,
+                "rng_state_per_rank": rng_per_rank,
             },
             os.path.join(path, "training_state.pt"),
         )

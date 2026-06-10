@@ -859,7 +859,6 @@ class PI05Pytorch(nn.Module):
                     with init_empty_weights (meta device), pass the target device here so
                     weights are materialized directly on GPU without a CPU round-trip.
         """
-        import re
         from pathlib import Path
 
         path = Path(pretrained_path)
@@ -872,21 +871,35 @@ class PI05Pytorch(nn.Module):
         except Exception as e:
             raise RuntimeError(f"Could not load safetensors from {safetensors_file}: {e}") from e
 
+        # Prefixes prepended when checkpoints are saved from the full training
+        # model (i.e. unwrap_model(model).state_dict()), where this PI05Pytorch
+        # module sits under `architecture.pi05_model.` (optionally further under
+        # a top-level `model.` wrapper). Strip them so keys land in this
+        # submodule's own key space.
+        _FULL_MODEL_PREFIXES = (
+            "model.architecture.pi05_model.",
+            "architecture.pi05_model.",
+        )
+
         fixed_state_dict = {}
         for key, value in original_state_dict.items():
             new_key = key
+            for prefix in _FULL_MODEL_PREFIXES:
+                if new_key.startswith(prefix):
+                    new_key = new_key[len(prefix):]
+                    break
 
             # Rename action_time_mlp_* -> time_mlp_*
-            if key.startswith("action_time_mlp_in."):
-                new_key = key.replace("action_time_mlp_in.", "time_mlp_in.")
-            elif key.startswith("action_time_mlp_out."):
-                new_key = key.replace("action_time_mlp_out.", "time_mlp_out.")
-            if key.startswith("state_proj."):
-                logger.warning("Skipping state_proj key in pi05 mode: %s", key)
+            if new_key.startswith("action_time_mlp_in."):
+                new_key = new_key.replace("action_time_mlp_in.", "time_mlp_in.")
+            elif new_key.startswith("action_time_mlp_out."):
+                new_key = new_key.replace("action_time_mlp_out.", "time_mlp_out.")
+            if new_key.startswith("state_proj."):
+                logger.warning("Skipping state_proj key in pi05 mode: %s", new_key)
                 continue
 
             # lm_head weight tie
-            if key in (
+            if new_key in (
                 "model.paligemma_with_expert.paligemma.lm_head.weight",
                 "paligemma_with_expert.paligemma.lm_head.weight",
             ):
@@ -897,8 +910,12 @@ class PI05Pytorch(nn.Module):
             fixed_state_dict[new_key] = value
 
         missing_keys, unexpected_keys = self.load_state_dict(fixed_state_dict, strict=strict)
-        if missing_keys:
-            logger.warning("Missing keys (%d): %s ...", len(missing_keys), missing_keys[:3])
-        if unexpected_keys:
-            logger.warning("Unexpected keys (%d): %s ...", len(unexpected_keys), unexpected_keys[:3])
+        assert not missing_keys, (
+            f"Missing keys ({len(missing_keys)}) when loading pi05 weights from "
+            f"{safetensors_file}: {missing_keys[:5]} ..."
+        )
+        assert not unexpected_keys, (
+            f"Unexpected keys ({len(unexpected_keys)}) when loading pi05 weights from "
+            f"{safetensors_file}: {unexpected_keys[:5]} ..."
+        )
         return self

@@ -101,7 +101,10 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     g.add_argument("--save-format", type=str, default="safetensors",
                    choices=["safetensors", "pt"])
-    g.add_argument("--save-training-state", action="store_true")
+    g.add_argument("--save-training-state", action=argparse.BooleanOptionalAction, default=True,
+                   help="Save optimizer/scheduler/RNG state alongside model weights "
+                        "(required for true resume). Use --no-save-training-state for "
+                        "weights-only export.")
 
     # ── Freeze ──
     g = parser.add_argument_group("Freeze")

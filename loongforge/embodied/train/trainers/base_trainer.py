@@ -20,6 +20,7 @@ from loongforge.embodied.distributed.parallel import unwrap_model, wrap_model
 from loongforge.embodied.distributed.checkpoint import (
     get_latest_checkpoint,
     load_pretrained,
+    restore_rank_rng_state,
     resume_training_state,
     save_checkpoint,
 )
@@ -68,6 +69,8 @@ class BaseTrainer(ABC):
 
         # Data iterators (managed by _fetch_batch for epoch cycling)
         self._data_iters: Dict[str, Any] = {}
+        self._resume_dataloader_state: Dict[str, Dict[str, Any]] = {}
+        self._resume_rng_per_rank = None
 
         # EMA
         self.ema_model: Optional[nn.Module] = None
@@ -133,15 +136,20 @@ class BaseTrainer(ABC):
             self.model = self._build_model()
 
         # 5. Pretrained weights / Resume (before wrapping)
+        latest_path = None
         if args.resume:
+            latest_path, latest_step, latest_epoch = get_latest_checkpoint(self.checkpoint_dir)
+            assert latest_path, (
+                f"--resume set but no checkpoint was found in {self.checkpoint_dir}. "
+                f"Point --output-dir to a run whose checkpoints/ directory contains "
+                f"a checkpoint, or drop --resume to start from scratch."
+            )
             with log_stage(
                 "ckpt",
-                start_msg=f"resume requested: dir={self.checkpoint_dir}",
+                start_msg=f"resume requested: dir=={latest_path}",
                 end_msg="resume done in {elapsed}",
             ):
-                self._handle_resume()
-            if self.ctx.is_main:
-                logger.info(f"[ckpt] resumed completed_steps={self.completed_steps}")
+                self._handle_resume(latest_path, latest_step, latest_epoch)
         elif args.pretrained_checkpoint:
             with log_stage(
                 "ckpt",
@@ -169,23 +177,33 @@ class BaseTrainer(ABC):
             self.optimizer = self._build_optimizer()
             self.lr_scheduler = self._build_scheduler()
 
-        # 9. Resume optimizer/scheduler state (after wrapping + optimizer creation)
-        if args.resume and self.completed_steps > 0:
-            latest_path, _ = get_latest_checkpoint(self.checkpoint_dir)
-            if latest_path:
-                with log_stage(
-                    "ckpt",
-                    start_msg=f"restoring optimizer/scheduler state from {latest_path}",
-                    end_msg="optimizer/scheduler state restored in {elapsed}",
-                ):
-                    resume_training_state(
-                        self.model, self.optimizer, self.lr_scheduler, latest_path, self.ctx
-                    )
+        # 9. Resume optimizer/scheduler/RNG state (after wrapping + optimizer creation).
+        # Gate on `args.resume` only — step==0 is a valid resume point and must
+        # still restore optimizer/scheduler/RNG/dataloader, otherwise we'd run
+        # with resumed weights but a fresh optimizer (half-resume).
+        if args.resume and latest_path:
+            with log_stage(
+                "ckpt",
+                start_msg=f"restoring optimizer/scheduler/RNG state from {latest_path}",
+                end_msg="optimizer/scheduler/RNG state restored in {elapsed}",
+            ):
+                saved_epoch, dataloader_state, rng_per_rank = resume_training_state(
+                    self.model, self.optimizer, self.lr_scheduler, latest_path, self.ctx,
+                    args=self.args,
+                    restore_rng=False,
+                )
+                # Trust the epoch from training_state.pt over resume_meta.json
+                # when present (training_state is the freshest source). Use
+                # `is not None` so a legitimate saved_epoch=0 still overrides.
+                if saved_epoch is not None:
+                    self.current_epoch = saved_epoch
+                self._resume_dataloader_state = dataloader_state or {}
+                self._resume_rng_per_rank = rng_per_rank
 
         # 10. Data
         with log_stage("data", start_msg="building dataloaders"):
             self.dataloaders = self._build_dataloaders()
-
+            self._restore_dataloader_states()
         # 11. EMA
         if args.ema:
             self._init_ema()
@@ -322,15 +340,12 @@ class BaseTrainer(ABC):
             load_pretrained(self.model, path, self.ctx)
             self.logger.log_pretrained_loaded(path, via_architecture=False)
 
-    def _handle_resume(self):
-        """Resume from latest checkpoint."""
-        path, step = get_latest_checkpoint(self.checkpoint_dir)
-        if path:
-            load_pretrained(self.model, path, self.ctx)
-            self.completed_steps = step
-            self.logger.log_resume(step)
-        else:
-            self.logger.log_resume_not_found()
+    def _handle_resume(self, path: str, step: int, epoch: int):
+        """Resume model weights from a discovered checkpoint."""
+        load_pretrained(self.model, path, self.ctx)
+        self.completed_steps = step
+        self.current_epoch = epoch
+        self.logger.log_resume(step)
 
     def _freeze_modules(self, freeze_str: str):
         """Freeze specified modules by dot-path."""
@@ -367,20 +382,73 @@ class BaseTrainer(ABC):
         from loongforge.embodied.optimizer import clean_nan_gradients
         clean_nan_gradients(self.model)
 
+    def _restore_dataloader_states(self):
+        """Restore full dataloader states when checkpoints provide them."""
+        if not self._resume_dataloader_state:
+            return
+        for name, state in self._resume_dataloader_state.items():
+            dl = self.dataloaders.get(name)
+            if dl is None:
+                if self.ctx.is_main:
+                    logger.warning(f"Checkpoint has dataloader state for unknown loader: {name}")
+                continue
+            if hasattr(dl, "load_state_dict"):
+                dl.load_state_dict(state)
+                if self.ctx.is_main:
+                    logger.info(f"Restored dataloader state: {name}")
+            elif self.ctx.is_main:
+                logger.warning(
+                    f"Dataloader '{name}' does not support load_state_dict(); "
+                    "dataloader state in checkpoint will be ignored."
+                )
+
     def _init_data_iterator(self, name: str):
-        """Initialize iterator for named dataloader and store in self._data_iters."""
-        self._data_iters[name] = iter(self.dataloaders[name])
+        """Initialize iterator for named dataloader and store in self._data_iters.
+
+        The trainer (`self.current_epoch`) is the single source of truth — it
+        is set by checkpoint resume (meta.json then training_state.pt) before
+        this runs. We push that value INTO the sampler via `set_epoch()` so
+        the sampler's shuffle stream is aligned, instead of reading sampler.epoch
+        back into self.current_epoch (which would clobber a resumed value to 0
+        when the sampler's load_state_dict didn't restore it).
+
+        SKIP `set_epoch` when this loader's state was just restored via
+        `dl.load_state_dict()` — `StatefulDistributedSampler.set_epoch` clears
+        the `_yielded` progress counter, which would re-emit the epoch from
+        sample 0 and silently undo the in-epoch resume position.
+        """
+        dl = self.dataloaders[name]
+        sampler = getattr(dl, "sampler", None)
+        restored_from_state = name in self._resume_dataloader_state
+        if (
+            sampler is not None
+            and hasattr(sampler, "set_epoch")
+            and not restored_from_state
+        ):
+            sampler.set_epoch(self.current_epoch)
+        self._data_iters[name] = iter(dl)
+        if self._resume_rng_per_rank is not None:
+            restore_rank_rng_state(self._resume_rng_per_rank, self.ctx)
+            if self.ctx.is_main:
+                logger.info("RNG state resumed successfully after dataloader iterator init")
+            self._resume_rng_per_rank = None
+        if self.ctx.is_main:
+            logger.info(f"Dataloader '{name}' positioned at epoch={self.current_epoch}")
+
+    def _advance_epoch(self, name: str):
+        """Move dataloader to the next epoch."""
+        self.current_epoch += 1
+        dl = self.dataloaders[name]
+        if hasattr(dl, "sampler") and hasattr(dl.sampler, "set_epoch"):
+            dl.sampler.set_epoch(self.current_epoch)
+        self._data_iters[name] = iter(dl)
 
     def _fetch_batch(self, dl_name: str):
         """Fetch next batch, handle epoch boundary by cycling the iterator."""
         try:
             batch = next(self._data_iters[dl_name])
         except StopIteration:
-            self.current_epoch += 1
-            dl = self.dataloaders[dl_name]
-            if hasattr(dl, "sampler") and hasattr(dl.sampler, "set_epoch"):
-                dl.sampler.set_epoch(self.current_epoch)
-            self._data_iters[dl_name] = iter(dl)
+            self._advance_epoch(dl_name)
             batch = next(self._data_iters[dl_name])
 
         device = next(self.model.parameters()).device
@@ -388,10 +456,25 @@ class BaseTrainer(ABC):
             batch = batch.to(device)
         return batch
 
+    def _get_dataloader_state(self) -> Dict[str, Dict[str, Any]]:
+        """Return full dataloader states for exact checkpoint resume when supported."""
+        states = {}
+        for name, dl in self.dataloaders.items():
+            if name in self._data_iters and hasattr(dl, "state_dict"):
+                states[name] = dl.state_dict()
+            elif self.ctx.is_main:
+                logger.warning(
+                    f"Dataloader '{name}' has not been iterated or does not support state_dict(); "
+                    "dataloader state will not be saved in this checkpoint."
+                )
+        return states
+
     def _save_checkpoint(self):
         save_checkpoint(
             self.model, self.optimizer, self.lr_scheduler,
             self.completed_steps, self.checkpoint_dir, self.ctx, self.args,
+            epoch=self.current_epoch,
+            dataloader_state=self._get_dataloader_state(),
         )
 
     # ── EMA ──
@@ -423,8 +506,11 @@ class BaseTrainer(ABC):
 
     def _finalize(self):
         """End of training: save final model, close W&B."""
-        # Final checkpoint
-        self._save_checkpoint()
+        # Final checkpoint — skip when the last loop iteration already saved
+        # at this exact step (train_iters % save_interval == 0), otherwise
+        # we'd overwrite the same steps_{N} dir twice and waste I/O.
+        if self.completed_steps % self.args.save_interval != 0:
+            self._save_checkpoint()
 
         # Save EMA as final model
         if self.ctx.is_main and self.ema_model:
