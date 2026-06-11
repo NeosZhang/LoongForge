@@ -24,10 +24,18 @@ from .modeling_pi05 import (
     resize_with_pad_torch,
     OPENPI_ATTENTION_MASK_VALUE,
 )
-from loongforge.embodied.data.transforms.pi05_collator import (
-    tokenize_prompts,
-    build_tokenizer,
-)
+
+
+def tokenize_prompts(*args, **kwargs):
+    """Lazy import to avoid circular dependency."""
+    from loongforge.embodied.data.transforms.pi05.pi05_collator import tokenize_prompts as _fn
+    return _fn(*args, **kwargs)
+
+
+def build_tokenizer(*args, **kwargs):
+    """Lazy import to avoid circular dependency."""
+    from loongforge.embodied.data.transforms.pi05.pi05_collator import build_tokenizer as _fn
+    return _fn(*args, **kwargs)
 
 __all__ = [
     "PI05Config",

@@ -25,17 +25,24 @@ from loongforge.embodied.data.transforms.base import BaseTransform, ComposedTran
 from loongforge.embodied.data.transforms.normalizer import Normalizer
 from loongforge.embodied.data.transforms.image_transform import ImageTransform
 from loongforge.embodied.data.transforms.action_transform import ActionTransform
-from loongforge.embodied.data.transforms.pipeline import (
+from loongforge.embodied.data.transforms.collator import (
     BasePreprocessor,
     PreparedBatch,
     register_preprocessor,
+    get_preprocessor,
+    build_preprocessor,
+)
+from loongforge.embodied.data.transforms.pipeline import (
     build_transforms_from_args,
     convert_stats,
 )
-from loongforge.embodied.data.transforms.pi05_collator import (
+from loongforge.embodied.data.transforms.pi05 import (
     StateDiscretizationTransform,
     Pi05Preprocessor,
     Pi05PreparedBatch,
+    Pi05CollateImagesTransform,
+    Pi05FallbackPromptTransform,
+    Pi05TokenizeTransform,
     tokenize_prompts,
     build_tokenizer,
 )
@@ -48,6 +55,9 @@ __all__ = [
     "ImageTransform",
     "ActionTransform",
     "StateDiscretizationTransform",
+    "Pi05CollateImagesTransform",
+    "Pi05FallbackPromptTransform",
+    "Pi05TokenizeTransform",
     "convert_stats",
     "build_transforms_from_args",
     # Collator framework

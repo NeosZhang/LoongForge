@@ -1,20 +1,14 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""VLA transforms pipeline: collator framework + pipeline builder.
-
-Collator framework (DataLoader collate_fn base classes):
-    - PreparedBatch: Base dataclass for model-ready batch tensors
-    - BasePreprocessor: Abstract base for collate functions
-    - register_preprocessor: Decorator to register model-specific collators
+"""VLA transforms pipeline builder.
 
 Pipeline builder:
     - convert_stats: Convert dataset statistics to numpy format
     - build_transforms_from_args: Build per-sample transforms from config + CLI args
 """
 
-from dataclasses import dataclass, fields
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -22,58 +16,6 @@ import torch
 from loongforge.embodied.data.transforms.base import BaseTransform, ComposedTransform
 from loongforge.embodied.data.transforms.image_transform import ImageTransform
 from loongforge.embodied.data.transforms.action_transform import ActionTransform
-
-
-# ═══════════════════════════════════════════════════════════════
-# Preprocessor Registry
-# ═══════════════════════════════════════════════════════════════
-
-_PREPROCESSOR_REGISTRY: Dict[str, Type["BasePreprocessor"]] = {}
-
-
-def register_preprocessor(name: str):
-    """Decorator to register a preprocessor class for a model."""
-    def decorator(cls):
-        _PREPROCESSOR_REGISTRY[name] = cls
-        return cls
-    return decorator
-
-
-# ═══════════════════════════════════════════════════════════════
-# Base Classes
-# ═══════════════════════════════════════════════════════════════
-
-@dataclass
-class PreparedBatch:
-    """Base class for preprocessed batch data.
-
-    All tensor fields are on CPU after collation.
-    Call .to(device) to move everything to GPU before forward().
-    """
-    def to(self, device: torch.device) -> "PreparedBatch":
-        """Move all tensor fields to the given device. Returns self."""
-        for f in fields(self):
-            val = getattr(self, f.name)
-            if isinstance(val, torch.Tensor):
-                setattr(self, f.name, val.to(device))
-            elif isinstance(val, list) and val and isinstance(val[0], torch.Tensor):
-                setattr(self, f.name, [t.to(device) for t in val])
-        return self
-
-
-class BasePreprocessor:
-    """Abstract base for model-specific DataLoader collate functions."""
-
-    @classmethod
-    def from_config(cls, cfg) -> "BasePreprocessor":
-        """Construct preprocessor from a full config object."""
-        raise NotImplementedError(
-            f"{cls.__name__} must implement from_config(cfg) classmethod"
-        )
-
-    def __call__(self, examples: List[Dict[str, Any]]) -> PreparedBatch:
-        """Transform a list of dataset samples into a PreparedBatch."""
-        raise NotImplementedError
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -155,7 +97,44 @@ def build_transforms_from_args(
     if extra_transforms:
         transforms.extend(extra_transforms)
 
+    # 4. Pi05-specific transforms: collate images, fallback prompt, tokenize
+    _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, image_size)
+
     if not transforms:
         return None
 
     return ComposedTransform(transforms)
+
+
+def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, image_size):
+    """Append Pi05-specific per-sample transforms if model_type is pi05."""
+    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
+    if model_type != "pi05":
+        return
+
+    import os
+    from loongforge.embodied.data.transforms.pi05.pi05_transform import (
+        Pi05CollateImagesTransform,
+        Pi05FallbackPromptTransform,
+        Pi05TokenizeTransform,
+    )
+
+    num_images = backbone_cfg.get("num_images", 2)
+    image_mask = backbone_cfg.get("image_mask", None) or [True] * num_images
+    max_token_len = backbone_cfg.get("max_token_len", 200)
+    tokenizer_path = (
+        getattr(args, "tokenizer_path", None)
+        or backbone_cfg.get("tokenizer_name", "")
+        or os.environ.get("TOKENIZER_PATH", "")
+    )
+
+    transforms.append(Pi05CollateImagesTransform(
+        image_size=image_size,
+        num_images=num_images,
+        image_mask=image_mask,
+    ))
+    transforms.append(Pi05FallbackPromptTransform())
+    transforms.append(Pi05TokenizeTransform(
+        tokenizer_path=tokenizer_path,
+        max_token_len=max_token_len,
+    ))
