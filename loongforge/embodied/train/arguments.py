@@ -129,6 +129,32 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--wandb-project", type=str, default="loongforge-vla")
     g.add_argument("--wandb-mode", type=str, default="disabled",
                    choices=["online", "offline", "disabled"])
+
+    # ── Profiler ──
+    # torch.profiler integration. Produces TensorBoard-compatible traces
+    # via tensorboard_trace_handler.
+    g = parser.add_argument_group("Profiler")
+    g.add_argument("--use-pytorch-profiler", action="store_true",
+                   dest="use_pytorch_profiler",
+                   help="Enable torch.profiler. Writes traces via "
+                        "tensorboard_trace_handler to --profile-output-dir.")
+    g.add_argument("--use-nsys-profiler", action="store_true",
+                   dest="use_nsys_profiler",
+                   help="Enable nsys-style profiling: cudaProfilerStart/Stop "
+                        "+ autograd emit_nvtx ranges, scoped to "
+                        "[profile_step_start, profile_step_end). Run the "
+                        "training command under `nsys profile -c cudaProfilerApi ...` "
+                        "to capture only the marked region. "
+                        "Mutually exclusive with --use-pytorch-profiler.")
+    g.add_argument("--profile-step-start", type=int, default=10,
+                   help="Global step at which to start profiling.")
+    g.add_argument("--profile-step-end", type=int, default=12,
+                   help="Global step at which to stop profiling.")
+    g.add_argument("--profile-ranks", nargs="+", type=int, default=[0],
+                   help="Global ranks to profile (applies to both pytorch and nsys).")
+    g.add_argument("--profile-output-dir", type=str, default=None,
+                   help="Directory to write torch.profiler traces. Defaults "
+                        "to {output_dir}/profiler.")
     
 
 def add_distributed_args(parser: argparse.ArgumentParser):

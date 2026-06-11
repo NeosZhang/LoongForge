@@ -61,3 +61,16 @@ def validate_args(args, cfg):
             f"Model config YAML has no 'model_type' or 'framework' top-level key. "
             f"Got keys: {list(cfg.keys())}"
         )
+
+    # Profiler mutual exclusion
+    if getattr(args, "use_pytorch_profiler", False) and getattr(args, "use_nsys_profiler", False):
+        raise ValueError(
+            "--use-pytorch-profiler and --use-nsys-profiler are mutually exclusive."
+        )
+
+    if getattr(args, "use_pytorch_profiler", False) or getattr(args, "use_nsys_profiler", False):
+        if args.profile_step_end < args.profile_step_start:
+            raise ValueError(
+                f"--profile-step-end ({args.profile_step_end}) must be greater than "
+                f"--profile-step-start ({args.profile_step_start})."
+            )

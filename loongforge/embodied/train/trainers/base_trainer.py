@@ -16,7 +16,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 from loongforge.embodied.distributed import DistributedContext
-from loongforge.embodied.distributed.parallel import unwrap_model, wrap_model
 from loongforge.embodied.distributed.checkpoint import (
     get_latest_checkpoint,
     load_pretrained,
@@ -24,10 +23,15 @@ from loongforge.embodied.distributed.checkpoint import (
     resume_training_state,
     save_checkpoint,
 )
-
-
-from loongforge.embodied.train.utils.utils import log_stage, set_seed, setup_logging, set_deterministic
+from loongforge.embodied.distributed.parallel import unwrap_model, wrap_model
 from loongforge.embodied.train.utils.logging import TrainingLogger, log_effective_config
+from loongforge.embodied.train.utils.utils import (
+    log_stage,
+    set_deterministic,
+    set_seed,
+    setup_logging,
+    Profiler,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -225,10 +229,17 @@ class BaseTrainer(ABC):
         log_interval = args.log_interval
         save_interval = args.save_interval
         loss_spike_threshold = args.loss_spike_threshold
+        
+        # ── Profiler setup ──
+        prof = Profiler(args, self.ctx, self.output_dir)
+        prof.start()
 
         self._init_data_iterator("vla")
 
         while self.completed_steps < self.train_iters:
+
+            prof.step(self.completed_steps)
+
             self.optimizer.zero_grad()
             t0 = time.perf_counter()
 
@@ -284,6 +295,10 @@ class BaseTrainer(ABC):
             )
             self._on_step_end(metrics)
 
+            # ── Profiler stop ──
+            if prof.should_stop(self.completed_steps):
+                prof.stop()
+
             # ── Logging ──
             if self.completed_steps % log_interval == 0:
                 self.logger.log_metrics(
@@ -294,6 +309,9 @@ class BaseTrainer(ABC):
             # ── Checkpoint ──
             if self.completed_steps % save_interval == 0:
                 self._save_checkpoint()
+
+        # Final cleanup if loop exited before profile_step_end was reached.
+        prof.stop()
 
     # ═══════════════════════════════════════════════
     # Abstract methods — subclass must implement
