@@ -14,12 +14,7 @@ Public API:
     - register_preprocessor / get_preprocessor: Registry API
 
 DataLoader output:
-    Pi05PreparedBatch (CPU tensors):
-        .images_list: List[Tensor (B, 3, H, W)]
-        .img_masks:   List[Tensor (B,) bool]
-        .input_ids:   Tensor (B, seq_len)
-        .attention_mask: Tensor (B, seq_len) bool
-        .actions:     Tensor (B, T, D)
+    PreparedBatch subclass (CPU tensors, model-specific fields).
 
     Usage:
         for batch in dataloader:
@@ -43,10 +38,6 @@ from loongforge.embodied.distributed import DistributedContext
 from loongforge.embodied.data.transforms import (
     BasePreprocessor,
     PreparedBatch,
-    Pi05Preprocessor,
-    Pi05PreparedBatch,
-    convert_stats,
-    StateDiscretizationTransform,
 )
 from loongforge.embodied.data.transforms.pipeline import build_transforms_from_args
 from loongforge.embodied.data.transforms.collator import build_preprocessor
@@ -81,7 +72,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
         dataset_stats = dataset.meta.stats
 
     # Build per-sample transforms and inject into dataset
-    transform = _build_transform(model_cfg, args, dataset, dataset_stats)
+    transform = build_transforms_from_args(model_cfg, args, dataset, dataset_stats)
     if transform is not None:
         if hasattr(dataset, "_transform"):
             dataset._transform = transform
@@ -141,28 +132,6 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
     return dl
 
 
-def _build_transform(model_cfg, args, dataset, dataset_stats):
-    """Build per-sample transforms pipeline."""
-    norm_mode = getattr(args, "normalization_mode", "q99")
-
-    # Build state transform as pi05-specific extra
-    state_stats = convert_stats(dataset_stats.get("observation.state")) if dataset_stats else None
-    state_transform = StateDiscretizationTransform(
-        apply_to=["prompt"],
-        state_key="observation.state",
-        task_key="task",
-        num_bins=256,
-        max_state_dim=None,
-        normalization_mode=norm_mode,
-        statistics=state_stats,
-    )
-
-    return build_transforms_from_args(
-        model_cfg, args, dataset, dataset_stats,
-        extra_transforms=[state_transform],
-    )
-
-
 def _build_preprocessor(model_cfg, args):
     """Build batch-level preprocessor (collate_fn) from the registry.
 
@@ -174,6 +143,10 @@ def _build_preprocessor(model_cfg, args):
         model_type = "dummy"
 
     preprocessor = build_preprocessor(model_type, model_cfg)
+
+    # Override fast_tokenizer_path with CLI --tokenizer-path if provided
+    if hasattr(preprocessor, "fast_tokenizer_path") and getattr(args, "tokenizer_path", None):
+        preprocessor.fast_tokenizer_path = args.tokenizer_path
 
     logger.info(f"Using preprocessor: {model_type}")
     return preprocessor
@@ -197,14 +170,10 @@ def _build_dataset(model_cfg, args, module: str):
         from .datasets.dummy_dataset import build_dummy_dataset
         return build_dummy_dataset(model_cfg, args)
 
-    elif module == "mock_lerobotv2_datasets":
-        from .datasets.mock_lerobot_v2_dataset import build_mock_lerobot_v2_dataset
-        return build_mock_lerobot_v2_dataset(model_cfg, args)
-
     else:
         raise ValueError(
             f"Unknown dataloader_module: '{module}'. "
-            f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets, mock_lerobotv2_datasets"
+            f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets"
         )
 
 
@@ -267,6 +236,4 @@ __all__ = [
     "save_dataset_statistics",
     "BasePreprocessor",
     "PreparedBatch",
-    "Pi05Preprocessor",
-    "Pi05PreparedBatch",
 ]

@@ -19,6 +19,7 @@ backbone:
   image_mask: [true, true]
   image_size: 224
   max_token_len: 200
+  image_normalize_mode: siglip
 
 # Action model (Pi0 Action Expert)
 action_model:

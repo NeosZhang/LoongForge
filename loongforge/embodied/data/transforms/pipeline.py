@@ -8,7 +8,7 @@ Pipeline builder:
     - build_transforms_from_args: Build per-sample transforms from config + CLI args
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 import torch
@@ -45,7 +45,6 @@ def build_transforms_from_args(
     args,
     dataset,
     dataset_stats,
-    extra_transforms: Optional[List[BaseTransform]] = None,
 ) -> Optional[ComposedTransform]:
     """Build per-sample transforms from flat model_cfg + CLI args.
 
@@ -54,7 +53,6 @@ def build_transforms_from_args(
         args: CLI args namespace
         dataset: The dataset instance (used to discover image keys)
         dataset_stats: Dict of normalization statistics from dataset.meta.stats
-        extra_transforms: Additional model-specific transforms to append
 
     Returns:
         ComposedTransform or None if not applicable.
@@ -62,9 +60,10 @@ def build_transforms_from_args(
     backbone_cfg = model_cfg.get("backbone", {}) if hasattr(model_cfg, "get") else {}
     action_cfg = model_cfg.get("action_model", {}) if hasattr(model_cfg, "get") else {}
 
-    image_size = getattr(args, "image_size", backbone_cfg.get("image_size", 224))
-    action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", 50))
-    max_action_dim = action_cfg.get("max_action_dim", 32)
+
+    image_size = getattr(args, "image_size", backbone_cfg.get("image_size", None))
+    action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", None))
+    max_action_dim = action_cfg.get("max_action_dim", None)
     normalization_mode = getattr(args, "normalization_mode", "q99")
 
     # Discover image keys from first sample
@@ -76,11 +75,16 @@ def build_transforms_from_args(
 
     transforms = []
 
-    # 1. Image transform (common to all VLA models)
+    # 1. Image transform (configurable via backbone config)
     if image_keys:
+        img_normalize_mode = backbone_cfg.get("image_normalize_mode", "identity")
+        img_resize_strategy = backbone_cfg.get("image_resize_strategy", "resize_with_pad")
+
         transforms.append(ImageTransform(
             apply_to=image_keys,
             image_size=image_size,
+            resize_strategy=img_resize_strategy,
+            normalize_mode=img_normalize_mode,
         ))
 
     # 2. Action transform (common to all VLA models)
@@ -93,12 +97,11 @@ def build_transforms_from_args(
         statistics=action_stats,
     ))
 
-    # 3. Append model-specific transforms
-    if extra_transforms:
-        transforms.extend(extra_transforms)
+    # 3. Pi05-specific transforms: state discretization, collate images, fallback prompt, tokenize
+    _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, dataset_stats, image_size)
 
-    # 4. Pi05-specific transforms: collate images, fallback prompt, tokenize
-    _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, image_size)
+    # 4. Fast-specific transforms: key mapping (images→PIL, action→numpy, task→lang)
+    _append_fast_transforms(transforms, model_cfg, image_size)
 
     if not transforms:
         return None
@@ -106,7 +109,7 @@ def build_transforms_from_args(
     return ComposedTransform(transforms)
 
 
-def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, image_size):
+def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, dataset_stats, image_size):
     """Append Pi05-specific per-sample transforms if model_type is pi05."""
     model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
     if model_type != "pi05":
@@ -114,10 +117,24 @@ def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, image_siz
 
     import os
     from loongforge.embodied.data.transforms.pi05.pi05_transform import (
+        StateDiscretizationTransform,
         Pi05CollateImagesTransform,
         Pi05FallbackPromptTransform,
         Pi05TokenizeTransform,
     )
+
+    normalization_mode = getattr(args, "normalization_mode", "q99")
+    state_stats = convert_stats(dataset_stats.get("observation.state")) if dataset_stats else None
+
+    transforms.append(StateDiscretizationTransform(
+        apply_to=["prompt"],
+        state_key="observation.state",
+        task_key="task",
+        num_bins=256,
+        max_state_dim=None,
+        normalization_mode=normalization_mode,
+        statistics=state_stats,
+    ))
 
     num_images = backbone_cfg.get("num_images", 2)
     image_mask = backbone_cfg.get("image_mask", None) or [True] * num_images
@@ -138,3 +155,14 @@ def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, image_siz
         tokenizer_path=tokenizer_path,
         max_token_len=max_token_len,
     ))
+
+
+def _append_fast_transforms(transforms, model_cfg, image_size):
+    """Append Fast-specific per-sample transforms if model_type is Fast."""
+    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
+    if model_type != "Fast":
+        return
+
+    from loongforge.embodied.data.transforms.fast.fast_transform import FastKeyMappingTransform
+
+    transforms.append(FastKeyMappingTransform(image_size=image_size))

@@ -39,8 +39,8 @@ class ActionTransform(BaseTransform):
     def __init__(
         self,
         apply_to: List[str],
-        action_horizon: int = 50,
-        max_action_dim: int = 32,
+        action_horizon: Optional[int] = None,
+        max_action_dim: Optional[int] = None,
         normalization_mode: str = "q99",
         statistics: Optional[Dict[str, Any]] = None,
         padding_strategy: str = "zero",
@@ -49,8 +49,8 @@ class ActionTransform(BaseTransform):
         """
         Args:
             apply_to: Keys in data dict to transform
-            action_horizon: Target action sequence length
-            max_action_dim: Target action dimension (zero-padded if smaller)
+            action_horizon: Target action sequence length (None to skip horizon padding)
+            max_action_dim: Target action dimension (None to skip dim padding)
             normalization_mode: Normalizer mode (q99, min_max, mean_std, scale, binary)
             statistics: Dataset statistics for normalization (None to skip)
             padding_strategy: Horizon padding strategy ("zero", "repeat_last", "none")
@@ -95,15 +95,16 @@ class ActionTransform(BaseTransform):
             if self.normalizer is not None:
                 value = self.normalizer.forward(value)
 
-            # Pad/truncate action dimension (always zero-pad)
-            D = value.shape[-1]
-            if D < self.max_action_dim:
-                value = F.pad(value, (0, self.max_action_dim - D))
-            elif D > self.max_action_dim:
-                value = value[..., :self.max_action_dim]
+            # Pad/truncate action dimension
+            if self.max_action_dim is not None:
+                D = value.shape[-1]
+                if D < self.max_action_dim:
+                    value = F.pad(value, (0, self.max_action_dim - D))
+                elif D > self.max_action_dim:
+                    value = value[..., :self.max_action_dim]
 
             # Pad/truncate action horizon
-            if self.padding_strategy != "none":
+            if self.action_horizon is not None and self.padding_strategy != "none":
                 T = value.shape[0]
                 if T > self.action_horizon:
                     value = value[:self.action_horizon]

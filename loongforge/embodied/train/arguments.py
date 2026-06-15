@@ -77,14 +77,24 @@ def add_training_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("Data")
     g.add_argument("--dataloader-module", type=str, default="lerobot_datasets")
     g.add_argument("--dataset-path", type=str, default=None)
+    g.add_argument("--lerobotdataset-version", type=str, default="v3.0",
+                   choices=["v2.0", "v2.1", "v3.0"],
+                   help="LeRobot dataset format version. v2.0/v2.1 uses JSONL + parquet "
+                        "(no lerobot lib needed); v3.0 uses official LeRobotDataset API.")
+    g.add_argument("--video-backend", type=str, default="torchcodec",
+                   choices=["torchcodec", "decord", "opencv", "pyav", "torchvision_av"],
+                   help="Video decoding backend for dataset loading.")
+    g.add_argument("--streaming", action="store_true",
+                   help="Use streaming (iterable) dataset mode for v3.0 format.")
     g.add_argument("--dataset-mix", type=str, default=None,
                    help="Name of a registered dataset mixture to load; expands to one or more datasets "
                         "under --data-root-dir (e.g., libero_spatial, oxe_magic_soup). Mutually "
                         "exclusive with --dataset-path.")
-    g.add_argument("--data-root-dir", type=str, default="/data/lerobot",
+    g.add_argument("--data-root-dir", type=str, default=None,
                    help="Root directory used to resolve datasets in --dataset-mix; each registered "
-                        "dataset path is joined with this directory (default: /data/lerobot).")
-    g.add_argument("--robot-type", type=str, default="libero_franka")
+                        "dataset path is joined with this directory.")
+    g.add_argument("--robot-type", type=str, default=None,
+                   help="Robot embodiment type (e.g. libero_franka, aloha, ur5).")
     g.add_argument("--task-name", type=str, default="perform the task",
                    help="Language task description (for HDF5 datasets)")
     g.add_argument("--per-device-batch-size", type=int, default=4)

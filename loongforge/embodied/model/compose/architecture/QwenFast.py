@@ -98,50 +98,45 @@ class QwenFast(BaseArchitecture):
             "Use forward() or predict_action() directly."
         )
 
-    def forward(self, examples: List[Dict[str, Any]], **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, batch, **kwargs) -> Dict[str, torch.Tensor]:
         """
-        Training forward pass
+        Training forward pass.
 
         Args:
-            examples: list of dicts, keys: image, lang, action
+            batch: FastPreparedBatch from dataloader preprocessor, must have attributes:
+                   input_ids, attention_mask, pixel_values, image_grid_thw, labels
+                   All tensors should already be on the correct device (via batch.to(device)).
 
         Returns:
             {"action_loss": scalar tensor}
         """
-        # Extract batch data
-        batch_images = [ex["image"] for ex in examples]  # [B, [PIL]]
-        instructions = [ex["lang"] for ex in examples]   # [B, str]
-        actions = [ex["action"] for ex in examples]      # [B, T, D]
-
-        # Step 1: Encode actions to FAST tokens
-        batch_fast_tokens = self._fast_tokenizer.encoder_action2fastoken(actions)
-
-        # Step 2: Map FAST tokens to VLM action tokens
-        vlm_action_tokens = [
-            self._map_fast_token_to_vlm_action(tokens)
-            for tokens in batch_fast_tokens
-        ]
-
-        # Step 3: Build QwenVL inputs
-        qwen_inputs = self._qwen_vl.build_qwenvl_inputs(
-            images=batch_images,
-            instructions=instructions,
-            solutions=vlm_action_tokens
+        assert hasattr(batch, "input_ids"), (
+            "forward() expects a FastPreparedBatch from FastPreprocessor, "
+            "got raw data instead. Ensure DataLoader uses the registered preprocessor as collate_fn."
         )
 
-        # Step 4: VLM forward pass
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            outputs = self._qwen_vl(
-                **qwen_inputs,
-                output_attentions=False,
-                output_hidden_states=False,
-                return_dict=True,
-            )
+        # Build kwargs for VLM forward
+        forward_kwargs = {
+            "input_ids": batch.input_ids,
+            "attention_mask": batch.attention_mask,
+            "labels": batch.labels,
+            "output_attentions": False,
+            "output_hidden_states": False,
+            "return_dict": True,
+        }
+        if batch.pixel_values is not None:
+            forward_kwargs["pixel_values"] = batch.pixel_values
+        if batch.image_grid_thw is not None:
+            forward_kwargs["image_grid_thw"] = batch.image_grid_thw
 
-        # Step 5: Extract loss
+        # VLM forward pass
+        with torch.autocast("cuda", dtype=torch.bfloat16):
+            outputs = self._qwen_vl(**forward_kwargs)
+
+        # Extract loss
         action_loss = outputs.loss
         if action_loss is None or torch.isnan(action_loss):
-            action_loss = torch.tensor(0.0, device=self._qwen_vl.model.device)
+            action_loss = torch.tensor(0.0, device=batch.input_ids.device)
 
         return {"action_loss": action_loss}
 

@@ -4,13 +4,15 @@
 """Dataset implementations."""
 
 from loongforge.embodied.data.datasets.lerobot_dataset import (
-    LeRobotVLADataset,
-    StreamingLeRobotVLADataset,
+    LeRobotV2Dataset,
+    LeRobotV3Dataset,
+    StreamingLeRobotV3Dataset,
     build_lerobot_dataset,
 )
 
 __all__ = [
-    "LeRobotVLADataset",
-    "StreamingLeRobotVLADataset",
+    "LeRobotV2Dataset",
+    "LeRobotV3Dataset",
+    "StreamingLeRobotV3Dataset",
     "build_lerobot_dataset",
 ]

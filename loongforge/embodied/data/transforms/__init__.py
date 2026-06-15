@@ -46,6 +46,11 @@ from loongforge.embodied.data.transforms.pi05 import (
     tokenize_prompts,
     build_tokenizer,
 )
+from loongforge.embodied.data.transforms.fast import (
+    FastPreprocessor,
+    FastPreparedBatch,
+    FastKeyMappingTransform,
+)
 
 __all__ = [
     # Per-sample transforms
@@ -69,4 +74,8 @@ __all__ = [
     "Pi05PreparedBatch",
     "tokenize_prompts",
     "build_tokenizer",
+    # Fast collator
+    "FastPreprocessor",
+    "FastPreparedBatch",
+    "FastKeyMappingTransform",
 ]

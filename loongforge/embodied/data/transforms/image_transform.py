@@ -24,7 +24,7 @@ from loongforge.embodied.data.transforms.base import BaseTransform
 # Image resize utilities (formerly image_utils.py)
 # ═══════════════════════════════════════════════════════════════
 
-def resize_with_pad_torch(
+def resize_with_pad(
     images: torch.Tensor,
     height: int,
     width: int,
@@ -162,7 +162,7 @@ class ImageTransform(BaseTransform):
         apply_to: List[str],
         image_size: int = 224,
         resize_strategy: str = "resize_with_pad",
-        normalize_mode: str = "siglip",
+        normalize_mode: str = "identity",
         interpolation_mode: str = "bilinear",
         training: bool = True,
     ):
@@ -255,7 +255,7 @@ class ImageTransform(BaseTransform):
         """Apply configured resize strategy to a (B, C, H, W) tensor."""
         s = size or self.image_size
         if self.resize_strategy == "resize_with_pad":
-            return resize_with_pad_torch(batch, s, s, mode=self.interpolation_mode)
+            return resize_with_pad(batch, s, s, mode=self.interpolation_mode)
         elif self.resize_strategy == "resize_only":
             return resize_only(batch, s, s, mode=self.interpolation_mode)
         elif self.resize_strategy == "center_crop":

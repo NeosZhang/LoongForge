@@ -41,8 +41,9 @@ MODEL_CONFIG_ARGS=(
 
 # ── Data params ───────────────────────────────────────────────
 DATA_ARGS=(
-    --dataloader-module mock_lerobotv2_datasets
+    --dataloader-module lerobot_datasets
     --dataset-path $DATA_PATH
+    --lerobotdataset-version v2.0
     --tokenizer-path $TOKENIZER_PATH
     --robot-type libero_franka
     --normalization-mode q99

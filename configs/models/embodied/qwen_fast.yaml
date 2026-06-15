@@ -12,11 +12,13 @@ action: null       # QwenFast dericetly output actions via Compression and token
 # Backbone (Qwen VLM)
 backbone:
   paligemma_variant: Qwen
-  num_images: 2                
-  image_mask: [true, true]     
-  image_size: 224              
-  max_token_len: 200           
-  attn_implementation: eager   
+  num_images: 2
+  image_mask: [true, true]
+  image_size: 224
+  max_token_len: 200
+  attn_implementation: eager
+  image_normalize_mode: identity
+  image_resize_strategy: resize_only  # QwenVL processor handles padding
 
 # Action model (FAST Action Expert)
 action_model:
