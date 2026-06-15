@@ -110,9 +110,11 @@ class LeRobotVLADataset(LeRobotDataset):
         tolerance_s: float = 1e-4,
         download_videos: bool = False,
         use_imagenet_stats: bool = True,
+        transform: Callable | None = None,
     ):
         self._action_horizon = action_horizon
         self._use_imagenet_stats = use_imagenet_stats
+        self._transform = transform
 
         # Resolve root for reading info.json before parent __init__
         dataset_root = Path(root) if root is not None else None
@@ -147,6 +149,12 @@ class LeRobotVLADataset(LeRobotDataset):
             f"action_horizon={action_horizon}, fps={fps}, "
             f"video_backend={video_backend}"
         )
+
+    def __getitem__(self, idx):
+        data = super().__getitem__(idx)
+        if self._transform is not None:
+            data = self._transform(data)
+        return data
 
 
 class StreamingLeRobotVLADataset(StreamingLeRobotDataset):
@@ -184,9 +192,11 @@ class StreamingLeRobotVLADataset(StreamingLeRobotDataset):
         buffer_size: int = 1000,
         seed: int = 42,
         shuffle: bool = True,
+        transform: Callable | None = None,
     ):
         self._action_horizon = action_horizon
         self._use_imagenet_stats = use_imagenet_stats
+        self._transform = transform
 
         # Resolve root for reading info.json before parent __init__
         dataset_root = Path(root) if root is not None else None
@@ -224,8 +234,14 @@ class StreamingLeRobotVLADataset(StreamingLeRobotDataset):
             f"max_num_shards={max_num_shards}"
         )
 
+    def __iter__(self):
+        for data in super().__iter__():
+            if self._transform is not None:
+                data = self._transform(data)
+            yield data
 
-def build_lerobot_dataset(
+
+def _build_lerobot_dataset(
     repo_id: str,
     root: str | Path | None = None,
     action_horizon: int = 50,
@@ -297,3 +313,29 @@ def build_lerobot_dataset(
         )
 
     return dataset
+
+
+def build_lerobot_dataset(model_cfg, args):
+    """Build lerobot-based VLA dataset from model config and CLI args."""
+    dataset_path = getattr(args, "dataset_path", None)
+    if not dataset_path:
+        raise ValueError("Must specify --dataset-path")
+
+    dataset_path = Path(dataset_path)
+    repo_id = dataset_path.name
+
+    action_cfg = model_cfg.get("action_model", {}) if hasattr(model_cfg, "get") else {}
+    action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", 50))
+
+    return _build_lerobot_dataset(
+        repo_id=repo_id,
+        root=str(dataset_path),
+        action_horizon=action_horizon,
+        streaming=False,
+        episodes=None,
+        video_backend="torchcodec",
+        tolerance_s=1e-4,
+        download_videos=False,
+        use_imagenet_stats=True,
+        num_workers=getattr(args, "num_workers", 4),
+    )

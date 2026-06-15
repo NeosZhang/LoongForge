@@ -9,7 +9,6 @@ Data loading for VLA (Vision-Language-Action) training.
 Public API:
     - build_dataloader(model_cfg, args, ctx): Factory that builds DataLoader with
       model-specific preprocessor as collate_fn
-    - build_lerobot_dataset: Build raw dataset (without preprocessor)
     - save_dataset_statistics: Save stats to JSON
     - BasePreprocessor / PreparedBatch: Base classes for extension
     - register_preprocessor / get_preprocessor: Registry API
@@ -36,7 +35,7 @@ from typing import Dict
 
 import numpy as np
 import torch
-from torch.utils.data import IterableDataset
+from torch.utils.data import Dataset, IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 from torchdata.stateful_dataloader.sampler import StatefulDistributedSampler
 
@@ -50,6 +49,7 @@ from loongforge.embodied.data.transforms import (
     StateDiscretizationTransform,
 )
 from loongforge.embodied.data.transforms.pipeline import build_transforms_from_args
+from loongforge.embodied.data.transforms.collator import build_preprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
     batch_size = args.per_device_batch_size
     num_workers = getattr(args, "num_workers", 4)
 
-    # Build dataset
+    # Build dataset (without transform first to get stats)
     dataset = _build_dataset(model_cfg, args, module)
 
     # Get dataset stats
@@ -80,8 +80,18 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
     if hasattr(dataset, "meta") and hasattr(dataset.meta, "stats"):
         dataset_stats = dataset.meta.stats
 
+    # Build per-sample transforms and inject into dataset
+    transform = _build_transform(model_cfg, args, dataset, dataset_stats)
+    if transform is not None:
+        if hasattr(dataset, "_transform"):
+            dataset._transform = transform
+        elif isinstance(dataset, IterableDataset):
+            dataset = _TransformedIterableDataset(dataset, transform)
+        else:
+            dataset = _TransformedMapDataset(dataset, transform)
+
     # Build preprocessor (collate_fn)
-    preprocessor = _build_preprocessor(model_cfg, args, dataset, dataset_stats)
+    preprocessor = _build_preprocessor(model_cfg, args)
 
     # Save statistics
     if ctx.is_main:
@@ -131,23 +141,9 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
     return dl
 
 
-def _build_preprocessor(model_cfg, args, dataset, dataset_stats):
-    """Build Pi05Preprocessor with unified transforms pipeline.
-
-    Constructs per-sample transforms (image + action + state discretization) via
-    build_transforms_from_args and injects them into the preprocessor. The preprocessor
-    only handles batch-level collation (stack + tokenize).
-    """
-    backbone_cfg = model_cfg.get("backbone", {}) if hasattr(model_cfg, "get") else {}
-
-    tokenizer_path = (
-        getattr(args, "tokenizer_path", None)
-        or backbone_cfg.get("tokenizer_name", "")
-        or os.environ.get("TOKENIZER_PATH", "")
-    )
-
+def _build_transform(model_cfg, args, dataset, dataset_stats):
+    """Build per-sample transforms pipeline."""
     norm_mode = getattr(args, "normalization_mode", "q99")
-    max_token_len = backbone_cfg.get("max_token_len", 200)
 
     # Build state transform as pi05-specific extra
     state_stats = convert_stats(dataset_stats.get("observation.state")) if dataset_stats else None
@@ -161,64 +157,55 @@ def _build_preprocessor(model_cfg, args, dataset, dataset_stats):
         statistics=state_stats,
     )
 
-    # Build unified per-sample transforms pipeline (image + action + state)
-    transform = build_transforms_from_args(
+    return build_transforms_from_args(
         model_cfg, args, dataset, dataset_stats,
         extra_transforms=[state_transform],
     )
 
-    preprocessor = Pi05Preprocessor(
-        image_size=getattr(args, "image_size", backbone_cfg.get("image_size", 224)),
-        num_images=backbone_cfg.get("num_images", 2),
-        image_mask=backbone_cfg.get("image_mask", None),
-        max_token_len=max_token_len,
-        tokenizer_path=tokenizer_path,
-        transform=transform,
-    )
 
-    logger.info(f"Using preprocessor: Pi05Preprocessor (transforms pipeline, max_token_len={max_token_len})")
+def _build_preprocessor(model_cfg, args):
+    """Build batch-level preprocessor (collate_fn) from the registry.
+
+    Resolves model_type to a registered preprocessor name, then
+    instantiates via from_config.
+    """
+    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
+    if not model_type:
+        model_type = "dummy"
+
+    preprocessor = build_preprocessor(model_type, model_cfg)
+
+    logger.info(f"Using preprocessor: {model_type}")
     return preprocessor
 
 
 def _build_dataset(model_cfg, args, module: str):
     """Build dataset instance based on dataloader_module."""
     if module == "lerobot_datasets":
-        return _build_lerobot_dataset(model_cfg, args)
+        from .datasets.lerobot_dataset import build_lerobot_dataset
+        return build_lerobot_dataset(model_cfg, args)
+
+    elif module == "rlds_datasets":
+        from .datasets.rlds_dataset import build_rlds_dataset
+        return build_rlds_dataset(model_cfg, args)
+
+    elif module == "hdf5_datasets":
+        from .datasets.hdf5_dataset import build_hdf5_dataset
+        return build_hdf5_dataset(model_cfg, args)
+
+    elif module == "dummy_datasets":
+        from .datasets.dummy_dataset import build_dummy_dataset
+        return build_dummy_dataset(model_cfg, args)
+
+    elif module == "mock_lerobotv2_datasets":
+        from .datasets.mock_lerobot_v2_dataset import build_mock_lerobot_v2_dataset
+        return build_mock_lerobot_v2_dataset(model_cfg, args)
+
     else:
         raise ValueError(
             f"Unknown dataloader_module: '{module}'. "
-            f"Supported: lerobot_datasets"
+            f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets, mock_lerobotv2_datasets"
         )
-
-
-def _build_lerobot_dataset(model_cfg, args):
-    """Build lerobot-based VLA dataset."""
-    from loongforge.embodied.data.datasets.lerobot_dataset import build_lerobot_dataset
-
-    dataset_path = getattr(args, "dataset_path", None)
-    if not dataset_path:
-        raise ValueError("Must specify --dataset-path")
-
-    dataset_path = Path(dataset_path)
-    repo_id = dataset_path.name
-
-    action_cfg = model_cfg.get("action_model", {}) if hasattr(model_cfg, "get") else {}
-    action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", 50))
-
-    dataset = build_lerobot_dataset(
-        repo_id=repo_id,
-        root=str(dataset_path),
-        action_horizon=action_horizon,
-        streaming=False,
-        episodes=None,
-        video_backend="torchcodec",
-        tolerance_s=1e-4,
-        download_videos=False,
-        use_imagenet_stats=True,
-        num_workers=getattr(args, "num_workers", 4),
-    )
-
-    return dataset
 
 
 def save_dataset_statistics(dataset_statistics: Dict, output_path):
@@ -242,41 +229,41 @@ def save_dataset_statistics(dataset_statistics: Dict, output_path):
     logger.info(f"Saved dataset statistics to {output_path}")
 
 
-def _build_dataset(model_cfg, args, module: str):
-    """Build dataset instance based on dataloader_module."""
-    if module == "lerobot_datasets":
-        return _build_lerobot_dataset(model_cfg, args)
+class _TransformedMapDataset(Dataset):
+    """Wrapper that applies a transform to a map-style dataset."""
 
-    elif module == "rlds_datasets":
-        from .datasets.rlds_dataset import build_rlds_dataset
+    def __init__(self, dataset, transform):
+        self._dataset = dataset
+        self._transform = transform
 
-        return build_rlds_dataset(model_cfg, args)
+    def __len__(self):
+        return len(self._dataset)
 
-    elif module == "hdf5_datasets":
-        from .datasets.hdf5_dataset import build_hdf5_dataset
+    def __getitem__(self, idx):
+        data = self._dataset[idx]
+        return self._transform(data)
 
-        return build_hdf5_dataset(model_cfg, args)
+    def __getattr__(self, name):
+        return getattr(self._dataset, name)
 
-    elif module == "dummy_datasets":
-        from .datasets.dummy_dataset import build_dummy_dataset
 
-        return build_dummy_dataset(model_cfg, args)
+class _TransformedIterableDataset(IterableDataset):
+    """Wrapper that applies a transform to an iterable dataset."""
 
-    elif module == "mock_lerobotv2_datasets":
-        from .datasets.mock_lerobot_v2_dataset import build_mock_lerobot_v2_dataset
+    def __init__(self, dataset, transform):
+        self._dataset = dataset
+        self._transform = transform
 
-        return build_mock_lerobot_v2_dataset(model_cfg, args)
+    def __iter__(self):
+        for data in self._dataset:
+            yield self._transform(data)
 
-    else:
-        raise ValueError(
-            f"Unknown dataloader_module: '{module}'. "
-            f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets, mock_lerobotv2_datasets"
-        )
+    def __getattr__(self, name):
+        return getattr(self._dataset, name)
 
 
 __all__ = [
     "build_dataloader",
-    "build_lerobot_dataset",
     "save_dataset_statistics",
     "BasePreprocessor",
     "PreparedBatch",
