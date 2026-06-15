@@ -9,13 +9,14 @@
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-export LOONGFORGE_PATH="/home/users/zhaoyizhan/baidu/hac-aiacc/AIAK-Training-Omni"
+export LOONGFORGE_PATH="/workspace/LoongForge"
 
 # ── Paths ─────────────────────────────────────────────────────
-TOKENIZER_PATH=${TOKENIZER_PATH:-"/ssd1/zhaoyizhan/paligemma-3b-pt-224"}
-CHECKPOINT_PATH=${CHECKPOINT_PATH:-""}
-DATA_PATH=${DATA_PATH:-"/ssd1/zhaoyizhan/libero"}
-OUTPUT_DIR=${OUTPUT_DIR:-"outputs/pi05_ddp_$(date +%Y%m%d_%H%M%S)"}
+TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/paligemma-3b-pt-224"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/pi05_pretrain_step-1000"}
+DATA_PATH=${DATA_PATH:-"/workspace/libero"}
+OUTPUT_DIR=${OUTPUT_DIR:-"/workspace/outputs/"}
+TENSORBOARD_PATH=${TENSORBOARD_PATH:-"/workspace/tensorboard-log"}
 
 # ── Distributed ───────────────────────────────────────────────
 GPUS_PER_NODE=8
@@ -83,9 +84,8 @@ DISTRIBUTED_TRAINING_ARGS=(
 
 # ── Logging params ────────────────────────────────────────────
 LOGGING_ARGS=(
-    --log-interval 50
-    --wandb-project loongforge-vla
-    --wandb-mode disabled
+    --log-interval 1
+    --tensorboard-dir ${TENSORBOARD_PATH}
 )
 
 # ── Launch ────────────────────────────────────────────────────

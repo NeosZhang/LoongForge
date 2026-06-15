@@ -94,8 +94,15 @@ class TrainingLogger:
         wandb_mode: str = "disabled",
         is_main: bool = True,
         model_cfg: Optional[Any] = None,
+        tensorboard_dir: Optional[str] = None,
+        tensorboard_queue_size: int = 1000,
+        run_name: Optional[str] = None,
     ):
         """Initialize the training logger.
+
+        W&B and TensorBoard are independent and may be enabled together. Both
+        default to off (W&B via ``wandb_mode="disabled"``, TensorBoard via
+        ``tensorboard_dir=None``).
 
         Args:
             output_dir: Directory for output files (metrics.jsonl, etc.)
@@ -103,6 +110,11 @@ class TrainingLogger:
             wandb_mode: W&B mode ("online", "offline", "disabled")
             is_main: Whether this is the main process (only main logs)
             model_cfg: Model config for image size estimation
+            tensorboard_dir: Directory for TensorBoard event files. If a
+                relative path is given, it is resolved under ``output_dir``.
+                ``None`` disables TensorBoard.
+            tensorboard_queue_size: Async event-queue size for SummaryWriter.
+            run_name: W&B run name (defaults to output_dir basename).
         """
         self.output_dir = output_dir
         self.wandb_project = wandb_project
@@ -110,30 +122,46 @@ class TrainingLogger:
         self.is_main = is_main
         self.model_cfg = model_cfg
         self._wandb_initialized = False
+        self._tb_writer = None
+        self._tb_dir: Optional[str] = None
+
+        wandb_enabled = wandb_mode != "disabled"
+        tb_enabled = bool(tensorboard_dir)
+
+        if not self.is_main:
+            return
+
+        if tb_enabled:
+            tb_dir = tensorboard_dir
+            if not os.path.isabs(tb_dir):
+                tb_dir = os.path.join(output_dir, tb_dir)
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+
+                os.makedirs(tb_dir, exist_ok=True)
+                self._tb_writer = SummaryWriter(
+                    log_dir=tb_dir, max_queue=tensorboard_queue_size
+                )
+                self._tb_dir = tb_dir
+                logger.info(f"TensorBoard enabled: {tb_dir}")
+            except Exception as e:
+                logger.warning(f"TensorBoard init failed: {e}")
+        if wandb_enabled:
+            try:
+                import wandb
+
+                wandb.init(
+                    project=self.wandb_project,
+                    name=run_name or os.path.basename(self.output_dir),
+                    mode=self.wandb_mode,
+                )
+                self._wandb_initialized = True
+            except Exception as e:
+                logger.warning(f"W&B init failed: {e}")
 
     # ═══════════════════════════════════════════════════════════════
     # W&B Integration
     # ═══════════════════════════════════════════════════════════════
-
-    def init_wandb(self, run_name: Optional[str] = None):
-        """Initialize Weights & Biases tracking.
-
-        Args:
-            run_name: Name for the W&B run (defaults to output_dir basename)
-        """
-        if self.wandb_mode == "disabled" or not self.is_main:
-            return
-        try:
-            import wandb
-
-            wandb.init(
-                project=self.wandb_project,
-                name=run_name or os.path.basename(self.output_dir),
-                mode=self.wandb_mode,
-            )
-            self._wandb_initialized = True
-        except Exception as e:
-            logger.warning(f"W&B init failed: {e}")
 
     def log_to_wandb(self, metrics: Dict[str, float], step: int):
         """Log metrics to W&B.
@@ -163,6 +191,44 @@ class TrainingLogger:
                 wandb.finish()
         except Exception:
             pass
+
+    # ═══════════════════════════════════════════════════════════════
+    # TensorBoard Integration
+    # ═══════════════════════════════════════════════════════════════
+
+    def log_to_tensorboard(self, metrics: Dict[str, float], step: int):
+        """Log scalar metrics to TensorBoard.
+
+        Args:
+            metrics: Dictionary of metric names and values
+            step: Current training step
+        """
+        if not self.is_main or self._tb_writer is None:
+            return
+        for k, v in metrics.items():
+            if k == "step":
+                continue
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                try:
+                    self._tb_writer.add_scalar(k, float(v), step)
+                except Exception:
+                    pass
+
+    def finish_tensorboard(self):
+        """Flush and close the TensorBoard writer."""
+        if not self.is_main or self._tb_writer is None:
+            return
+        try:
+            self._tb_writer.flush()
+            self._tb_writer.close()
+        except Exception:
+            pass
+        self._tb_writer = None
+
+    def finish(self):
+        """Close all logging backends (W&B + TensorBoard)."""
+        self.finish_wandb()
+        self.finish_tensorboard()
 
     # ═══════════════════════════════════════════════════════════════
     # Metrics Collection
@@ -320,7 +386,7 @@ class TrainingLogger:
         log_string = "iteration {:8d}/{:8d} |".format(completed_steps, train_iters)
         log_string += " consumed samples: {:12d} |".format(consumed_samples)
         log_string += " elapsed time per iteration (ms): {:.1f} |".format(step_time * 1000)
-        log_string += " throughput (samples/sec): {:.1f} |".format(samples_per_sec)
+        log_string += " throughput (samples/sec/per_device): {:.3f} |".format(samples_per_sec)
         log_string += " learning rate: {:.6E} |".format(lr)
         log_string += " global batch size: {:5d} |".format(global_batch_size)
         log_string += " action loss: {:.6E} |".format(loss)
@@ -334,6 +400,9 @@ class TrainingLogger:
 
         # W&B
         self.log_to_wandb(metrics, completed_steps)
+
+        # TensorBoard
+        self.log_to_tensorboard(metrics, completed_steps)
 
         # JSONL
         self._append_metrics_jsonl(metrics)

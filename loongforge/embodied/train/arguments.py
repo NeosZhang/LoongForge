@@ -124,11 +124,17 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--lora-target-modules", type=str, default="all-linear")
 
     # ── Logging ──
-    g = parser.add_argument_group("W&B")
+    g = parser.add_argument_group("Logging")
     g.add_argument("--log-interval", type=int, default=50)
     g.add_argument("--wandb-project", type=str, default="loongforge-vla")
     g.add_argument("--wandb-mode", type=str, default="disabled",
                    choices=["online", "offline", "disabled"])
+    g.add_argument("--tensorboard-dir", type=str, default=None,
+                   help="Directory to write TensorBoard event files. When unset, "
+                        "TensorBoard logging is disabled. When set to a relative path, "
+                        "it is resolved against --output-dir.")
+    g.add_argument("--tensorboard-queue-size", type=int, default=1000,
+                   help="Size of the queue for asynchronous TensorBoard event writes.")
 
     # ── Profiler ──
     # torch.profiler integration. Produces TensorBoard-compatible traces

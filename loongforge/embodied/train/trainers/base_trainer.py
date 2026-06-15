@@ -126,15 +126,16 @@ class BaseTrainer(ABC):
             wandb_mode=args.wandb_mode,
             is_main=self.ctx.is_main,
             model_cfg=self.model_cfg,
+            tensorboard_dir=getattr(args, "tensorboard_dir", None),
+            tensorboard_queue_size=getattr(args, "tensorboard_queue_size", 1000),
+            run_name=os.path.basename(self.output_dir),
         )
-        self.logger.init_wandb(os.path.basename(self.output_dir))
 
         # 5. Build model (from YAML model_cfg)
-        mt = getattr(self.model_cfg, "model_type", "?")
-        arch = getattr(self.model_cfg, "architecture", "?")
         with log_stage(
             "model",
-            start_msg=f"building: model_type={mt}  architecture={arch}",
+            start_msg=f"building: model_type={getattr(self.model_cfg, "model_type", "?")} "
+                f"architecture={getattr(self.model_cfg, "architecture", "?")} ",
             end_msg="built in {elapsed}",
         ):
             self.model = self._build_model()
@@ -542,8 +543,8 @@ class BaseTrainer(ABC):
             save_model(ema_cpu, os.path.join(final_path, "model.safetensors"))
             self.logger.log_final_model_saved(final_path)
 
-        # Close W&B
-        self.logger.finish_wandb()
+        # Close W&B / TensorBoard
+        self.logger.finish()
 
         self.ctx.barrier()
         self.ctx.destroy()
