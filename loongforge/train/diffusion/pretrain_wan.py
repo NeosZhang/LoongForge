@@ -495,8 +495,18 @@ def train_valid_test_datasets_provider(diffusion, train_val_test_num_samples, vp
             pin_memory=True,
         )
     else:
+        keep_keys = None
+        if getattr(args, "model_name", None) in ("wan2-1-i2v", "wan2-2-i2v"):
+            keep_keys = {
+                "context", "input_latents", "y", "clip_feature",
+                "height", "width", "num_frames",
+                "max_timestep_boundary", "min_timestep_boundary",
+            }
         dataset = TensorDataset(
-            args.data_path[0], args.train_iters * args.global_batch_size
+            args.data_path[0],
+            args.train_iters * args.global_batch_size,
+            seed=args.seed,
+            keep_keys=keep_keys,
         )
         sampler = torch.utils.data.DistributedSampler(
             dataset, shuffle=False, num_replicas=dp_world_size, rank=dp_rank

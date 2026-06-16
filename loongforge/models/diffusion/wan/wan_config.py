@@ -27,6 +27,9 @@ class WanConfig(BaseModelStditConfig):
     # WAN-specific fields
     text_dim: int = 4096
     has_image_input: bool = False
+    # Number of CLIP image tokens prepended to text tokens for I2V cross-attention.
+    # Wan2.1 uses CLIP ViT-H/14: (224/14)**2 + 1 = 257.
+    clip_num_image_tokens: int = 257
     in_dim: int = 36
     freq_dim: int = 256
     out_dim: int = 16

@@ -12,6 +12,7 @@ latent_time_scale: 1.0
 vae_temporal_compress: 4
 vae_spatial_compress: 8
 has_image_input: True
+clip_num_image_tokens: 257
 freq_dim: 256
 in_dim: 36
 out_dim: 16

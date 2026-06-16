@@ -20,3 +20,5 @@ require_clip_embedding: False
 has_image_pos_emb: False
 model_type: "wan2_2_i2v"
 use_fused_wan_rope: True
+attention_dropout: 0.0
+hidden_dropout: 0.0
