@@ -6,12 +6,16 @@
 import json
 import logging
 import os
+import numpy as np
+import torch
+import wandb
 from typing import Any, Dict, Optional
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
+from loongforge.embodied.optimizer import get_grad_norm
+from torch.utils.tensorboard import SummaryWriter
 
-import numpy as np
-import torch
+
 
 logger = logging.getLogger(__name__)
 
@@ -136,8 +140,6 @@ class TrainingLogger:
             if not os.path.isabs(tb_dir):
                 tb_dir = os.path.join(output_dir, tb_dir)
             try:
-                from torch.utils.tensorboard import SummaryWriter
-
                 os.makedirs(tb_dir, exist_ok=True)
                 self._tb_writer = SummaryWriter(
                     log_dir=tb_dir, max_queue=tensorboard_queue_size
@@ -148,8 +150,6 @@ class TrainingLogger:
                 logger.warning(f"TensorBoard init failed: {e}")
         if wandb_enabled:
             try:
-                import wandb
-
                 wandb.init(
                     project=self.wandb_project,
                     name=run_name or os.path.basename(self.output_dir),
@@ -173,8 +173,6 @@ class TrainingLogger:
         if not self.is_main or not self._wandb_initialized:
             return
         try:
-            import wandb
-
             if wandb.run:
                 wandb.log(metrics, step=step)
         except Exception:
@@ -185,8 +183,6 @@ class TrainingLogger:
         if not self.is_main:
             return
         try:
-            import wandb
-
             if wandb.run:
                 wandb.finish()
         except Exception:
@@ -295,6 +291,7 @@ class TrainingLogger:
         consumed_samples: int,
         model: torch.nn.Module,
         batch_size: int = 0,
+        grad_norm: Optional[float] = None,
     ) -> Dict[str, float]:
         """Collect metrics, including loss, step time, and gradient norm.
 
@@ -307,6 +304,8 @@ class TrainingLogger:
             consumed_samples: Total consumed samples so far
             model: Model for gradient norm calculation
             batch_size: Batch size (for throughput calculation)
+            grad_norm: Pre-clip global gradient norm computed by the train loop.
+                Passing it here avoids recomputing the (post-clip) norm.
 
         Returns:
             Dictionary of collected metrics
@@ -336,10 +335,10 @@ class TrainingLogger:
         else:
             metrics["samples_per_sec"] = 0.0
 
-        # Calculate gradient norm
-        from loongforge.embodied.optimizer import get_grad_norm
-
-        grad_norm = get_grad_norm(model)
+        # Gradient norm: prefer the pre-clip value passed by the train loop.
+        # Fall back to recomputing only if it wasn't provided.
+        if grad_norm is None:
+            grad_norm = get_grad_norm(model)
         metrics["grad_norm"] = grad_norm
 
         return metrics
@@ -522,3 +521,5 @@ class TrainingLogger:
         if not self.is_main:
             return
         logger.info(f"EMA final model saved: {path}")
+
+

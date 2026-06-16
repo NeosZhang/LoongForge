@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from safetensors.torch import save_model
 
 from loongforge.embodied.distributed import DistributedContext
 from loongforge.embodied.distributed.checkpoint import (
@@ -31,6 +32,13 @@ from loongforge.embodied.train.utils.utils import (
     set_seed,
     setup_logging,
     Profiler,
+)
+from loongforge.embodied.optimizer import (
+    build_optimizer,
+    build_scheduler,
+    clean_nan_gradients,
+    clip_gradients,
+    get_grad_norm,
 )
 
 logger = logging.getLogger(__name__)
@@ -276,9 +284,11 @@ class BaseTrainer(ABC):
             # ── NaN gradient cleanup ──
             self._clean_nan_gradients()
 
-            # ── Gradient clipping ──
+            # ── Gradient clipping (returns pre-clip global grad norm) ──
             if grad_clip > 0:
-                self._clip_gradients(grad_clip)
+                grad_norm = self._clip_gradients(grad_clip)
+            else:
+                grad_norm = get_grad_norm(self.model)
 
             # ── Optimizer step ──
             self.optimizer.step()
@@ -292,7 +302,7 @@ class BaseTrainer(ABC):
                 output, accum_loss, step_time,
                 self.completed_steps, self.lr_scheduler,
                 self.completed_steps * batch_size,
-                self.model, batch_size,
+                self.model, batch_size, grad_norm,
             )
             self._on_step_end(metrics)
 
@@ -383,22 +393,18 @@ class BaseTrainer(ABC):
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
         """Build AdamW with per-module LR groups."""
-        from loongforge.embodied.optimizer import build_optimizer
         return build_optimizer(self.model, self.args)
 
     def _build_scheduler(self):
         """Build LR scheduler."""
-        from loongforge.embodied.optimizer import build_scheduler
         return build_scheduler(self.optimizer, self.args)
 
-    def _clip_gradients(self, max_norm: float):
-        """Gradient clipping."""
-        from loongforge.embodied.optimizer import clip_gradients
-        clip_gradients(self.model, max_norm)
+    def _clip_gradients(self, max_norm: float) -> float:
+        """Gradient clipping. Returns the pre-clip global gradient norm."""
+        return clip_gradients(self.model, max_norm)
 
     def _clean_nan_gradients(self):
         """Replace NaN/Inf gradients with 0."""
-        from loongforge.embodied.optimizer import clean_nan_gradients
         clean_nan_gradients(self.model)
 
     def _restore_dataloader_states(self):
@@ -535,7 +541,6 @@ class BaseTrainer(ABC):
         if self.ctx.is_main and self.ema_model:
             final_path = os.path.join(self.output_dir, "final_model")
             os.makedirs(final_path, exist_ok=True)
-            from safetensors.torch import save_model
 
             torch.cuda.empty_cache()
             gc.collect()
@@ -548,3 +553,4 @@ class BaseTrainer(ABC):
 
         self.ctx.barrier()
         self.ctx.destroy()
+

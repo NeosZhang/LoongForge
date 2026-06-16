@@ -5,6 +5,9 @@
 
 import torch
 import torch.nn as nn
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+import torch.distributed as dist
+
 
 
 def get_grad_norm(model: nn.Module) -> float:
@@ -21,9 +24,6 @@ def get_grad_norm(model: nn.Module) -> float:
     Returns:
         The L2 norm of all model gradients (global norm for distributed).
     """
-    import torch
-    import torch.distributed as dist
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
     is_fsdp = isinstance(model, FSDP) or hasattr(model, "_fsdp_state")
 
@@ -40,19 +40,25 @@ def get_grad_norm(model: nn.Module) -> float:
     return total_norm_sq.sqrt().item()
 
 
-def clip_gradients(model: nn.Module, max_norm: float):
+def clip_gradients(model: nn.Module, max_norm: float) -> float:
     """Gradient clipping for FSDP with mixed-dtype gradients (fp32 + bf16).
 
     FSDP shards parameters across ranks, so each rank only holds a shard of
     gradients. We compute local norm in float32, all-reduce to get global norm,
     then clip.
+
+    Returns:
+        The global gradient L2 norm computed *before* clipping. Reuse this for
+        logging instead of recomputing the (post-clip) norm separately.
     """
-    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    
 
     is_fsdp = isinstance(model, FSDP) or hasattr(model, "_fsdp_state")
     if not is_fsdp:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        return
+        # clip_grad_norm_ returns the total norm *before* clipping. Under DDP
+        # grads are already all-reduced, so the local norm equals the global one.
+        total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        return float(total_norm)
 
     # Compute local sharded norm in float32 (handles mixed dtype)
     local_norm_sq = torch.tensor(0.0, device=next(model.parameters()).device)
@@ -70,9 +76,12 @@ def clip_gradients(model: nn.Module, max_norm: float):
         if p.grad is not None:
             p.grad.mul_(clip_coef.to(p.grad.dtype))
 
+    return total_norm.item()
+
 
 def clean_nan_gradients(model: nn.Module):
     """Replace NaN/Inf gradients with 0."""
     for param in model.parameters():
         if param.grad is not None:
             torch.nan_to_num(param.grad, nan=0.0, posinf=0.0, neginf=0.0, out=param.grad)
+
