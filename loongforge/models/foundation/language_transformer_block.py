@@ -29,6 +29,7 @@ from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
 from megatron.core.pipeline_parallel.utils import is_vp_first_stage, is_vp_last_stage
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.transformer.enums import LayerType
+from megatron.core.transformer.hyper_connection import HyperConnectionModule, HyperHead
 from megatron.core.transformer.module import GraphableMegatronModule, MegatronModule
 from megatron.core.transformer.spec_utils import ModuleSpec, build_module
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -87,6 +88,22 @@ logger = logging.getLogger(__name__)
 
 class TransformerBlock(MegatronTransformerBlock):
     """Language Transformer Class."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Replace parent's inline hc_head params with a HyperHead module.
+        # Remove duplicate parameters created by parent __init__ to avoid
+        # state_dict conflicts.
+        if self.config.enable_hyper_connections and self.has_final_layernorm_in_this_stage():
+            # Delete parent's inline parameters
+            if hasattr(self, 'hc_head_fn'):
+                del self.hc_head_fn
+            if hasattr(self, 'hc_head_base'):
+                del self.hc_head_base
+            if hasattr(self, 'hc_head_scale'):
+                del self.hc_head_scale
+            self.head_hyper_connection = HyperHead(self.config)
+
     def forward(
         self,
         hidden_states: Union[Tensor, WrappedTensor],
@@ -171,6 +188,12 @@ class TransformerBlock(MegatronTransformerBlock):
         #   already creates viewless tensors. That said, make_viewless_tensor()
         #   is called here to be future-proof and corner-case-proof.
         hidden_states = make_viewless_tensor(inp=hidden_states, requires_grad=True, keep_graph=True)
+
+        # Expand hidden states for hyper connections at the start of the block
+        if self.config.enable_hyper_connections and self.pre_process:
+            hidden_states = HyperConnectionModule.input_expand(
+                hidden_states, self.config.num_residual_streams
+            )  # [s, b, C] -> [s, b, n*C]
 
         if self.config.sequence_parallel:
             rng_context = tensor_parallel.get_cuda_rng_tracker().fork()
@@ -292,6 +315,13 @@ class TransformerBlock(MegatronTransformerBlock):
                     ):
                         hidden_states = self.group_prefetch_offload_commit_async(hidden_states)
 
+        # Contract hyper connections at the end of the block using learned HyperHead
+        mhc_multistream = None
+        if self.config.enable_hyper_connections and self.has_final_layernorm_in_this_stage():
+            # When MTP is enabled, save pre-contraction multi-stream for MTP input.
+            if getattr(self.config, 'mtp_num_layers', None) and self.config.mtp_num_layers > 0:
+                mhc_multistream = hidden_states
+            hidden_states = self.head_hyper_connection(hidden_states)  # [s, b, n*C] -> [s, b, C]
         # Final layer norm.
         if self.final_layernorm is not None:
             hidden_states = self.final_layernorm(hidden_states)
@@ -307,6 +337,10 @@ class TransformerBlock(MegatronTransformerBlock):
         if not self.pre_process and len(self.layers) == 0 and not self.final_layernorm:
             hidden_states = hidden_states.clone()
 
+
+        # When mHC + MTP, return both contracted [s,b,h] and pre-contraction [s,b,n*h]
+        if mhc_multistream is not None:
+            return hidden_states, mhc_multistream
         return hidden_states
         
     def _checkpointed_forward(
@@ -334,7 +368,7 @@ class TransformerBlock(MegatronTransformerBlock):
 
         def custom(start: int, end: int):
             def custom_forward(
-                hidden_states, attention_mask, context, context_mask, rotary_pos_emb
+                hidden_states, attention_mask, context, context_mask, rotary_pos_emb, **_ignored
             ):
                 for index in range(start, end):
                     layer = self._get_layer(index)
@@ -388,15 +422,19 @@ class TransformerBlock(MegatronTransformerBlock):
                     **kwargs,
                 )
             else:
+                # FIX: Megatron tensor_parallel.checkpoint does not forward **kwargs
+                # to forward_func (unlike te_checkpoint). Bind kwargs via functools.partial
+                # so V4 hash routing (input_ids) works under recompute when FP8 is off.
+                import functools as _ft
+                _bound = _ft.partial(forward_func, **kwargs) if kwargs else forward_func
                 return tensor_parallel.checkpoint(
-                    forward_func,
+                    _bound,
                     self.config.distribute_saved_activations,
                     hidden_states,
                     attention_mask,
                     context,
                     context_mask,
                     rotary_pos_emb,
-                    **kwargs,
                 )
 
         if self.config.enable_chunkpipe:
