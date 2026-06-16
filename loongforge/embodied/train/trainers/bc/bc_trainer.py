@@ -49,6 +49,4 @@ class BCTrainer(BaseTrainer):
             from loongforge.embodied.distributed.parallel import unwrap_model
 
             model = unwrap_model(self.model)
-            arch = getattr(model, "architecture", None)
-            if arch:
-                logger.info(f"Architecture: {arch.__class__.__name__}")
+            logger.info(f"Model: {model.__class__.__name__}")

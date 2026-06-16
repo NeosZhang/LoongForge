@@ -144,8 +144,7 @@ class BaseTrainer(ABC):
         # 5. Build model (from YAML model_cfg)
         with log_stage(
             "model",
-            start_msg=f"building: model_type={getattr(self.model_cfg, "model_type", "?")} "
-                f"architecture={getattr(self.model_cfg, "architecture", "?")} ",
+            start_msg=f"building: model_type={getattr(self.model_cfg, 'model_type', '?')}",
             end_msg="built in {elapsed}",
         ):
             self.model = self._build_model()
@@ -361,14 +360,14 @@ class BaseTrainer(ABC):
     # ═══════════════════════════════════════════════
 
     def _load_pretrained(self, path: str):
-        """Load pretrained weights, preferring architecture.load_pretrained if available."""
-        arch = getattr(self.model, "architecture", None)
-        if arch and hasattr(arch, "load_pretrained"):
-            arch.load_pretrained(path, device=self.ctx.device)
-            self.logger.log_pretrained_loaded(path, via_architecture=True)
+        """Load pretrained weights, preferring model.load_pretrained if available."""
+        if hasattr(self.model, "load_pretrained"):
+            self.model.load_pretrained(path, device=self.ctx.device)
+        elif hasattr(self.model, "model") and hasattr(self.model.model, "load_pretrained"):
+            self.model.model.load_pretrained(path, device=self.ctx.device)
         else:
             load_pretrained(self.model, path, self.ctx)
-            self.logger.log_pretrained_loaded(path, via_architecture=False)
+        self.logger.log_pretrained_loaded(path)
 
     def _handle_resume(self, path: str, step: int, epoch: int):
         """Resume model weights from a discovered checkpoint.

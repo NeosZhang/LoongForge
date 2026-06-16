@@ -435,19 +435,11 @@ class TrainingLogger:
             f"({100 * trainable / max(total, 1):.1f}%)"
         )
 
-    def log_pretrained_loaded(self, path: str, via_architecture: bool = False):
-        """Log pretrained weight loading.
-
-        Args:
-            path: Path to pretrained weights
-            via_architecture: Whether loaded via architecture.load_pretrained
-        """
+    def log_pretrained_loaded(self, path: str):
+        """Log pretrained weight loading."""
         if not self.is_main:
             return
-        if via_architecture:
-            logger.info(f"Pretrained loaded via architecture: {path}")
-        else:
-            logger.info(f"Pretrained loaded: {path}")
+        logger.info(f"Pretrained loaded: {path}")
 
     def log_resume(self, step: int):
         """Log resume from checkpoint.

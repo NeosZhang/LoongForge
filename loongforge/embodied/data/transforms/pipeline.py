@@ -57,13 +57,13 @@ def build_transforms_from_args(
     Returns:
         ComposedTransform or None if not applicable.
     """
-    backbone_cfg = model_cfg.get("backbone", {}) if hasattr(model_cfg, "get") else {}
-    action_cfg = model_cfg.get("action_model", {}) if hasattr(model_cfg, "get") else {}
 
 
-    image_size = getattr(args, "image_size", backbone_cfg.get("image_size", None))
-    action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", None))
-    max_action_dim = action_cfg.get("max_action_dim", None)
+    image_size = (getattr(args, "image_size", None)
+                  or model_cfg.get("image_size", 224))
+    action_horizon = (getattr(args, "action_horizon", None)
+                      or model_cfg.get("action_horizon", None))
+    max_action_dim = (model_cfg.get("max_action_dim", None))
     normalization_mode = getattr(args, "normalization_mode", "q99")
 
     # Discover image keys from first sample
@@ -77,8 +77,8 @@ def build_transforms_from_args(
 
     # 1. Image transform (configurable via backbone config)
     if image_keys:
-        img_normalize_mode = backbone_cfg.get("image_normalize_mode", "identity")
-        img_resize_strategy = backbone_cfg.get("image_resize_strategy", "resize_with_pad")
+        img_normalize_mode = model_cfg.get("image_normalize_mode", "identity")
+        img_resize_strategy = model_cfg.get("image_resize_strategy", "resize_with_pad")
 
         transforms.append(ImageTransform(
             apply_to=image_keys,
@@ -98,7 +98,7 @@ def build_transforms_from_args(
     ))
 
     # 3. Pi05-specific transforms: state discretization, collate images, fallback prompt, tokenize
-    _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, dataset_stats, image_size)
+    _append_pi05_transforms(transforms, model_cfg, model_cfg, args, dataset_stats, image_size)
 
     # 4. Fast-specific transforms: key mapping (images→PIL, action→numpy, task→lang)
     _append_fast_transforms(transforms, model_cfg, image_size)
