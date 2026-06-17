@@ -110,7 +110,11 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--pretrained-checkpoint", type=str, default=None)
     g.add_argument("--resume", action="store_true", help="Resume from latest checkpoint")
     g.add_argument("--save-format", type=str, default="safetensors",
-                   choices=["safetensors", "pt"])
+                   choices=["safetensors", "pt", "dcp"],
+                   help="Checkpoint format: 'safetensors'/'pt' = rank0 consolidated "
+                        "single file (legacy); 'dcp' = per-rank sharded via "
+                        "torch.distributed.checkpoint (low memory, supports "
+                        "world-size resharding on resume).")
     g.add_argument("--save-training-state", action=argparse.BooleanOptionalAction, default=True,
                    help="Save optimizer/scheduler/RNG state alongside model weights "
                         "(required for true resume). Use --no-save-training-state for "
