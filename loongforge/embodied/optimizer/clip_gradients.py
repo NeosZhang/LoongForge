@@ -27,7 +27,7 @@ def get_grad_norm(model: nn.Module) -> float:
 
     is_fsdp = isinstance(model, FSDP) or hasattr(model, "_fsdp_state")
 
-    total_norm_sq = torch.zeros(1, device=next(model.parameters()).device)
+    total_norm_sq = torch.zeros((), device=next(model.parameters()).device)
 
     for p in model.parameters():
         if p.grad is not None:

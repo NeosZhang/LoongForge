@@ -18,6 +18,7 @@ from safetensors.torch import save_model
 
 from loongforge.embodied.distributed import DistributedContext
 from loongforge.embodied.distributed.checkpoint import (
+    detect_checkpoint_format,
     get_latest_checkpoint,
     load_pretrained,
     restore_rank_rng_state,
@@ -202,7 +203,6 @@ class BaseTrainer(ABC):
             ):
                 saved_epoch, dataloader_state, rng_per_rank = resume_training_state(
                     self.model, self.optimizer, self.lr_scheduler, latest_path, self.ctx,
-                    args=self.args,
                     restore_rng=False,
                 )
                 # Trust the epoch from training_state.pt over resume_meta.json
@@ -370,8 +370,23 @@ class BaseTrainer(ABC):
             self.logger.log_pretrained_loaded(path, via_architecture=False)
 
     def _handle_resume(self, path: str, step: int, epoch: int):
-        """Resume model weights from a discovered checkpoint."""
-        load_pretrained(self.model, path, self.ctx)
+        """Resume model weights from a discovered checkpoint.
+
+        For ``dcp`` checkpoints, weight loading is deferred until after
+        ``wrap_model`` (handled by ``resume_training_state``), since DCP needs
+        the FSDP-sharded DTensor layout to know how to reshard. Calling
+        ``load_pretrained`` here would also fail because there is no
+        consolidated single-file model in a DCP checkpoint dir.
+        """
+        fmt = detect_checkpoint_format(path)
+        if fmt == "dcp":
+            if self.ctx.is_main:
+                logger.info(
+                    "resume: detected DCP checkpoint at %s — deferring weight "
+                    "load until after wrap_model.", path,
+                )
+        else:
+            load_pretrained(self.model, path, self.ctx)
         self.completed_steps = step
         self.current_epoch = epoch
         self.logger.log_resume(step)

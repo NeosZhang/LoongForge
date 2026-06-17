@@ -8,7 +8,7 @@ Abstract Factory pattern: defines how backbone + condition + action are composed
 Three concrete factories correspond to three mainstream network paradigms.
 """
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Dict, List, Any, Optional
 import torch
 import torch.nn as nn
@@ -18,7 +18,7 @@ from loongforge.embodied.model.compose.condition.base import BaseCondition
 from loongforge.embodied.model.compose.action.base import BaseAction
 
 
-class BaseArchitecture(ABC, nn.Module):
+class BaseArchitecture(nn.Module):
     """
     Network structure abstract base class.
 
