@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import random
+import shutil
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -42,6 +43,12 @@ from .parallel import unwrap_model
 
 logger = logging.getLogger(__name__)
 
+# Module-level state for async DCP save. At most one in-flight save at a time;
+# subsequent saves (or shutdown) wait on the previous future before launching a
+# new one to avoid contending CPU-staging buffers and to prevent
+# ``get_latest_checkpoint`` from picking up an incomplete directory.
+_pending_async_save: Optional[dict] = None
+
 
 def save_checkpoint(
     model: nn.Module,
@@ -55,33 +62,139 @@ def save_checkpoint(
     dataloader_state: Optional[Dict] = None,
 ):
     """Save checkpoint in the format selected by ``args.save_format``."""
+    # Make sure any previous async save has finalized before we touch a new
+    # ``steps_{N}`` dir or stage another state-dict snapshot.
+    flush_pending_save(ctx)
+
     path = os.path.join(checkpoint_dir, f"steps_{step}")
     save_format = getattr(args, "save_format", "safetensors")
+    async_save = (
+        save_format == "dcp"
+        and getattr(args, "async_save", False)
+        and hasattr(dcp, "async_save")
+    )
+    if getattr(args, "async_save", False) and not async_save and ctx.is_main:
+        if save_format != "dcp":
+            logger.warning("--async-save ignored: only effective with --save-format=dcp.")
+        elif not hasattr(dcp, "async_save"):
+            logger.warning(
+                "--async-save ignored: torch.distributed.checkpoint.async_save "
+                "unavailable (requires PyTorch >= 2.4)."
+            )
 
     if ctx.is_main:
         os.makedirs(path, exist_ok=True)
     ctx.barrier()
 
+    meta = {
+        "completed_steps": step,
+        "epoch": epoch,
+        "ckpt_format": save_format,
+        "world_size": ctx.world_size,
+    }
+
     if save_format == "dcp":
-        _save_dcp(model, optimizer, scheduler, path, ctx, args, dataloader_state)
+        future = _save_dcp(
+            model, optimizer, scheduler, path, ctx, args,
+            dataloader_state, async_save=async_save,
+        )
     else:
+        future = None
         _save_legacy(
             model, optimizer, scheduler, path, ctx, args, epoch,
             dataloader_state, save_format,
         )
 
-    if ctx.is_main:
-        meta = {
-            "completed_steps": step,
-            "epoch": epoch,
-            "ckpt_format": save_format,
-            "world_size": ctx.world_size,
+    if future is not None:
+        # Defer ``resume_meta.json`` until the async write has flushed —
+        # otherwise a crash mid-write leaves a "valid-looking" dir.
+        global _pending_async_save
+        _pending_async_save = {
+            "future": future,
+            "path": path,
+            "meta": meta,
+            "is_main": ctx.is_main,
+            "rank": ctx.rank,
+            "save_format": save_format,
         }
-        with open(os.path.join(path, "resume_meta.json"), "w") as f:
-            json.dump(meta, f, indent=2)
+        if ctx.is_main:
+            logger.info(f"Async checkpoint launched ({save_format}): {path}")
+        # No barrier here: ranks must be free to keep training. Cross-rank
+        # synchronization happens inside the next flush via ctx.barrier().
+        return
+
+    if ctx.is_main:
+        _write_resume_meta(path, meta)
         logger.info(f"Checkpoint saved ({save_format}): {path}")
 
     ctx.barrier()
+
+
+def flush_pending_save(ctx: Optional[DistributedContext] = None):
+    """Wait on any in-flight async DCP save and finalize its ``resume_meta.json``.
+
+    Safe to call repeatedly. Should be invoked before the process exits and
+    before launching another save (the latter is handled internally by
+    ``save_checkpoint``).
+    """
+    global _pending_async_save
+    if _pending_async_save is None:
+        return
+    pending = _pending_async_save
+    _pending_async_save = None
+
+    local_ok = True
+    local_err: Optional[Exception] = None
+    try:
+        pending["future"].result()
+        if pending["is_main"]:
+            _write_resume_meta(pending["path"], pending["meta"])
+    except Exception as e:  # noqa: BLE001 - propagated below after global vote
+        local_ok = False
+        local_err = e
+        logger.exception(
+            "Async DCP save failed on rank %d for %s",
+            pending["rank"], pending["path"],
+        )
+
+    global_ok = local_ok
+    if ctx is not None and ctx.is_distributed:
+        flag = torch.tensor(
+            [1 if local_ok else 0], dtype=torch.int, device=ctx.device
+        )
+        dist.all_reduce(flag, op=dist.ReduceOp.MIN)
+        global_ok = bool(flag.item() == 1)
+
+    if not global_ok:
+        if pending["is_main"]:
+            # Remove the partially-written dir so failed shards don't accumulate on
+            # disk. Only rank0 deletes, and only after the global vote — so no rank
+            # is still writing into it. Best-effort: a cleanup failure must not mask
+            # the original save error raised below.
+            try:
+                shutil.rmtree(pending["path"])
+                logger.info("Removed failed checkpoint dir: %s", pending["path"])
+            except Exception:
+                logger.exception(
+                    "Failed to remove incomplete checkpoint dir %s", pending["path"]
+                )
+        if ctx is not None:
+            ctx.barrier()
+
+        raise RuntimeError(
+            f"Aborting training because async checkpoint commit failed for "
+            f"{pending['path']} (see per-rank logs for the original save error)."
+        ) from local_err     
+
+    if pending["is_main"]:
+        logger.info(
+            f"Async checkpoint finalized ({pending['save_format']}): {pending['path']}"
+        )
+        
+
+def _write_resume_meta(path: str, meta: dict):
+    with open(os.path.join(path, "resume_meta.json"), "w") as f:
+        json.dump(meta, f, indent=2)
 
 
 def load_pretrained(model: nn.Module, checkpoint_path: str, ctx: DistributedContext) -> nn.Module:
@@ -297,8 +410,16 @@ def _resume_legacy(model, optimizer, scheduler, checkpoint_path, ctx, restore_rn
     return saved_epoch, dataloader_state, rng_per_rank
 
 
-def _save_dcp(model, optimizer, scheduler, path, ctx, args, dataloader_state):
-    """Sharded save: each rank writes its own DCP shard."""
+def _save_dcp(
+    model, optimizer, scheduler, path, ctx, args, dataloader_state,
+    *, async_save: bool = False,
+):
+    """Sharded save: each rank writes its own DCP shard.
+
+    When ``async_save`` is True, returns the future from ``dcp.async_save``;
+    the caller is responsible for waiting on it before the next save or
+    process exit (handled by ``save_checkpoint`` / ``flush_pending_save``).
+    """
     save_training_state = getattr(args, "save_training_state", True)
     optimizers = [optimizer] if save_training_state else []
 
@@ -315,13 +436,24 @@ def _save_dcp(model, optimizer, scheduler, path, ctx, args, dataloader_state):
         os.makedirs(dcp_dir, exist_ok=True)
     ctx.barrier()
 
-    dcp.save(state, storage_writer=dcp.FileSystemWriter(dcp_dir))
-
+    # Aux files (scheduler / per-rank RNG / per-rank dataloader) are tiny and
+    # written synchronously regardless of ``async_save`` — they must be on
+    # disk before we return, since training will mutate the RNG and
+    # dataloader state immediately after.
     if save_training_state:
-        # Scheduler is replicated across ranks → rank0 only.
         if ctx.is_main and scheduler is not None:
             torch.save(scheduler.state_dict(), os.path.join(path, "scheduler.pt"))
         _save_aux_per_rank(path, ctx, dataloader_state)
+
+    writer = dcp.FileSystemWriter(dcp_dir)
+    if async_save:
+        # ``dcp.async_save`` stages a CPU snapshot of ``state`` synchronously,
+        # then writes shards in a background thread and returns a future.
+        # After return, training is free to modify the live tensors.
+        return dcp.async_save(state, storage_writer=writer)
+
+    dcp.save(state, storage_writer=writer)
+    return None
 
 
 def _resume_dcp(model, optimizer, scheduler, checkpoint_path, ctx, restore_rng):

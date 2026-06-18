@@ -12,7 +12,7 @@ import torch.distributed as dist
 class DistributedContext:
     """Global distributed context — single instance throughout training lifetime."""
 
-    def __init__(self, backend: str = "nccl"):
+    def __init__(self, backend: str = "cpu:gloo,cuda:nccl"):
         self.backend = backend
         self.rank: int = 0
         self.local_rank: int = 0

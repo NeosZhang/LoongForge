@@ -119,6 +119,10 @@ def add_training_args(parser: argparse.ArgumentParser):
                    help="Save optimizer/scheduler/RNG state alongside model weights "
                         "(required for true resume). Use --no-save-training-state for "
                         "weights-only export.")
+    g.add_argument("--async-save", action="store_true",
+                   help="Use torch.distributed.checkpoint.async_save to overlap "
+                        "checkpoint I/O with training. Only effective when "
+                        "--save-format=dcp (PyTorch >= 2.4).")
 
     # ── Freeze ──
     g = parser.add_argument_group("Freeze")

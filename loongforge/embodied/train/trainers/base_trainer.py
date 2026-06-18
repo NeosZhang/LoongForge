@@ -19,6 +19,7 @@ from safetensors.torch import save_model
 from loongforge.embodied.distributed import DistributedContext
 from loongforge.embodied.distributed.checkpoint import (
     detect_checkpoint_format,
+    flush_pending_save,
     get_latest_checkpoint,
     load_pretrained,
     restore_rank_rng_state,
@@ -551,6 +552,11 @@ class BaseTrainer(ABC):
         # we'd overwrite the same steps_{N} dir twice and waste I/O.
         if self.completed_steps % self.args.save_interval != 0:
             self._save_checkpoint()
+
+        # Wait for any in-flight async DCP save before tearing down the
+        # process group / NCCL — otherwise the background writer may race
+        # with destroy() and leave an unfinalized checkpoint.
+        flush_pending_save(self.ctx)
 
         # Save EMA as final model
         if self.ctx.is_main and self.ema_model:
