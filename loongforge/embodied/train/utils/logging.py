@@ -6,6 +6,8 @@
 import json
 import logging
 import os
+import time
+from contextlib import contextmanager
 import numpy as np
 import torch
 import wandb
@@ -72,6 +74,142 @@ def log_effective_config(args):
     # Flatten model YAML config to dotted keys
     cfg_items = _flatten_omegaconf(args.model_cfg)
     logger.info("\n%s", _format_block("model config", cfg_items))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Per-stage timing
+# ═══════════════════════════════════════════════════════════════════
+
+
+class StageTimers:
+    """Lightweight per-stage timer for training loop profiling.
+
+    Records wall-clock elapsed time for named stages (forward, backward, etc.)
+    and renders a report aligned with the AIAK-Training-Omni / Megatron
+    `max time across ranks (ms):` format.
+
+    Unlike Megatron timers, there is no log_level. Timing is toggled globally via
+    set_enabled(); the train loop enables it only on the step that will be logged,
+    so the cuda.synchronize() inside the timers keeps steady-state overhead at zero.
+    When disabled, the context manager returned by __call__ is a no-op, so call
+    sites stay free of per-stage `if` checks:
+
+        with stage_timers("forward-compute"):
+            output = self._train_forward(batch)
+
+    A cuda.synchronize() is issued on each start/stop so GPU async execution does
+    not skew measurements. Stage order in the report matches the fixed ORDER list.
+    """
+
+    ORDER = [
+        "forward-backward",
+        "forward-compute",
+        "backward-compute",
+        "batch-generator",
+        "nan-grad-cleanup",
+        "grad-clip",
+        "optimizer",
+        "optimizer-inner-step",
+        "optimizer-scheduler-step",
+        "optimizer-zero-grad",
+        "ema-update",
+    ]
+
+    def __init__(self):
+        self._elapsed: Dict[str, float] = {}
+        self._start_time: Dict[str, float] = {}
+        self._enabled: bool = False
+
+    def set_enabled(self, enabled: bool):
+        """Enable or disable timing. When disabled, __call__ is a no-op."""
+        self._enabled = enabled
+
+    @contextmanager
+    def __call__(self, name: str):
+        """Context manager that times the wrapped block when enabled."""
+        if not self._enabled:
+            yield
+            return
+        self._start(name)
+        try:
+            yield
+        finally:
+            self._stop(name)
+
+    def _start(self, name: str):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self._start_time[name] = time.perf_counter()
+
+    def _stop(self, name: str):
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        if name not in self._start_time:
+            return
+        self._elapsed[name] = self._elapsed.get(name, 0.0) + (
+            time.perf_counter() - self._start_time.pop(name)
+        )
+
+    def reset(self):
+        """Clear all accumulated times."""
+        self._elapsed.clear()
+        self._start_time.clear()
+
+    def get_max_time_string(
+        self, ctx, normalizer: float = 1.0, log_level: int = 0
+    ) -> Optional[str]:
+        """Render `max time across ranks (ms):` string on rank 0, else None.
+
+        Args:
+            ctx: DistributedContext (provides rank/world_size/is_distributed).
+            normalizer: Divide accumulated times by this (e.g. number of iters).
+            log_level: 0 prints only the max across ranks. 1 additionally prints
+                each rank's per-stage time.
+        """
+        names = [n for n in self.ORDER if n in self._elapsed]
+        if not names:
+            return None
+
+        # Timing data is tiny; gather on CPU (gloo) to avoid occupying the GPU
+        # stream and a GPU->host sync. The default process group is created with
+        # backend "cpu:gloo,cuda:nccl", so CPU tensors are routed via gloo.
+        local = torch.tensor(
+            [self._elapsed[n] for n in names],
+            dtype=torch.float,
+            device="cpu",
+        )
+
+        gathered = None
+        if ctx.is_distributed and ctx.world_size > 1:
+            gathered = [torch.zeros_like(local) for _ in range(ctx.world_size)]
+            torch.distributed.all_gather(gathered, local)
+            max_times = torch.stack(gathered, dim=0).max(dim=0).values
+        else:
+            max_times = local
+
+        if ctx.rank != 0:
+            return None
+
+        max_times = max_times.tolist()
+        output_string = "max time across ranks (ms):"
+        for name, t in zip(names, max_times):
+            ms = (t / normalizer) * 1000.0
+            output_string += "\n    {}: {:.2f}".format(name.ljust(48, "."), ms)
+
+        if log_level >= 1:
+            per_rank = (
+                [g.tolist() for g in gathered]
+                if gathered is not None
+                else [local.tolist()]
+            )
+            for r, times in enumerate(per_rank):
+                output_string += "\n  rank {} time (ms):".format(r)
+                for name, t in zip(names, times):
+                    ms = (t / normalizer) * 1000.0
+                    output_string += "\n    {}: {:.2f}".format(
+                        name.ljust(48, "."), ms
+                    )
+        return output_string
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -405,6 +543,17 @@ class TrainingLogger:
 
         # JSONL
         self._append_metrics_jsonl(metrics)
+
+    def log_stage_times(
+        self, timers: "StageTimers", ctx, normalizer: float = 1.0, log_level: int = 0
+    ):
+        """Log per-stage timing in `max time across ranks (ms):` format.
+
+        All ranks must call this (all_gather is collective); only rank 0 emits.
+        """
+        output_string = timers.get_max_time_string(ctx, normalizer, log_level)
+        if output_string is not None:
+            logger.info(output_string)
 
     def _append_metrics_jsonl(self, metrics: Dict[str, float]):
         """Append metrics to JSONL file."""

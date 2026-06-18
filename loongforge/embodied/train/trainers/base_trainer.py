@@ -27,7 +27,7 @@ from loongforge.embodied.distributed.checkpoint import (
     save_checkpoint,
 )
 from loongforge.embodied.distributed.parallel import unwrap_model, wrap_model
-from loongforge.embodied.train.utils.logging import TrainingLogger, log_effective_config
+from loongforge.embodied.train.utils.logging import TrainingLogger, StageTimers, log_effective_config
 from loongforge.embodied.train.utils.utils import (
     log_stage,
     set_deterministic,
@@ -237,6 +237,7 @@ class BaseTrainer(ABC):
         grad_accum = args.gradient_accumulation_steps
         grad_clip = args.clip_grad
         log_interval = args.log_interval
+        detail_log_interval = args.detail_log_interval
         save_interval = args.save_interval
         loss_spike_threshold = args.loss_spike_threshold
         
@@ -244,56 +245,78 @@ class BaseTrainer(ABC):
         prof = Profiler(args, self.ctx, self.output_dir)
         prof.start()
 
+        # ── Per-stage timing ──
+        stage_timers = StageTimers()
+
         self._init_data_iterator("vla")
 
         while self.completed_steps < self.train_iters:
 
             prof.step(self.completed_steps)
 
-            self.optimizer.zero_grad()
+            # Detailed per-stage timing is enabled only on the step that will be
+            # logged, so the cuda.synchronize() inside the timers does not slow
+            # down steady-state training.
+            enable_detail = (
+                detail_log_interval > 0
+                and (self.completed_steps + 1) % detail_log_interval == 0
+            )
+            stage_timers.set_enabled(enable_detail)
+
             t0 = time.perf_counter()
+            with stage_timers("optimizer-zero-grad"):
+                self.optimizer.zero_grad()
 
             # ── Gradient Accumulation ──
             accum_loss = 0.0
-            for micro in range(grad_accum):
-                batch = self._fetch_batch("vla")
+            with stage_timers("forward-backward"):
+                for micro in range(grad_accum):
+                    with stage_timers("batch-generator"):
+                        batch = self._fetch_batch("vla")
 
-                output = self._train_forward(batch)
-                loss = output["action_loss"] / grad_accum
+                    with stage_timers("forward-compute"):
+                        output = self._train_forward(batch)
+                    loss = output["action_loss"] / grad_accum
 
-                # Loss spike protection: zero out to prevent NaN propagation
-                loss_val = output["action_loss"].detach().item()
-                if torch.isnan(loss) or torch.isinf(loss) or loss_val > loss_spike_threshold:
-                    self.logger.log_loss_spike(self.completed_steps, loss_val)
-                    loss = loss * 0.0
+                    # Loss spike protection: zero out to prevent NaN propagation
+                    loss_val = output["action_loss"].detach().item()
+                    if torch.isnan(loss) or torch.isinf(loss) or loss_val > loss_spike_threshold:
+                        self.logger.log_loss_spike(self.completed_steps, loss_val)
+                        loss = loss * 0.0
 
-                # Backward with no_sync for non-last micro steps
-                if self.ctx.is_distributed and micro < grad_accum - 1:
-                    if hasattr(self.model, 'no_sync'):
-                        with self.model.no_sync():
+                    # Backward with no_sync for non-last micro steps
+                    with stage_timers("backward-compute"):
+                        if self.ctx.is_distributed and micro < grad_accum - 1:
+                            if hasattr(self.model, 'no_sync'):
+                                with self.model.no_sync():
+                                    loss.backward()
+                            else:
+                                # FSDP2 (fully_shard): use set_requires_gradient_sync
+                                self.model.set_requires_gradient_sync(False)
+                                loss.backward()
+                                self.model.set_requires_gradient_sync(True)
+                        else:
                             loss.backward()
-                    else:
-                        # FSDP2 (fully_shard): use set_requires_gradient_sync
-                        self.model.set_requires_gradient_sync(False)
-                        loss.backward()
-                        self.model.set_requires_gradient_sync(True)
-                else:
-                    loss.backward()
 
-                accum_loss += loss_val
+                    accum_loss += loss_val
 
             # ── NaN gradient cleanup ──
-            self._clean_nan_gradients()
+            with stage_timers("nan-grad-cleanup"):
+                self._clean_nan_gradients()
 
             # ── Gradient clipping (returns pre-clip global grad norm) ──
-            if grad_clip > 0:
-                grad_norm = self._clip_gradients(grad_clip)
-            else:
-                grad_norm = get_grad_norm(self.model)
+            with stage_timers("grad-clip"):
+                if grad_clip > 0:
+                    grad_norm = self._clip_gradients(grad_clip)
+                else:
+                    grad_norm = get_grad_norm(self.model)
 
             # ── Optimizer step ──
-            self.optimizer.step()
-            self.lr_scheduler.step()
+            with stage_timers("optimizer"):
+                with stage_timers("optimizer-inner-step"):
+                    self.optimizer.step()
+                with stage_timers("optimizer-scheduler-step"):
+                    self.lr_scheduler.step()
             self.completed_steps += 1
 
             # ── Metrics ──
@@ -305,7 +328,12 @@ class BaseTrainer(ABC):
                 self.completed_steps * batch_size,
                 self.model, batch_size, grad_norm,
             )
-            self._on_step_end(metrics)
+            # ── Step-end hook (EMA update) ──
+            if self.ema_model is not None:
+                with stage_timers("ema-update"):
+                    self._on_step_end(metrics)
+            else:
+                self._on_step_end(metrics)
 
             # ── Profiler stop ──
             if prof.should_stop(self.completed_steps):
@@ -317,6 +345,13 @@ class BaseTrainer(ABC):
                     metrics, self.completed_steps, self.train_iters,
                     args.per_device_batch_size, self.ctx.world_size, self.ctx.is_distributed,
                 )
+
+            # ── Per-stage timing log (all ranks call; rank 0 emits) ──
+            if enable_detail:
+                self.logger.log_stage_times(
+                    stage_timers, self.ctx, log_level=args.timing_log_level
+                )
+                stage_timers.reset()
 
             # ── Checkpoint ──
             if self.completed_steps % save_interval == 0:
