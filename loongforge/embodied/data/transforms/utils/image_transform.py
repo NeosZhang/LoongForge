@@ -201,6 +201,9 @@ class ImageTransform(BaseTransform):
             value = data[key]
             if isinstance(value, list):
                 data[key] = [self.process_single(img) for img in value]
+            elif isinstance(value, torch.Tensor) and value.ndim == 4:
+                # Multi-frame tensor [T, C, H, W] — process as batch
+                data[key] = self.process_batch(list(value))
             else:
                 data[key] = self.process_single(value)
         return data

@@ -36,6 +36,9 @@ from torch.utils.data import Dataset
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 
+
+from loongforge.embodied.data.datasets.compute_stats import aggregate_stats
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,11 +51,22 @@ def _read_dataset_info(dataset_root: Path) -> Dict[str, Any]:
     return {}
 
 
-def _build_delta_timestamps(action_horizon: int, fps: int) -> Dict[str, list]:
-    """Build delta_timestamps from action_horizon and fps."""
-    return {
-        "action": [i / fps for i in range(action_horizon)],
-    }
+def _build_delta_timestamps(
+    action_horizon: int,
+    fps: int,
+    observation_delta_indices: Optional[List[int]] = None,
+    image_keys: Optional[List[str]] = None,
+) -> Dict[str, list]:
+    """Build delta_timestamps from action_horizon and fps.
+
+    If observation_delta_indices and image_keys are provided, also adds
+    multi-frame observation timestamps for each image key (e.g. for FastWAM).
+    """
+    timestamps: Dict[str, list] = {"action": [i / fps for i in range(action_horizon)]}
+    if observation_delta_indices and image_keys:
+        for key in image_keys:
+            timestamps[key] = [i / fps for i in observation_delta_indices]
+    return timestamps
 
 
 class LeRobotV3Dataset(LeRobotDataset):
@@ -86,6 +100,7 @@ class LeRobotV3Dataset(LeRobotDataset):
         tolerance_s: float = 1e-4,
         download_videos: bool = False,
         transform: Callable | None = None,
+        observation_delta_indices: Optional[List[int]] = None,
     ):
         self._action_horizon = action_horizon
         self._transform = transform
@@ -98,8 +113,16 @@ class LeRobotV3Dataset(LeRobotDataset):
             info = {}
         fps = info.get("fps", 10)
 
+        # Discover image keys for multi-frame observation loading (e.g. FastWAM)
+        image_keys: Optional[List[str]] = None
+        if observation_delta_indices:
+            image_keys = [k for k, v in info.get("features", {}).items()
+                          if v.get("dtype") == "video"]
+
         # Build delta_timestamps: mirrors resolve_delta_timestamps for pi05
-        delta_timestamps = _build_delta_timestamps(action_horizon, fps)
+        delta_timestamps = _build_delta_timestamps(
+            action_horizon, fps, observation_delta_indices, image_keys
+        )
 
         # Call parent LeRobotDataset.__init__ with aligned parameters
         super().__init__(
@@ -147,11 +170,13 @@ class LeRobotV2Dataset(Dataset):
         episodes: list[int] | None = None,
         video_backend: str = "torchcodec",
         transform: Callable | None = None,
+        observation_delta_indices: Optional[List[int]] = None,
     ):
         self.root = Path(root)
         self.action_horizon = action_horizon
         self.video_backend = video_backend
         self._transform = transform
+        self._observation_delta_indices = observation_delta_indices
 
         # Load metadata
         self.info = _read_dataset_info(self.root)
@@ -217,8 +242,54 @@ class LeRobotV2Dataset(Dataset):
                     for k, v in raw.items()
                 }
             else:
-                self._stats = {}
+                # v2.1: aggregate from episodes_stats.jsonl
+                self._stats = self._aggregate_episodes_stats()
         return self._stats
+
+    def _aggregate_episodes_stats(self) -> Dict:
+        """Aggregate per-episode stats from episodes_stats.jsonl into global stats.
+
+        Reads each episode's stats from meta/episodes_stats.jsonl, aggregates using
+        the parallel/weighted algorithm in compute_stats.aggregate_stats, then converts
+        to torch tensors and appends q01/q99 aliases.
+        """
+
+
+        ep_stats_path = self.root / "meta" / "episodes_stats.jsonl"
+        if not ep_stats_path.exists():
+            return {}
+        records = []
+        with open(ep_stats_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        if not records:
+            return {}
+
+        # Parse jsonl into a list of per-episode stats dicts with np.ndarray values
+        stats_list = []
+        for rec in records:
+            ep_stats = {}
+            for key, sv in rec.get("stats", {}).items():
+                ep_stats[key] = {k: np.array(v, dtype=np.float64) for k, v in sv.items()}
+            if ep_stats:
+                stats_list.append(ep_stats)
+
+        if not stats_list:
+            return {}
+
+        # Aggregate using parallel/weighted algorithm (Chan's algorithm)
+        agg = aggregate_stats(stats_list)
+
+        # Convert to torch tensors and add q01/q99 aliases used by normalization
+        result = {}
+        for key, sv in agg.items():
+            result[key] = {k: torch.tensor(v, dtype=torch.float32) for k, v in sv.items()}
+            if "min" in result[key] and "max" in result[key]:
+                result[key]["q01"] = result[key]["min"]
+                result[key]["q99"] = result[key]["max"]
+        return result
 
     def _load_episodes(self) -> List[Dict]:
         """Parse meta/episodes.jsonl."""
@@ -271,6 +342,12 @@ class LeRobotV2Dataset(Dataset):
         frame = decode_video_frame(str(video_path), timestamp, backend=self.video_backend)
         return torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
 
+    def _decode_video_frames(self, video_key: str, episode_index: int, frame_indices: List[int]) -> torch.Tensor:
+        """Decode multiple video frames. Returns tensor [T, C, H, W] float32 in [0, 1]."""
+        frames = [self._decode_video_frame(video_key, episode_index, fi) for fi in frame_indices]
+        result = torch.stack(frames, dim=0)  # [T, C, H, W]
+        return result
+
     def __len__(self) -> int:
         return len(self._step_index)
 
@@ -281,9 +358,14 @@ class LeRobotV2Dataset(Dataset):
         sample = {}
 
         # Video frames
+        ep_len = len(ep_data)
         for vkey in self._video_keys:
             out_key = vkey if vkey.startswith("observation.images.") else f"observation.images.{vkey}"
-            if vkey in ep_data.columns:
+            if self._observation_delta_indices:
+                # Multi-frame: clamp indices within episode bounds, returns [T, C, H, W]
+                frame_indices = [min(step_idx + d, ep_len - 1) for d in self._observation_delta_indices]
+                sample[out_key] = self._decode_video_frames(vkey, episode_index, frame_indices)
+            elif vkey in ep_data.columns:
                 img_data = ep_data.iloc[step_idx][vkey]
                 if isinstance(img_data, (list, np.ndarray)):
                     arr = np.array(img_data, dtype=np.uint8)
@@ -302,7 +384,6 @@ class LeRobotV2Dataset(Dataset):
             sample["observation.state"] = torch.tensor(np.array(state, dtype=np.float32))
 
         # Action chunk
-        ep_len = len(ep_data)
         actions = []
         action_is_pad = []
         for t in range(self.action_horizon):
@@ -431,6 +512,7 @@ def _build_lerobot_dataset(
     seed: int = 42,
     shuffle: bool = True,
     lerobotdataset_version: str = "v3.0",
+    observation_delta_indices: Optional[List[int]] = None,
 ) -> Dataset:
     """Factory function to create VLA dataset with version dispatch.
 
@@ -449,6 +531,7 @@ def _build_lerobot_dataset(
             action_horizon=action_horizon,
             episodes=episodes,
             video_backend=video_backend,
+            observation_delta_indices=observation_delta_indices,
         )
     elif lerobotdataset_version == "v3.0":
         if streaming:
@@ -474,6 +557,7 @@ def _build_lerobot_dataset(
                 revision=revision,
                 video_backend=video_backend,
                 tolerance_s=tolerance_s,
+                observation_delta_indices=observation_delta_indices,
             )
     else:
         raise ValueError(
@@ -502,4 +586,5 @@ def build_lerobot_dataset(model_cfg, data_cfg, training_args):
         video_backend=training_args.video_backend,
         tolerance_s=1e-4,
         lerobotdataset_version=training_args.lerobotdataset_version,
+        observation_delta_indices=data_cfg.observation_delta_indices
     )

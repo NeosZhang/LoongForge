@@ -110,22 +110,26 @@ def _decode_opencv(video_path, timestamps=None):
     cap.release()
     return np.stack(frames)
 
-
 def _decode_pyav(video_path, timestamps=None):
     import av
     container = av.open(str(video_path))
     stream = container.streams.video[0]
-    frames = []
-    for t in timestamps:
-        target_pts = int(t / stream.time_base)
-        container.seek(target_pts, stream=stream)
-        for frame in container.decode(video=0):
-            frames.append(frame.to_ndarray(format="rgb24"))
+    first_ts = min(timestamps)
+    last_ts = max(timestamps)
+    seek_pts = int(first_ts / stream.time_base)
+    container.seek(seek_pts, stream=stream)
+    loaded_frames = []
+    loaded_ts = []
+    for frame in container.decode(video=0):
+        loaded_frames.append(frame.to_ndarray(format="rgb24"))
+        loaded_ts.append(float(frame.pts * stream.time_base))
+        if loaded_ts[-1] >= last_ts:
             break
-        else:
-            frames.append(np.zeros((stream.height, stream.width, 3), dtype=np.uint8))
     container.close()
-    return np.stack(frames)
+    query_ts = np.array(timestamps, dtype=np.float32)
+    loaded_ts_arr = np.array(loaded_ts, dtype=np.float32)
+    indices = np.argmin(np.abs(query_ts[:, None] - loaded_ts_arr[None, :]), axis=1)
+    return np.stack([loaded_frames[i] for i in indices])
 
 
 def _decode_torchvision_av(video_path, timestamps=None):
