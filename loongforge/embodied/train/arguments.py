@@ -143,7 +143,13 @@ def add_training_args(parser: argparse.ArgumentParser):
 
     # ── Logging ──
     g = parser.add_argument_group("Logging")
-    g.add_argument("--log-interval", type=int, default=50)
+    g.add_argument("--log-interval", type=int, default=1)
+    g.add_argument("--detail-log-interval", type=int, default=20,
+                   help="Interval (iters) for per-stage timing logs. 0 disables. "
+                        "Aligned with AIAK-Training-Omni output format.")
+    g.add_argument("--timing-log-level", type=int, default=0, choices=[0, 1],
+                   help="Per-stage timing verbosity. 0: only max across ranks. "
+                        "1: also print every rank's per-stage time.")
     g.add_argument("--wandb-project", type=str, default="loongforge-vla")
     g.add_argument("--wandb-mode", type=str, default="disabled",
                    choices=["online", "offline", "disabled"])
