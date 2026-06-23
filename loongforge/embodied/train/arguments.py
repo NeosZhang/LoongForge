@@ -134,13 +134,6 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--ema", action="store_true")
     g.add_argument("--ema-decay", type=float, default=0.9999)
 
-    # ── LoRA ──
-    g = parser.add_argument_group("LoRA")
-    g.add_argument("--lora", action="store_true")
-    g.add_argument("--lora-rank", type=int, default=8)
-    g.add_argument("--lora-alpha", type=int, default=16)
-    g.add_argument("--lora-target-modules", type=str, default="all-linear")
-
     # ── Logging ──
     g = parser.add_argument_group("Logging")
     g.add_argument("--log-interval", type=int, default=1)
