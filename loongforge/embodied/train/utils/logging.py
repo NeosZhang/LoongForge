@@ -112,7 +112,6 @@ class StageTimers:
         "optimizer-inner-step",
         "optimizer-scheduler-step",
         "optimizer-zero-grad",
-        "ema-update",
     ]
 
     def __init__(self):
@@ -422,7 +421,6 @@ class TrainingLogger:
     def collect_metrics(
         self,
         output: Dict[str, Any],
-        accum_loss: float,
         step_time: float,
         completed_steps: int,
         lr_scheduler: Any,
@@ -434,8 +432,8 @@ class TrainingLogger:
         """Collect metrics, including loss, step time, and gradient norm.
 
         Args:
-            output: Output dict from forward pass (must contain 'action_loss')
-            accum_loss: Accumulated loss value
+            output: Output dict from forward pass containing scalar metrics.
+                Loss metrics are logged from this dict by key.
             step_time: Time taken for the step
             completed_steps: Current training step
             lr_scheduler: Learning rate scheduler
@@ -449,15 +447,12 @@ class TrainingLogger:
             Dictionary of collected metrics
         """
         metrics = {
-            "action_loss": accum_loss,
             "step_time": step_time,
             "step": completed_steps,
         }
 
         # Add output metrics (excluding action_loss which we already have)
         for k, v in output.items():
-            if k == "action_loss":
-                continue
             if isinstance(v, torch.Tensor) and v.numel() == 1:
                 metrics[k] = v.item()
             elif isinstance(v, (int, float)):
@@ -507,7 +502,6 @@ class TrainingLogger:
         if not self.is_main:
             return
 
-        loss = metrics.get("action_loss", float("nan"))
         lr = metrics.get("lr", 0)
         samples_per_sec = metrics.get("samples_per_sec", 0)
         step_time = metrics.get("step_time", 0)
@@ -526,7 +520,9 @@ class TrainingLogger:
         log_string += " throughput (samples/sec/per_device): {:.3f} |".format(samples_per_sec)
         log_string += " learning rate: {:.6E} |".format(lr)
         log_string += " global batch size: {:5d} |".format(global_batch_size)
-        log_string += " action loss: {:.6E} |".format(loss)
+        for key, value in metrics.items():
+            if "loss" in key and isinstance(value, (int, float)):
+                log_string += " {}: {:.6E} |".format(key.replace("_", " "), value)
         log_string += " loss scale: 1.0 |"
         if grad_norm is not None and grad_norm > 0:
             log_string += " grad norm: {:.6f} |".format(grad_norm)
@@ -636,31 +632,3 @@ class TrainingLogger:
         if not self.is_main:
             return
         logger.warning(f"[step {step}] Loss spike: {loss_val:.4f}, zeroing")
-
-    def log_ema_initialized(self, decay: float):
-        """Log EMA initialization.
-
-        Args:
-            decay: EMA decay value
-        """
-        if not self.is_main:
-            return
-        logger.info(f"EMA initialized, decay={decay}")
-
-    def log_ema_disabled_fsdp(self):
-        """Log that EMA is disabled under FSDP."""
-        if not self.is_main:
-            return
-        logger.warning("EMA disabled under FSDP (requires summon_full_params). Skipping.")
-
-    def log_final_model_saved(self, path: str):
-        """Log final model save.
-
-        Args:
-            path: Path where final model was saved
-        """
-        if not self.is_main:
-            return
-        logger.info(f"EMA final model saved: {path}")
-
-

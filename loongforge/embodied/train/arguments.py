@@ -22,14 +22,12 @@ def add_model_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("Model Config")
     g.add_argument("--model-name", type=str, default=None,
                    help="Model name (maps to YAML via config_map)")
-    g.add_argument("--training-phase", type=str, default="finetune",
-                   choices=["pretrain", "finetune"])
     g.add_argument("--config-file", type=str, default=None,
                    help="Direct path to YAML config (overrides --model-name)")
     g.add_argument("--tokenizer-path", type=str, default=None,
                    help="Path to tokenizer directory. Also settable via TOKENIZER_PATH env var.")
     g.add_argument("--trainer-type", type=str, required=True,
-                   help="Trainer class name to use (e.g. BCTrainer). "
+                   help="Trainer class name to use (e.g. FinetuneTrainer). "
                         "See _TRAINER_CLASSES in trainer_builder.py for supported values.")
     g.add_argument("--freeze-vision-encoder", action="store_true",
                    help="Freeze the vision tower (eval + requires_grad=False).")
@@ -49,7 +47,7 @@ def add_training_args(parser: argparse.ArgumentParser):
                    help="Force cuDNN deterministic mode for reproducibility (may slow training).")
     g.add_argument("--output-dir", type=str, default="outputs/default",
                    help="Root output directory for checkpoints, logs and run artifacts.")
-    g.add_argument("--gradient-accumulation-steps", type=int, default=2)
+    g.add_argument("--gradient-accumulation-steps", type=int, default=1)
     g.add_argument("--gradient-checkpointing", action="store_true",
                    help="Enable gradient checkpointing (memory <-> compute trade-off).")
     g.add_argument("--loss-spike-threshold", type=float, default=100.0)
@@ -129,11 +127,6 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--freeze-modules", type=str, default="",
                    help="Comma-separated module paths to freeze")
 
-    # ── EMA ──
-    g = parser.add_argument_group("EMA")
-    g.add_argument("--ema", action="store_true")
-    g.add_argument("--ema-decay", type=float, default=0.9999)
-
     # ── Logging ──
     g = parser.add_argument_group("Logging")
     g.add_argument("--log-interval", type=int, default=1)
@@ -143,6 +136,13 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--timing-log-level", type=int, default=0, choices=[0, 1],
                    help="Per-stage timing verbosity. 0: only max across ranks. "
                         "1: also print every rank's per-stage time.")
+    g.add_argument("--loss-log-rank", nargs="+", type=int, default=[-1],
+                   help="Loss logging mode. -1 (default): all-reduce (mean) the "
+                        "loss across ranks so the reported value reflects the "
+                        "global batch (logged on rank 0). One or more non-negative "
+                        "ranks: skip the reduce and print the loss on each of those "
+                        "ranks (tagged with its rank number), e.g. "
+                        "`--loss-log-rank 0 3 7`.")
     g.add_argument("--wandb-project", type=str, default="loongforge-vla")
     g.add_argument("--wandb-mode", type=str, default="disabled",
                    choices=["online", "offline", "disabled"])

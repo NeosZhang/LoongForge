@@ -5,19 +5,19 @@
 
 import logging
 
-from loongforge.embodied.train.trainers.bc.bc_trainer import BCTrainer
+from loongforge.embodied.train.trainers.supervised.finetune_trainer import FinetuneTrainer
 
 logger = logging.getLogger(__name__)
 
 _TRAINER_CLASSES = {
-    "BCTrainer": BCTrainer,
+    "FinetuneTrainer": FinetuneTrainer,
 }
 
 
 def build_model_trainer(args):
     """Build Trainer from --trainer-type argument.
 
-    Resolves the trainer class from args.trainer_type (e.g. "BCTrainer")
+    Resolves the trainer class from args.trainer_type (e.g. "FinetuneTrainer")
     via _TRAINER_CLASSES, instantiates with args.
     """
     trainer_type = getattr(args, "trainer_type", None)

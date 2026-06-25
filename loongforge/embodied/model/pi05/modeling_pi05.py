@@ -833,7 +833,8 @@ class PI05Policy(nn.Module):
             resized.append(img)
 
         loss_map = self.model(resized, img_masks, tokens, masks, actions)
-        return {"action_loss": loss_map[:, :, :self.config.action_dim].mean()}
+        loss_value = loss_map[:, :, :self.config.action_dim].mean()
+        return loss_value, {"action_loss": loss_value.detach().item()}
 
     @torch.no_grad()
     def predict_action_chunk(self, batch, **kwargs) -> torch.Tensor:

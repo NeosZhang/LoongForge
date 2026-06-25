@@ -57,3 +57,26 @@ class DistributedContext:
         if self._initialized:
             dist.destroy_process_group()
             self._initialized = False
+
+    def all_reduce_mean(self, value):
+        """Average a scalar across all ranks.
+
+        Collective op — EVERY rank must call this, otherwise NCCL will hang.
+        On single-card / non-distributed runs it is a pass-through.
+
+        Args:
+            value: A python number or a 0-dim / single-element tensor.
+
+        Returns:
+            The cross-rank mean as a python float.
+        """
+        if not self._initialized or self.world_size == 1:
+            return float(value.item()) if isinstance(value, torch.Tensor) else float(value)
+
+        if isinstance(value, torch.Tensor):
+            t = value.detach().to(self.device, dtype=torch.float32)
+        else:
+            t = torch.tensor(float(value), dtype=torch.float32, device=self.device)
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        t /= self.world_size
+        return t.item()
