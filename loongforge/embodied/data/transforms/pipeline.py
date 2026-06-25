@@ -103,9 +103,6 @@ def build_transforms_from_args(
     # 4. Fast-specific transforms: key mapping (images→PIL, action→numpy, task→lang)
     _append_fast_transforms(transforms, model_cfg, image_size)
 
-    # 5. XVLA-specific transforms: collate images, prompt, tokenize, domain id
-    _append_xvla_transforms(transforms, model_cfg, args, image_size)
-
     if not transforms:
         return None
 
@@ -169,51 +166,3 @@ def _append_fast_transforms(transforms, model_cfg, image_size):
     from loongforge.embodied.data.transforms.fast.fast_transform import FastKeyMappingTransform
 
     transforms.append(FastKeyMappingTransform(image_size=image_size))
-
-
-def _append_xvla_transforms(transforms, model_cfg, args, image_size):
-    """Append XVLA-specific per-sample transforms if model_type is xvla.
-
-    Image [0,1]+ImageNet normalization is handled by the generic ImageTransform in
-    step 1 (set ``image_normalize_mode: imagenet`` in the backbone config). Here we
-    add the XVLA-specific steps: collate images, build prompt, tokenize, domain id.
-    """
-    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
-    if model_type != "xvla":
-        return
-    
-
-    import os
-    from loongforge.embodied.data.transforms.xvla.xvla_transform import (
-        XVLAImageNetNormalizeTransform,
-        XVLAPromptTransform,
-        XVLATokenizeTransform,
-        XVLAAddDomainIdTransform,
-    )
-
-    backbone_cfg = model_cfg.get("backbone", {})
-    num_images = backbone_cfg.get("num_image_views", None) or backbone_cfg.get("num_images", 2)
-    max_len_seq = backbone_cfg.get("max_len_seq", 512)
-    chunk_size = backbone_cfg.get("chunk_size", 30)
-    len_soft_prompts = backbone_cfg.get("len_soft_prompts", 32)
-    safe_token_len = max(1, max_len_seq - chunk_size - len_soft_prompts - (2 * num_images))
-    configured_token_len = backbone_cfg.get("max_token_len", None)
-    if configured_token_len is None:
-        configured_token_len = min(backbone_cfg.get("tokenizer_max_length", 64), 50)
-    max_token_len = min(configured_token_len, safe_token_len)
-    padding_side = backbone_cfg.get("tokenizer_padding_side", "right")
-    domain_id = backbone_cfg.get("domain_id", 0)
-    tokenizer_path = (
-        getattr(args, "tokenizer_path", None)
-        or backbone_cfg.get("tokenizer_name", "")
-        or os.environ.get("TOKENIZER_PATH", "")
-    )
-
-    transforms.append(XVLAImageNetNormalizeTransform())
-    transforms.append(XVLAPromptTransform())
-    transforms.append(XVLATokenizeTransform(
-        tokenizer_path=tokenizer_path,
-        max_token_len=max_token_len,
-        padding_side=padding_side,
-    ))
-    transforms.append(XVLAAddDomainIdTransform(domain_id=domain_id))

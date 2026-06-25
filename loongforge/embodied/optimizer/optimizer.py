@@ -8,8 +8,6 @@ import logging
 import torch
 import torch.nn as nn
 
-from loongforge.embodied.optimizer.lr import build_param_groups, build_param_groups_xvla
-
 logger = logging.getLogger(__name__)
 
 OPTIMIZER_REGISTRY = {
@@ -18,21 +16,16 @@ OPTIMIZER_REGISTRY = {
     "SGD": torch.optim.SGD,
 }
 
-PARAM_GROUP_REGISTRY = {
-    "xvla": build_param_groups_xvla,
-}
 
-
-def build_optimizer(model: nn.Module, args, model_cfg) -> torch.optim.Optimizer:
+def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
     """Build optimizer with per-module LR groups; class selected via args.optimizer.
 
     If --zero-optimizer is set and strategy is DDP, wraps with
     ZeroRedundancyOptimizer to shard optimizer states across ranks.
     """
-    if args.model_name in PARAM_GROUP_REGISTRY.keys():
-        groups = PARAM_GROUP_REGISTRY.get(args.model_name)(model, args, model_cfg)
-    else:
-        groups = build_param_groups(model, args)
+    from loongforge.embodied.optimizer.lr import build_param_groups
+
+    groups = build_param_groups(model, args)
     optimizer_cls = OPTIMIZER_REGISTRY.get(args.optimizer)
     if optimizer_cls is None:
         supported = ", ".join(OPTIMIZER_REGISTRY)

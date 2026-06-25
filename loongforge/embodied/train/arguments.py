@@ -35,8 +35,6 @@ def add_model_args(parser: argparse.ArgumentParser):
                    help="Freeze the vision tower (eval + requires_grad=False).")
     g.add_argument("--train-expert-only", action="store_true",
                    help="Train only the action expert; freeze the VLM backbone.")
-    g.add_argument("--enable-autocast", action="store_true",
-                   help="Enable torch.autocast() for GPU training.")
 
 
 def add_training_args(parser: argparse.ArgumentParser):

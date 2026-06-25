@@ -443,8 +443,7 @@ class BaseTrainer(ABC):
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
         """Build AdamW with per-module LR groups."""
-        from loongforge.embodied.optimizer import build_optimizer
-        return build_optimizer(self.model, self.args, self.model_cfg)
+        return build_optimizer(self.model, self.args)
 
     def _build_scheduler(self):
         """Build LR scheduler."""
