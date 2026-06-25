@@ -16,6 +16,8 @@ from loongforge.embodied.model.pi05.model_configuration_pi05 import Pi05ModelCon
 from loongforge.embodied.data.transforms.pi05.data_configuration_pi05 import Pi05DataConfig
 from loongforge.embodied.model.groot_n1_6.model_configuration_groot_n1_6 import GrootN1d6ModelConfig
 from loongforge.embodied.data.transforms.groot_n1_6.data_configuration_groot_n1_6 import GrootN1d6DataConfig
+from loongforge.embodied.model.xvla.model_configuration_xvla import XvlaModelConfig
+from loongforge.embodied.data.transforms.xvla.data_configuration_xvla import XvlaDataConfig
 
 _CONFIGS_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent
@@ -35,6 +37,7 @@ class ModelSchema:
 MODEL_SCHEMA = {
     "pi05": ModelSchema("pi05.yaml", Pi05ModelConfig, Pi05DataConfig),
     "groot_n1_6": ModelSchema("groot_n1_6.yaml", GrootN1d6ModelConfig, GrootN1d6DataConfig),
+    "xvla": ModelSchema("xvla.yaml", XvlaModelConfig, XvlaDataConfig),
 }
 
 
