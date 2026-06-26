@@ -13,7 +13,7 @@ export LOONGFORGE_PATH="/workspace/LoongForge"
 
 # ── Paths ─────────────────────────────────────────────────────
 TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/paligemma-3b-pt-224"}
-CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/pi05_pretrain_step-1000"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/pi05_base"}
 DATA_PATH=${DATA_PATH:-"/workspace/libero"}
 OUTPUT_DIR=${OUTPUT_DIR:-"/workspace/outputs/"}
 TENSORBOARD_PATH=${TENSORBOARD_PATH:-"/workspace/tensorboard-log"}
@@ -34,7 +34,7 @@ DISTRIBUTED_ARGS=(
 )
 
 # ── Model config ──────────────────────────────────────────────
-MODEL_NAME=${MODEL_NAME:-"pi05_paligemma"}
+MODEL_NAME=${MODEL_NAME:-"pi05"}
 MODEL_CONFIG_ARGS=(
     --model-name $MODEL_NAME
 )
@@ -46,13 +46,12 @@ DATA_ARGS=(
     --tokenizer-path $TOKENIZER_PATH
     --robot-type libero_franka
     --normalization-mode q99
-    --num-workers 4
+    --num-workers 16
 )
 
 # ── Training params ───────────────────────────────────────────
 TRAINING_ARGS=(
-    --training-phase finetune
-    --trainer-type BCTrainer
+    --trainer-type FinetuneTrainer
     --train-iters 20
     --per-device-batch-size 4
     --gradient-accumulation-steps 2
@@ -73,8 +72,8 @@ TRAINING_ARGS=(
     --adam-beta2 0.95
     --adam-eps 1e-8
     # Checkpoint
-    --save-interval 10
-    # --pretrained-checkpoint $CHECKPOINT_PATH
+    --save-interval 10000
+    --pretrained-checkpoint $CHECKPOINT_PATH
 )
 
 DISTRIBUTED_TRAINING_ARGS=(

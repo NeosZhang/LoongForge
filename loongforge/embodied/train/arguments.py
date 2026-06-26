@@ -9,6 +9,60 @@ Parameter ownership:
 """
 
 import argparse
+from typing import Optional, Union
+
+
+def _parse_reshard_after_forward(value: str) -> Optional[Union[bool, int]]:
+    """Parse FSDP2 reshard_after_forward from CLI text."""
+    normalized = value.strip().lower()
+    if normalized in {"true", "t"}:
+        return True
+    if normalized in {"false", "f"}:
+        return False
+    if normalized in {"none", "null"}:
+        return None
+    try:
+        int_value = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "expected one of: true, false, none, or an integer greater than 1"
+        ) from exc
+    if int_value <= 1:
+        raise argparse.ArgumentTypeError(
+            "integer reshard_after_forward must be greater than 1"
+        )
+    return int_value
+
+
+def _parse_reshard_after_forward_map(value: str) -> dict[str, Optional[Union[bool, int]]]:
+    """Parse ClassName=value pairs for per-module FSDP reshard settings."""
+    result = {}
+    for item in value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise argparse.ArgumentTypeError(
+                "expected comma-separated ClassName=value pairs"
+            )
+        class_name, raw_value = item.split("=", 1)
+        class_name = class_name.strip()
+        if not class_name:
+            raise argparse.ArgumentTypeError("empty class name in reshard map")
+        result[class_name] = _parse_reshard_after_forward(raw_value)
+    return result
+
+
+def _parse_positive_int(value: str) -> int:
+    """Parse a positive integer CLI value."""
+    try:
+        int_value = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected a positive integer") from exc
+    if int_value <= 0:
+        raise argparse.ArgumentTypeError("expected a positive integer")
+    return int_value
+
 
 def embodied_args_provider(parser: argparse.ArgumentParser):
     """Register model / training / distributed argument groups onto parser."""
@@ -22,14 +76,12 @@ def add_model_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("Model Config")
     g.add_argument("--model-name", type=str, default=None,
                    help="Model name (maps to YAML via config_map)")
-    g.add_argument("--training-phase", type=str, default="finetune",
-                   choices=["pretrain", "finetune"])
     g.add_argument("--config-file", type=str, default=None,
                    help="Direct path to YAML config (overrides --model-name)")
     g.add_argument("--tokenizer-path", type=str, default=None,
                    help="Path to tokenizer directory. Also settable via TOKENIZER_PATH env var.")
     g.add_argument("--trainer-type", type=str, required=True,
-                   help="Trainer class name to use (e.g. BCTrainer). "
+                   help="Trainer class name to use (e.g. FinetuneTrainer). "
                         "See _TRAINER_CLASSES in trainer_builder.py for supported values.")
     g.add_argument("--freeze-vision-encoder", action="store_true",
                    help="Freeze the vision tower (eval + requires_grad=False).")
@@ -49,7 +101,7 @@ def add_training_args(parser: argparse.ArgumentParser):
                    help="Force cuDNN deterministic mode for reproducibility (may slow training).")
     g.add_argument("--output-dir", type=str, default="outputs/default",
                    help="Root output directory for checkpoints, logs and run artifacts.")
-    g.add_argument("--gradient-accumulation-steps", type=int, default=2)
+    g.add_argument("--gradient-accumulation-steps", type=int, default=1)
     g.add_argument("--gradient-checkpointing", action="store_true",
                    help="Enable gradient checkpointing (memory <-> compute trade-off).")
     g.add_argument("--loss-spike-threshold", type=float, default=100.0)
@@ -129,11 +181,6 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--freeze-modules", type=str, default="",
                    help="Comma-separated module paths to freeze")
 
-    # ── EMA ──
-    g = parser.add_argument_group("EMA")
-    g.add_argument("--ema", action="store_true")
-    g.add_argument("--ema-decay", type=float, default=0.9999)
-
     # ── Logging ──
     g = parser.add_argument_group("Logging")
     g.add_argument("--log-interval", type=int, default=1)
@@ -143,6 +190,13 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--timing-log-level", type=int, default=0, choices=[0, 1],
                    help="Per-stage timing verbosity. 0: only max across ranks. "
                         "1: also print every rank's per-stage time.")
+    g.add_argument("--loss-log-rank", nargs="+", type=int, default=[-1],
+                   help="Loss logging mode. -1 (default): all-reduce (mean) the "
+                        "loss across ranks so the reported value reflects the "
+                        "global batch (logged on rank 0). One or more non-negative "
+                        "ranks: skip the reduce and print the loss on each of those "
+                        "ranks (tagged with its rank number), e.g. "
+                        "`--loss-log-rank 0 3 7`.")
     g.add_argument("--wandb-project", type=str, default="loongforge-vla")
     g.add_argument("--wandb-mode", type=str, default="disabled",
                    choices=["online", "offline", "disabled"])
@@ -185,15 +239,58 @@ def add_distributed_args(parser: argparse.ArgumentParser):
     g = parser.add_argument_group("Distributed")
     g.add_argument("--distributed-strategy", type=str, default="fsdp",
                    choices=["ddp", "fsdp"])
-    g.add_argument("--fsdp-sharding", type=str, default="FULL_SHARD",
-                   choices=["FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"])
+    g.add_argument("--hsdp-shard-size", type=_parse_positive_int, default=None,
+                   help="Enable HSDP and set the second 2D mesh dimension size. "
+                        "The first mesh dimension replicates parameters across "
+                        "groups, and this dimension shards parameters within "
+                        "each group. Must divide the distributed world size. "
+                        "Unset uses regular 1D FSDP.")
+    g.add_argument("--fsdp-reshard-default", type=_parse_reshard_after_forward, default=None,
+                   help="Default FSDP2 reshard_after_forward for non-root groups: "
+                        "true, false, none, or an integer greater than 1. none uses "
+                        "FSDP2 defaults.")
+    g.add_argument("--fsdp-reshard-root", type=_parse_reshard_after_forward, default=False,
+                   help="FSDP2 reshard_after_forward for the root group. Defaults to false.")
+    g.add_argument("--fsdp-reshard-module-overrides",
+                   type=_parse_reshard_after_forward_map, default=None,
+                   help="Comma-separated ClassName=value overrides for FSDP "
+                        "reshard_after_forward, e.g. GemmaMLP=false,Linear=true.")
     g.add_argument("--fsdp-wrap-modules", type=str, default=None,
-                   help="Comma-separated class names for FSDP auto-wrap")
+                   help="Comma-separated class names for explicit FSDP wrap boundaries")
+    g.add_argument("--fsdp-no-wrap-modules", type=str, default=None,
+                   help="Comma-separated class names to decompose instead of wrapping directly")
+    g.add_argument("--fsdp-min-num-params", type=int, default=1_000_000,
+                   help="Minimum parameter count for automatic repeated-layer FSDP wrapping")
+    g.add_argument("--fsdp-leftover-min-num-params", type=int, default=1_000_000,
+                   help="Minimum parameter count for leftover dtype-based FSDP wrapping")
+    g.add_argument("--ddp-broadcast-buffers", action=argparse.BooleanOptionalAction, default=True,
+                   help="Broadcast module buffers from rank 0 at DDP forward start.")
+    g.add_argument("--ddp-init-sync", action=argparse.BooleanOptionalAction, default=True,
+                   help="Verify parameter shapes and broadcast params/buffers at DDP init.")
+    g.add_argument("--ddp-bucket-cap-mb", type=int, default=None,
+                   help="DDP gradient bucket size in MiB. None uses PyTorch default.")
+    g.add_argument("--ddp-find-unused-parameters", action=argparse.BooleanOptionalAction, default=True,
+                   help="Traverse autograd graph to detect unused DDP parameters.")
+    g.add_argument("--ddp-gradient-as-bucket-view", action=argparse.BooleanOptionalAction, default=False,
+                   help="Make gradients views into DDP buckets to reduce peak memory.")
+    g.add_argument("--ddp-static-graph", action=argparse.BooleanOptionalAction, default=False,
+                   help="Tell DDP that used/unused parameters and graph structure are static.")
+    g.add_argument("--ddp-skip-all-reduce-unused-params", action=argparse.BooleanOptionalAction, default=False,
+                   help="Skip all-reduce for unused parameters when supported by the PyTorch version.")
+    g.add_argument("--ddp-bucket-cap-mb-list", type=str, default=None,
+                   help="Comma-separated DDP bucket sizes in MiB when supported by PyTorch.")
+    g.add_argument("--ddp-batched-grad-copy", action=argparse.BooleanOptionalAction, default=False,
+                   help="Enable DDP batched gradient copy when supported by PyTorch.")
     g.add_argument("--dtype", type=str, default="bfloat16",
                    choices=["bfloat16", "float16", "float32"])
     g.add_argument("--zero-optimizer", action="store_true",
                    help="Wrap optimizer with ZeroRedundancyOptimizer (ZeRO Stage-1). "
                         "Shards optimizer states across ranks. Only effective with DDP.")
+    g.add_argument("--zero-parameters-as-bucket-view", action=argparse.BooleanOptionalAction, default=False,
+                   help="Pass parameters_as_bucket_view=True to ZeroRedundancyOptimizer. "
+                        "Reduces peak memory by reusing gradient buffers as parameter storage, "
+                        "but may conflict with torch.compile + DDP reducer assumptions. "
+                        "Only effective when --zero-optimizer is set.")
 
 
 def add_model_override_args(parser: argparse.ArgumentParser):

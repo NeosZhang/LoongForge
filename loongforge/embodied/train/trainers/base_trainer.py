@@ -3,30 +3,24 @@
 
 """BaseTrainer — pure native PyTorch distributed training skeleton."""
 
-import copy
-import gc
 import logging
 import os
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from safetensors.torch import save_model
 
 from loongforge.embodied.distributed import DistributedContext
 from loongforge.embodied.distributed.checkpoint import (
-    detect_checkpoint_format,
     flush_pending_save,
     get_latest_checkpoint,
-    load_pretrained,
     restore_rank_rng_state,
     resume_training_state,
-    save_checkpoint,
 )
-from loongforge.embodied.distributed.parallel import unwrap_model, wrap_model
+from loongforge.embodied.distributed.parallel import wrap_model
 from loongforge.embodied.train.utils.logging import TrainingLogger, StageTimers, log_effective_config
 from loongforge.embodied.train.utils.utils import (
     log_stage,
@@ -35,13 +29,7 @@ from loongforge.embodied.train.utils.utils import (
     setup_logging,
     Profiler,
 )
-from loongforge.embodied.optimizer import (
-    build_optimizer,
-    build_scheduler,
-    clean_nan_gradients,
-    clip_gradients,
-    get_grad_norm,
-)
+from loongforge.embodied.optimizer import get_grad_norm
 
 logger = logging.getLogger(__name__)
 
@@ -52,16 +40,20 @@ class BaseTrainer(ABC):
 
     Lifecycle: __init__(args) → train() → [_setup → _training_loop → _finalize]
 
-    Data flow:
-      - args.model_cfg (OmegaConf from YAML): model structure → _build_model()
-      - args.* (CLI flags): training control → optimizer, scheduler, data, etc.
+    The base class holds ONLY:
+      - abstract methods: model/data/paradigm-dependent compute and training
+        infrastructure (subclasses must implement) — see the "Abstract methods"
+        section below.
+      - shared functions: lifecycle orchestration, timing instrumentation,
+        loss/backward routing, one-shot RNG restore, dataloader state save/load
+        — all model-independent and reused by every subclass.
 
-    Subclass override points:
-      - _build_model() → construct model from model_cfg
-      - _build_dataloaders() → construct dataloaders from CLI args
-      - _train_forward(batch) → single forward pass, return dict with 'action_loss'
-      - _on_train_begin() → hook before training loop
-      - _on_step_end(metrics) → hook after each step
+    The training loop is split into three layers (Template Method):
+      - Layer 1 `_training_loop`: fixed orchestration (shared).
+      - Layer 2 `_train_step`: one optimizer-step skeleton (shared, rarely
+        overridden).
+      - Layer 3 `_forward_backward`: gradient-accumulation + fetch + forward +
+        backward + loss combination (ABSTRACT — subclass implements).
     """
 
     def __init__(self, args):
@@ -86,8 +78,13 @@ class BaseTrainer(ABC):
         self._resume_dataloader_state: Dict[str, Dict[str, Any]] = {}
         self._resume_rng_per_rank = None
 
-        # EMA
-        self.ema_model: Optional[nn.Module] = None
+        # The primary loader "vla" mirrors self.current_epoch for checkpoint/log display.
+        self._epochs: Dict[str, int] = {}
+
+        # Per-stage timing — created in _training_loop, shared via this attr so
+        # the timed helper functions and all layers can read it without passing
+        # it through every signature.
+        self._stage_timers: Optional[StageTimers] = None
 
     # ═══════════════════════════════════════════════
     # Public interface
@@ -171,6 +168,8 @@ class BaseTrainer(ABC):
                 end_msg="pretrained loaded in {elapsed}",
             ):
                 self._load_pretrained(args.pretrained_checkpoint)
+        else:
+            logger.info("No pretrained weights or resume checkpoint found. Using random initialization.")
 
         # 6. Freeze modules
         self._freeze_modules(args.freeze_modules)
@@ -184,7 +183,7 @@ class BaseTrainer(ABC):
             self.model = wrap_model(self.model, args, self.ctx)
 
         with log_stage(
-            "optimizer", 
+            "optimizer",
             start_msg="building optimizer", end_msg="optimizer built in {elapsed}"
         ):
             # 8. Optimizer + Scheduler (after wrapping; FSDP use_orig_params=True)
@@ -217,37 +216,34 @@ class BaseTrainer(ABC):
         with log_stage("data", start_msg="building dataloaders"):
             self.dataloaders = self._build_dataloaders()
             self._restore_dataloader_states()
-        # 11. EMA
-        if args.ema:
-            self._init_ema()
 
-        # 12. Print stats
+        # 11. Print stats
         self.logger.log_param_stats(self.model)
 
         # Hook
         self._on_train_begin()
 
     # ═══════════════════════════════════════════════
-    # Training loop
+    # Training loop — Layer 1 (fixed orchestration, shared)
     # ═══════════════════════════════════════════════
 
     def _training_loop(self):
         args = self.args
-        grad_accum = args.gradient_accumulation_steps
-        grad_clip = args.clip_grad
         log_interval = args.log_interval
         detail_log_interval = args.detail_log_interval
         save_interval = args.save_interval
-        loss_spike_threshold = args.loss_spike_threshold
-        
+
         # ── Profiler setup ──
         prof = Profiler(args, self.ctx, self.output_dir)
         prof.start()
 
-        # ── Per-stage timing ──
-        stage_timers = StageTimers()
+        # ── Per-stage timing (shared via instance attr) ──
+        self._stage_timers = StageTimers()
 
-        self._init_data_iterator("vla")
+        # Initialize iterators for all loaders ("vla" first to keep the primary
+        # epoch semantics consistent — see _init_data_iterator).
+        for name in self.dataloaders:
+            self._init_data_iterator(name)
 
         while self.completed_steps < self.train_iters:
 
@@ -260,79 +256,48 @@ class BaseTrainer(ABC):
                 detail_log_interval > 0
                 and (self.completed_steps + 1) % detail_log_interval == 0
             )
-            stage_timers.set_enabled(enable_detail)
+            self._stage_timers.set_enabled(enable_detail)
 
             t0 = time.perf_counter()
-            with stage_timers("optimizer-zero-grad"):
-                self.optimizer.zero_grad()
 
-            # ── Gradient Accumulation ──
-            accum_loss = 0.0
-            with stage_timers("forward-backward"):
-                for micro in range(grad_accum):
-                    with stage_timers("batch-generator"):
-                        batch = self._fetch_batch("vla")
+            # ── One optimizer step (Layer 2) ──
+            log_dict, grad_norm = self._train_step()
 
-                    with stage_timers("forward-compute"):
-                        output = self._train_forward(batch)
-                    loss = output["action_loss"] / grad_accum
-
-                    # Loss spike protection: zero out to prevent NaN propagation
-                    loss_val = output["action_loss"].detach().item()
-                    if torch.isnan(loss) or torch.isinf(loss) or loss_val > loss_spike_threshold:
-                        self.logger.log_loss_spike(self.completed_steps, loss_val)
-                        loss = loss * 0.0
-
-                    # Backward with no_sync for non-last micro steps
-                    with stage_timers("backward-compute"):
-                        if self.ctx.is_distributed and micro < grad_accum - 1:
-                            if hasattr(self.model, 'no_sync'):
-                                with self.model.no_sync():
-                                    loss.backward()
-                            else:
-                                # FSDP2 (fully_shard): use set_requires_gradient_sync
-                                self.model.set_requires_gradient_sync(False)
-                                loss.backward()
-                                self.model.set_requires_gradient_sync(True)
-                        else:
-                            loss.backward()
-
-                    accum_loss += loss_val
-
-            # ── NaN gradient cleanup ──
-            with stage_timers("nan-grad-cleanup"):
-                self._clean_nan_gradients()
-
-            # ── Gradient clipping (returns pre-clip global grad norm) ──
-            with stage_timers("grad-clip"):
-                if grad_clip > 0:
-                    grad_norm = self._clip_gradients(grad_clip)
-                else:
-                    grad_norm = get_grad_norm(self.model)
-
-            # ── Optimizer step ──
-            with stage_timers("optimizer"):
-                with stage_timers("optimizer-inner-step"):
-                    self.optimizer.step()
-                with stage_timers("optimizer-scheduler-step"):
-                    self.lr_scheduler.step()
             self.completed_steps += 1
+
+            # ── Cross-rank loss aggregation ──
+            # log_dict losses are per-rank local values, controlled by
+            # --loss-log-rank (a list of ints):
+            #   contains -1 (default [-1]) -> all-reduce mean: the reported loss
+            #       reflects the global batch (logged on rank 0). This is a
+            #       collective op — EVERY rank must call it (it runs before the
+            #       rank-0-only logging below), otherwise NCCL hangs.
+            #   one or more non-negative ranks -> NO communication: each listed
+            #       rank prints its own local loss (tagged with its rank); the
+            #       rank-0 backends (W&B/TB/JSONL) below are unaffected.
+            # grad_norm is already global (clip_gradients / get_grad_norm all-reduce
+            # internally), so it is NOT touched here.
+            loss_log_ranks = getattr(args, "loss_log_rank", [-1])
+            if any(r < 0 for r in loss_log_ranks):
+                for key in list(log_dict.keys()):
+                    if "loss" in key:
+                        log_dict[key] = self.ctx.all_reduce_mean(log_dict[key])
+            elif (self.ctx.rank in loss_log_ranks
+                  and self.completed_steps % log_interval == 0):
+                self._log_local_loss(log_dict)
 
             # ── Metrics ──
             step_time = time.perf_counter() - t0
-            batch_size = grad_accum * args.per_device_batch_size
+            batch_size = args.gradient_accumulation_steps * args.per_device_batch_size
             metrics = self.logger.collect_metrics(
-                output, accum_loss, step_time,
+                log_dict, step_time,
                 self.completed_steps, self.lr_scheduler,
                 self.completed_steps * batch_size,
                 self.model, batch_size, grad_norm,
             )
-            # ── Step-end hook (EMA update) ──
-            if self.ema_model is not None:
-                with stage_timers("ema-update"):
-                    self._on_step_end(metrics)
-            else:
-                self._on_step_end(metrics)
+
+            # ── Step-end hook (optional; default pass) ──
+            self._on_step_end(metrics)
 
             # ── Profiler stop ──
             if prof.should_stop(self.completed_steps):
@@ -348,9 +313,9 @@ class BaseTrainer(ABC):
             # ── Per-stage timing log (all ranks call; rank 0 emits) ──
             if enable_detail:
                 self.logger.log_stage_times(
-                    stage_timers, self.ctx, log_level=args.timing_log_level
+                    self._stage_timers, self.ctx, log_level=args.timing_log_level
                 )
-                stage_timers.reset()
+                self._stage_timers.reset()
 
             # ── Checkpoint ──
             if self.completed_steps % save_interval == 0:
@@ -359,10 +324,84 @@ class BaseTrainer(ABC):
         # Final cleanup if loop exited before profile_step_end was reached.
         prof.stop()
 
+    def _log_local_loss(self, log_dict: dict):
+        """Print this rank's own local loss (no cross-rank communication).
+
+        Used when ``--loss-log-rank`` lists one or more non-negative ranks: each
+        listed rank calls this and prints its own loss tagged with its rank,
+        instead of routing through the rank-0-only backends (W&B/TB/JSONL). Uses
+        ``logger.warning`` so a non-rank-0 target still emits — ``setup_logging``
+        sets non-rank-0 loggers to WARNING level, which would filter
+        ``logger.info``.
+        """
+        loss_str = " ".join(
+            f"{k}={v:.6f}" for k, v in log_dict.items()
+            if "loss" in k and isinstance(v, (int, float))
+        )
+        logger.warning(
+            "[rank %d][step %d] %s", self.ctx.rank, self.completed_steps, loss_str
+        )
+
+    # ═══════════════════════════════════════════════
+    # Training loop — Layer 2 (one optimizer step, shared)
+    # ═══════════════════════════════════════════════
+
+    def _train_step(self) -> Tuple[dict, float]:
+        """One optimizer step. Returns (log_dict, grad_norm).
+
+        Fixed skeleton: zero_grad → _forward_backward (subclass) → nan cleanup
+        → grad clip → optimizer/scheduler step. All instrumentation lives here
+        so subclasses only implement _forward_backward.
+
+        _forward_backward returns log_dict containing the loss and any other
+        scalar metrics to log.
+        """
+        st = self._stage_timers
+        grad_clip = self.args.clip_grad
+
+        with st("optimizer-zero-grad"):
+            self.optimizer.zero_grad()
+
+        # ── Gradient accumulation + forward + backward (Layer 3, abstract) ──
+        log_dict = self._forward_backward()
+
+        # ── NaN gradient cleanup ──
+        with st("nan-grad-cleanup"):
+            self._clean_nan_gradients()
+
+        # ── Gradient clipping (returns pre-clip global grad norm) ──
+        with st("grad-clip"):
+            if grad_clip > 0:
+                grad_norm = self._clip_gradients(grad_clip)
+            else:
+                grad_norm = get_grad_norm(self.model)
+
+        # ── Optimizer step ──
+        with st("optimizer"):
+            with st("optimizer-inner-step"):
+                self.optimizer.step()
+            with st("optimizer-scheduler-step"):
+                self.lr_scheduler.step()
+
+        return log_dict, grad_norm
+
+    # ═══════════════════════════════════════════════
+    # Timed helper functions (shared) — logging routed here once
+    # ═══════════════════════════════════════════════
+
+    def _should_sync_grads(self, micro: int, grad_accum: int) -> bool:
+        """Whether the gradient sync (all-reduce) should happen on this micro step.
+
+        Only the last accumulation step syncs. Kept separate so that a
+        micro-step containing multiple backward passes can sync exactly once (on
+        the last loss of the last accum step).
+        """
+        return micro == grad_accum - 1
+
     # ═══════════════════════════════════════════════
     # Abstract methods — subclass must implement
     # ═══════════════════════════════════════════════
-
+    
     @abstractmethod
     def _build_model(self) -> nn.Module:
         """Build model from self.model_cfg. Return unwrapped model."""
@@ -374,8 +413,111 @@ class BaseTrainer(ABC):
         ...
 
     @abstractmethod
-    def _train_forward(self, batch) -> Dict[str, torch.Tensor]:
-        """Single forward pass. Must return dict with 'action_loss' key."""
+    def _train_forward(self, batch) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Single forward pass. Returns (loss, log_loss_dict).
+
+        loss is the single scalar tensor that needs backward (raw, un-scaled).
+        log_loss_dict carries values for printing/reporting only; action_loss need
+        not be present (the loop derives it from the backward loss).
+        """
+        ...
+
+    @abstractmethod
+    def _forward_backward(self) -> dict:
+        """Run one optimizer step's gradient-accumulation loop.
+
+        Returns log_dict — a per-step accumulator that already contains the main
+        backward loss (key ``action_loss``) plus any print-only losses. May call
+        shared helpers: _fetch_batch_timed / _should_sync_grads / _backward_loss /
+        self._stage_timers, to reuse unified timing stages.
+        """
+        ...
+
+    @abstractmethod
+    def _backward_loss(self, loss: torch.Tensor,
+                       log_loss_dict: Dict[str, torch.Tensor],
+                       log_dict: Dict[str, float],
+                       grad_accum: int, sync: bool) -> None:
+        """Scale + spike-guard + backward routing, accumulating losses into log_dict.
+
+        ``loss`` is the single scalar to backpropagate. ``log_loss_dict`` holds
+        losses used ONLY for printing/reporting (not backward). ``log_dict`` is the
+        running per-step accumulator that all scalars are summed into (in-place).
+
+        Contract (subclass implementation must honor it):
+          - Scale loss by 1/grad_accum before backward.
+          - Apply NaN/Inf/threshold spike protection (log + zero-out).
+          - Run backward under the "backward-compute" timing stage
+            (self._stage_timers).
+          - All-reduce EXACTLY ONCE per optimizer step: only the last accumulation
+            step (sync is True) may sync gradients; otherwise skip sync via
+            no_sync (DDP) / set_requires_gradient_sync(False) (FSDP2).
+          - Accumulate the backward loss into log_dict["action_loss"] and the
+            log_loss_dict scalars under their own keys (summed across micro-steps).
+        """
+        ...
+
+    # ── Infrastructure (model-independent plumbing, implemented per subclass) ──
+
+    @abstractmethod
+    def _build_optimizer(self) -> torch.optim.Optimizer:
+        """Build the optimizer (e.g. AdamW with per-module LR groups)."""
+        ...
+
+    @abstractmethod
+    def _build_scheduler(self):
+        """Build the LR scheduler."""
+        ...
+
+    @abstractmethod
+    def _clip_gradients(self, max_norm: float) -> float:
+        """Gradient clipping. Returns the pre-clip global gradient norm."""
+        ...
+
+    @abstractmethod
+    def _clean_nan_gradients(self):
+        """Replace NaN/Inf gradients with 0."""
+        ...
+
+    @abstractmethod
+    def _load_pretrained(self, path: str):
+        """Load pretrained weights."""
+        ...
+
+    @abstractmethod
+    def _handle_resume(self, path: str, step: int, epoch: int):
+        """Resume model weights from a discovered checkpoint, set step/epoch."""
+        ...
+
+    @abstractmethod
+    def _freeze_modules(self, freeze_str: str):
+        """Freeze specified modules."""
+        ...
+
+    @abstractmethod
+    def _save_checkpoint(self):
+        """Persist model/optimizer/scheduler/dataloader state to a checkpoint."""
+        ...
+
+    # ── Data / state (iterator lifecycle, implemented per subclass) ──
+
+    @abstractmethod
+    def _init_data_iterator(self, name: str):
+        """Initialize the iterator for the named dataloader.
+
+        Implementations should honor per-loader epoch semantics and call
+        self._maybe_restore_rng_once() once (see multi-dataloader design).
+        """
+        ...
+
+    @abstractmethod
+    def _advance_epoch(self, name: str):
+        """Advance the named dataloader to its next epoch and reset its iterator."""
+        ...
+
+    @abstractmethod
+    def _fetch_batch(self, dl_name: str):
+        """Fetch the next batch, cycling the iterator at epoch boundaries."""
         ...
 
     # ═══════════════════════════════════════════════
@@ -387,75 +529,22 @@ class BaseTrainer(ABC):
         pass
 
     def _on_step_end(self, metrics: Dict[str, float]):
-        """Hook after each training step. Default: EMA update."""
-        self._ema_update()
+        """Hook after each training step. Default: no-op."""
+        pass
 
     # ═══════════════════════════════════════════════
-    # Internal methods
+    # Shared functions (model-independent, reused by subclasses)
     # ═══════════════════════════════════════════════
 
-    def _load_pretrained(self, path: str):
-        """Load pretrained weights, preferring model.load_pretrained if available."""
-        if hasattr(self.model, "load_pretrained"):
-            self.model.load_pretrained(path, device=self.ctx.device)
-        elif hasattr(self.model, "model") and hasattr(self.model.model, "load_pretrained"):
-            self.model.model.load_pretrained(path, device=self.ctx.device)
-        else:
-            load_pretrained(self.model, path, self.ctx)
-        self.logger.log_pretrained_loaded(path)
-
-    def _handle_resume(self, path: str, step: int, epoch: int):
-        """Resume model weights from a discovered checkpoint.
-
-        For ``dcp`` checkpoints, weight loading is deferred until after
-        ``wrap_model`` (handled by ``resume_training_state``), since DCP needs
-        the FSDP-sharded DTensor layout to know how to reshard. Calling
-        ``load_pretrained`` here would also fail because there is no
-        consolidated single-file model in a DCP checkpoint dir.
-        """
-        fmt = detect_checkpoint_format(path)
-        if fmt == "dcp":
-            if self.ctx.is_main:
-                logger.info(
-                    "resume: detected DCP checkpoint at %s — deferring weight "
-                    "load until after wrap_model.", path,
-                )
-        else:
-            load_pretrained(self.model, path, self.ctx)
-        self.completed_steps = step
-        self.current_epoch = epoch
-        self.logger.log_resume(step)
-
-    def _freeze_modules(self, freeze_str: str):
-        """Freeze specified modules by dot-path."""
-        if not freeze_str:
+    def _maybe_restore_rng_once(self):
+        """Restore per-rank RNG state exactly once, guarding against multiple
+        loaders each triggering a restore on their first iterator init."""
+        if self._resume_rng_per_rank is None:
             return
-        for path in [p.strip() for p in freeze_str.split(",") if p.strip()]:
-            module = self.model
-            try:
-                for attr in path.split("."):
-                    module = getattr(module, attr)
-                for p in module.parameters():
-                    p.requires_grad = False
-                self.logger.log_frozen_module(path)
-            except AttributeError:
-                self.logger.log_freeze_not_found(path)
-
-    def _build_optimizer(self) -> torch.optim.Optimizer:
-        """Build AdamW with per-module LR groups."""
-        return build_optimizer(self.model, self.args)
-
-    def _build_scheduler(self):
-        """Build LR scheduler."""
-        return build_scheduler(self.optimizer, self.args)
-
-    def _clip_gradients(self, max_norm: float) -> float:
-        """Gradient clipping. Returns the pre-clip global gradient norm."""
-        return clip_gradients(self.model, max_norm)
-
-    def _clean_nan_gradients(self):
-        """Replace NaN/Inf gradients with 0."""
-        clean_nan_gradients(self.model)
+        restore_rank_rng_state(self._resume_rng_per_rank, self.ctx)
+        if self.ctx.is_main:
+            logger.info("RNG state resumed successfully after dataloader iterator init")
+        self._resume_rng_per_rank = None
 
     def _restore_dataloader_states(self):
         """Restore full dataloader states when checkpoints provide them."""
@@ -477,60 +566,6 @@ class BaseTrainer(ABC):
                     "dataloader state in checkpoint will be ignored."
                 )
 
-    def _init_data_iterator(self, name: str):
-        """Initialize iterator for named dataloader and store in self._data_iters.
-
-        The trainer (`self.current_epoch`) is the single source of truth — it
-        is set by checkpoint resume (meta.json then training_state.pt) before
-        this runs. We push that value INTO the sampler via `set_epoch()` so
-        the sampler's shuffle stream is aligned, instead of reading sampler.epoch
-        back into self.current_epoch (which would clobber a resumed value to 0
-        when the sampler's load_state_dict didn't restore it).
-
-        SKIP `set_epoch` when this loader's state was just restored via
-        `dl.load_state_dict()` — `StatefulDistributedSampler.set_epoch` clears
-        the `_yielded` progress counter, which would re-emit the epoch from
-        sample 0 and silently undo the in-epoch resume position.
-        """
-        dl = self.dataloaders[name]
-        sampler = getattr(dl, "sampler", None)
-        restored_from_state = name in self._resume_dataloader_state
-        if (
-            sampler is not None
-            and hasattr(sampler, "set_epoch")
-            and not restored_from_state
-        ):
-            sampler.set_epoch(self.current_epoch)
-        self._data_iters[name] = iter(dl)
-        if self._resume_rng_per_rank is not None:
-            restore_rank_rng_state(self._resume_rng_per_rank, self.ctx)
-            if self.ctx.is_main:
-                logger.info("RNG state resumed successfully after dataloader iterator init")
-            self._resume_rng_per_rank = None
-        if self.ctx.is_main:
-            logger.info(f"Dataloader '{name}' positioned at epoch={self.current_epoch}")
-
-    def _advance_epoch(self, name: str):
-        """Move dataloader to the next epoch."""
-        self.current_epoch += 1
-        dl = self.dataloaders[name]
-        if hasattr(dl, "sampler") and hasattr(dl.sampler, "set_epoch"):
-            dl.sampler.set_epoch(self.current_epoch)
-        self._data_iters[name] = iter(dl)
-
-    def _fetch_batch(self, dl_name: str):
-        """Fetch next batch, handle epoch boundary by cycling the iterator."""
-        try:
-            batch = next(self._data_iters[dl_name])
-        except StopIteration:
-            self._advance_epoch(dl_name)
-            batch = next(self._data_iters[dl_name])
-
-        device = next(self.model.parameters()).device
-        if hasattr(batch, "to"):
-            batch = batch.to(device)
-        return batch
-
     def _get_dataloader_state(self) -> Dict[str, Dict[str, Any]]:
         """Return full dataloader states for exact checkpoint resume when supported."""
         states = {}
@@ -544,41 +579,10 @@ class BaseTrainer(ABC):
                 )
         return states
 
-    def _save_checkpoint(self):
-        save_checkpoint(
-            self.model, self.optimizer, self.lr_scheduler,
-            self.completed_steps, self.checkpoint_dir, self.ctx, self.args,
-            epoch=self.current_epoch,
-            dataloader_state=self._get_dataloader_state(),
-        )
 
-    # ── EMA ──
-
-    def _init_ema(self):
-        if not self.ctx.is_main:
-            return
-        # FSDP shards parameters — EMA needs full params.
-        # Skip EMA when FSDP is active (proper FSDP EMA requires summon_full_params).
-        if self.args.distributed_strategy == "fsdp":
-            self.logger.log_ema_disabled_fsdp()
-            self.ema_model = None
-            return
-        raw = unwrap_model(self.model)
-        self.ema_model = copy.deepcopy(raw).cpu().eval()
-        for p in self.ema_model.parameters():
-            p.requires_grad_(False)
-        self.logger.log_ema_initialized(self.args.ema_decay)
-
-    def _ema_update(self):
-        if not self.ema_model or not self.ctx.is_main:
-            return
-        raw = unwrap_model(self.model)
-        with torch.no_grad():
-            for ep, mp in zip(self.ema_model.parameters(), raw.parameters()):
-                ep.data.mul_(self.args.ema_decay).add_(mp.data.cpu(), alpha=1 - self.args.ema_decay)
-
-    # ── Finalize ──
-
+    # ═══════════════════════════════════════════════
+    # Finalize
+    # ═══════════════════════════════════════════════
     def _finalize(self):
         """End of training: save final model, close W&B."""
         # Final checkpoint — skip when the last loop iteration already saved
@@ -592,20 +596,8 @@ class BaseTrainer(ABC):
         # with destroy() and leave an unfinalized checkpoint.
         flush_pending_save(self.ctx)
 
-        # Save EMA as final model
-        if self.ctx.is_main and self.ema_model:
-            final_path = os.path.join(self.output_dir, "final_model")
-            os.makedirs(final_path, exist_ok=True)
-
-            torch.cuda.empty_cache()
-            gc.collect()
-            ema_cpu = copy.deepcopy(self.ema_model).cpu()
-            save_model(ema_cpu, os.path.join(final_path, "model.safetensors"))
-            self.logger.log_final_model_saved(final_path)
-
         # Close W&B / TensorBoard
         self.logger.finish()
 
         self.ctx.barrier()
         self.ctx.destroy()
-
