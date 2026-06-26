@@ -73,9 +73,6 @@ TRAINING_ARGS=(
     --adam-beta1 0.9
     --adam-beta2 0.95
     --adam-eps 1e-8
-    # EMA (disabled)
-    # --ema
-    --ema-decay 0.9999
     # Checkpoint
     --save-interval 10
     # --pretrained-checkpoint $CHECKPOINT_PATH  
