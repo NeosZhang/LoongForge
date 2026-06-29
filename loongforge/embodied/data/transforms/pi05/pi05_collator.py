@@ -93,7 +93,7 @@ class Pi05Preprocessor(BasePreprocessor):
         self.tokenizer_path = tokenizer_path
 
     @classmethod
-    def from_config(cls, cfg) -> "Pi05Preprocessor":
+    def from_config(cls, cfg, args=None) -> "Pi05Preprocessor":
         """Construct from model config (OmegaConf dict or object).
 
         Accepts either:

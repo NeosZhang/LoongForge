@@ -79,7 +79,7 @@ def build_scheduler(optimizer, args):
     from transformers import get_scheduler
 
     kwargs = {}
-    if args.min_lr:
+    if args.min_lr is not None:
         kwargs["min_lr"] = args.min_lr
 
     return get_scheduler(

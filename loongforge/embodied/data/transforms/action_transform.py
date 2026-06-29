@@ -8,7 +8,7 @@ Supports configurable normalization, dimension padding, and horizon padding stra
 
 Core processing:
   1. Convert to tensor [T, D]
-  2. Normalize using Normalizer (q99 / min_max / mean_std / scale)
+  2. Normalize using Normalizer (q99 / min_max / mean_std / scale / identity)
   3. Pad/truncate action dimension to max_action_dim
   4. Pad/truncate action horizon with configurable strategy (zero / repeat_last / none)
 
@@ -51,7 +51,7 @@ class ActionTransform(BaseTransform):
             apply_to: Keys in data dict to transform
             action_horizon: Target action sequence length (None to skip horizon padding)
             max_action_dim: Target action dimension (None to skip dim padding)
-            normalization_mode: Normalizer mode (q99, min_max, mean_std, scale, binary)
+            normalization_mode: Normalizer mode (q99, min_max, mean_std, scale, binary, identity)
             statistics: Dataset statistics for normalization (None to skip)
             padding_strategy: Horizon padding strategy ("zero", "repeat_last", "none")
             training: Whether in training mode
@@ -67,7 +67,7 @@ class ActionTransform(BaseTransform):
 
         # Build normalizer
         self.normalizer = None
-        if statistics is not None:
+        if statistics is not None and normalization_mode != "identity":
             self.normalizer = Normalizer(
                 mode=normalization_mode,
                 statistics=statistics,

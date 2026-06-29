@@ -4,12 +4,13 @@
 """
 Normalizer - Multi-mode normalizer for state/action data.
 
-Supports 5 normalization modes:
+Supports normalization modes:
   - q99:     2*(x - q01) / (q99 - q01) - 1  → [-1, 1] (NO clamp, values can exceed)
   - min_max: 2*(x - min) / (max - min) - 1  → [-1, 1]
   - mean_std: (x - mean) / std              → unbounded
   - scale:   x / max(|min|, |max|)          → [-1, 1]
   - binary:  x > threshold                  → {0, 1}
+  - identity: no normalization
 
 Statistics dict format:
     {"mean": [...], "std": [...], "min": [...], "max": [...], "q01": [...], "q99": [...]}
@@ -26,12 +27,12 @@ import torch
 class Normalizer:
     """General normalizer, supports forward/inverse."""
 
-    VALID_MODES = ["q99", "min_max", "mean_std", "binary", "scale"]
+    VALID_MODES = ["q99", "min_max", "mean_std", "binary", "scale", "identity"]
 
     def __init__(self, mode: str, statistics: Dict[str, np.ndarray], binary_threshold: float = 0.5, eps: float = 1e-8):
         """
         Args:
-            mode: Normalization mode (q99, min_max, mean_std, binary)
+            mode: Normalization mode (q99, min_max, mean_std, binary, scale, identity)
             statistics: Dataset statistics dictionary
             binary_threshold: Threshold for binary mode
             eps: Epsilon for zero-range denominator handling (matches base framework)
@@ -57,6 +58,9 @@ class Normalizer:
         """Normalize."""
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float32)
+
+        if self.mode == "identity":
+            return x
 
         if self.mode == "q99":
             q01 = self.statistics["q01"].to(x.dtype)
@@ -94,6 +98,9 @@ class Normalizer:
         """Denormalize (used during inference)."""
         if not isinstance(x, torch.Tensor):
             x = torch.tensor(x, dtype=torch.float32)
+
+        if self.mode == "identity":
+            return x
 
         if self.mode == "q99":
             q01 = self.statistics["q01"].to(x.dtype)

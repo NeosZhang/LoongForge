@@ -154,6 +154,8 @@ class FinetuneTrainer(BaseTrainer):
 
     def _clip_gradients(self, max_norm: float) -> float:
         """Gradient clipping. Returns the pre-clip global gradient norm."""
+        if hasattr(self.optimizer, "clip_grad_norm"):
+            return self.optimizer.clip_grad_norm(max_norm)
         return clip_gradients(self.model, max_norm)
 
     def _clean_nan_gradients(self):
@@ -260,12 +262,20 @@ class FinetuneTrainer(BaseTrainer):
 
     def _fetch_batch(self, dl_name: str):
         """Fetch next batch, handle epoch boundary by cycling the iterator."""
+        batch = self._fetch_batch_cpu(dl_name)
+        return self._move_batch_to_device(batch)
+
+    def _fetch_batch_cpu(self, dl_name: str):
+        """Fetch next CPU batch without moving it to the training device."""
         try:
             batch = next(self._data_iters[dl_name])
         except StopIteration:
             self._advance_epoch(dl_name)
             batch = next(self._data_iters[dl_name])
+        return batch
 
+    def _move_batch_to_device(self, batch):
+        """Move a fetched batch to the current model device."""
         device = next(self.model.parameters()).device
         if hasattr(batch, "to"):
             batch = batch.to(device)

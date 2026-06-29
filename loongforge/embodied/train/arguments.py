@@ -69,6 +69,7 @@ def embodied_args_provider(parser: argparse.ArgumentParser):
     add_model_args(parser)
     add_training_args(parser)
     add_distributed_args(parser)
+    add_cuda_graph_args(parser)
 
 
 def add_model_args(parser: argparse.ArgumentParser):
@@ -151,7 +152,25 @@ def add_training_args(parser: argparse.ArgumentParser):
                    help="Language task description (for HDF5 datasets)")
     g.add_argument("--per-device-batch-size", type=int, default=4)
     g.add_argument("--num-workers", type=int, default=4)
+    g.add_argument("--dataloader-multiprocessing-context", type=str, default=None,
+                   choices=["fork", "spawn", "forkserver"],
+                   help="Multiprocessing start method for DataLoader workers. "
+                        "Use spawn when video decoders are not fork-safe.")
     g.add_argument("--normalization-mode", type=str, default="q99")
+    g.add_argument("--distributed-sampler-mode", type=str, default="cyclic",
+                   choices=["cyclic", "block"],
+                   help="How to partition the global index sequence across "
+                        "data-parallel ranks (HPC-style naming). "
+                        "'cyclic' — sample-level round-robin (a.k.a. stride sharding): "
+                        "each rank gets indices[rank::world_size], a micro-batch is a "
+                        "strided slice of the global order. This is what PyTorch's "
+                        "DistributedSampler does. "
+                        "'block' — batch-level round-robin (a.k.a. contiguous batch "
+                        "sharding): the global order is first grouped into "
+                        "size-batch_size blocks, then whole blocks are assigned to "
+                        "ranks in round-robin fashion, so a micro-batch is a "
+                        "contiguous slice. This matches HuggingFace Accelerate's "
+                        "BatchSamplerShard(split_batches=False);")
     g.add_argument("--discrete-state-input", action="store_true",
                    help="Discretize robot state into 256 bins and embed in prompt (PI0.5 style).")
     g.add_argument("--num-samples", type=int, default=100,
@@ -232,7 +251,48 @@ def add_training_args(parser: argparse.ArgumentParser):
     g.add_argument("--profile-output-dir", type=str, default=None,
                    help="Directory to write torch.profiler traces. Defaults "
                         "to {output_dir}/profiler.")
-    
+   
+
+def add_cuda_graph_args(parser: argparse.ArgumentParser):
+    """Add CUDA graph related CLI arguments."""
+
+    # ── GR00TN1.6 CUDA Graph arguments ──
+    g = parser.add_argument_group("CUDA Graph")
+    g.add_argument("--cuda-graph-impl", type=str, default="none",
+                   choices=["none", "local"],
+                   help="CUDA graph implementation. Use 'local' to enable the embodied "
+                        "trainer's local CUDA graph path.")
+    g.add_argument("--cuda-graph-scope", type=str, default="full_iteration",
+                   choices=["full_iteration", "per_microbatch"],
+                   help="CUDA graph capture scope.")
+    g.add_argument("--cuda-graph-warmup-steps", type=int, default=3,
+                   help="Number of eager warmup iterations before CUDA graph capture.")
+    g.add_argument("--cuda-graph-pad-length", type=int, default=None,
+                   help="Pad token sequences to a fixed length for CUDA graph capture. "
+                        "Use 0 to keep dynamic padding and let the graph runner recapture "
+                        "when shapes change.")
+    g.add_argument("--cuda-graph-ddp-sync-in-graph",
+                   action=argparse.BooleanOptionalAction, default=False,
+                   help="When using local per-microbatch CUDA graph with DDP, wrap the "
+                        "model in DDP and capture DDP gradient reductions into the graph "
+                        "instead of replaying then synchronizing gradients manually.")
+    g.add_argument("--cuda-graph-grad-sync-bucket-mb", type=float, default=200.0,
+                   help="Bucket size in MiB for manual gradient all-reduce used by "
+                        "per-microbatch CUDA graph when DDP reductions are not captured.")
+    g.add_argument("--cuda-graph-grad-sync-impl", type=str, default="coalesced",
+                   choices=["flat", "coalesced"],
+                   help="Manual gradient all-reduce implementation for per-microbatch "
+                        "CUDA graph. 'coalesced' avoids per-step flatten/unflatten copies.")
+    g.add_argument("--cuda-graph-grad-sync-dtype", type=str, default="fp32",
+                   choices=["fp32", "bf16"],
+                   help="Communication dtype for manual CUDA graph gradient all-reduce. "
+                        "Use bf16 to reduce communication volume; gradients are copied "
+                        "back to their original dtype before optimizer/clip.")
+    g.add_argument("--check-for-nan-in-loss-and-grad",
+                   action=argparse.BooleanOptionalAction, default=True,
+                   help="Enable host-side loss/grad NaN checks. CUDA graph mode disables "
+                        "this automatically unless --no-check-for-nan-in-loss-and-grad is set.")
+
 
 def add_distributed_args(parser: argparse.ArgumentParser):
     """Add all distributed training CLI arguments."""

@@ -51,6 +51,14 @@ from loongforge.embodied.data.transforms.fast import (
     FastPreparedBatch,
     FastKeyMappingTransform,
 )
+from loongforge.embodied.data.transforms.groot_n1_6 import (
+    GrootBatchTransform,
+    GrootN1d6FeatureTransform,
+    GrootN1d6PreparedBatch,
+    GrootN1d6Preprocessor,
+    GrootPromptTransform,
+    GrootStateActionTransform,
+)
 
 __all__ = [
     # Per-sample transforms
@@ -78,4 +86,11 @@ __all__ = [
     "FastPreprocessor",
     "FastPreparedBatch",
     "FastKeyMappingTransform",
+    # GR00T-N1.6 collator
+    "GrootBatchTransform",
+    "GrootN1d6FeatureTransform",
+    "GrootPromptTransform",
+    "GrootStateActionTransform",
+    "GrootN1d6Preprocessor",
+    "GrootN1d6PreparedBatch",
 ]
