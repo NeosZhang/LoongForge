@@ -5,11 +5,8 @@
 
 import torch
 import torch.nn as nn
-from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp import FSDPModule
 import torch.distributed as dist
-
-
-
 def get_grad_norm(model: nn.Module) -> float:
     """Compute global gradient norm, accounting for FSDP sharding.
 
@@ -25,7 +22,7 @@ def get_grad_norm(model: nn.Module) -> float:
         The L2 norm of all model gradients (global norm for distributed).
     """
 
-    is_fsdp = isinstance(model, FSDP) or hasattr(model, "_fsdp_state")
+    is_fsdp = isinstance(model, FSDPModule)
 
     total_norm_sq = torch.zeros((), device=next(model.parameters()).device)
 
@@ -36,7 +33,6 @@ def get_grad_norm(model: nn.Module) -> float:
 
     if is_fsdp and dist.is_initialized():
         dist.all_reduce(total_norm_sq, op=dist.ReduceOp.SUM)
-
     return total_norm_sq.sqrt().item()
 
 
@@ -53,7 +49,7 @@ def clip_gradients(model: nn.Module, max_norm: float) -> float:
     """
     
 
-    is_fsdp = isinstance(model, FSDP) or hasattr(model, "_fsdp_state")
+    is_fsdp = isinstance(model, FSDPModule)
     if not is_fsdp:
         # clip_grad_norm_ returns the total norm *before* clipping. Under DDP
         # grads are already all-reduced, so the local norm equals the global one.
@@ -67,7 +63,8 @@ def clip_gradients(model: nn.Module, max_norm: float) -> float:
             local_norm_sq += p.grad.detach().float().norm(2) ** 2
 
     # All-reduce to get global norm across all ranks
-    torch.distributed.all_reduce(local_norm_sq)
+    if dist.is_initialized():
+        torch.distributed.all_reduce(local_norm_sq)
     total_norm = local_norm_sq.sqrt()
 
     clip_coef = max_norm / (total_norm + 1e-6)

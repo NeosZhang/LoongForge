@@ -8,7 +8,7 @@ from typing import Dict, List
 
 import torch.nn as nn
 
-from loongforge.embodied.distributed.parallel import unwrap_model
+from loongforge.embodied.distributed.utils import unwrap_model
 
 logger = logging.getLogger(__name__)
 

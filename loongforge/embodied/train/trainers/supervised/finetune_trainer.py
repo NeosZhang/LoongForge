@@ -21,10 +21,8 @@ from loongforge.embodied.distributed.checkpoint import (
     load_pretrained,
     save_checkpoint,
 )
-from loongforge.embodied.distributed.parallel import (
-    _resolve_dtype, 
-    unwrap_model
-)
+from loongforge.embodied.distributed.parallel import resolve_dtype
+from loongforge.embodied.distributed.utils import unwrap_model
 from loongforge.embodied.model import build_model
 from loongforge.embodied.optimizer import (
     build_optimizer,
@@ -65,7 +63,7 @@ class FinetuneTrainer(BaseTrainer):
         """
         dtype = getattr(self, "_compute_dtype", None)
         if dtype is None:
-            dtype = _resolve_dtype(self.args.dtype)
+            dtype = resolve_dtype(self.args.dtype)
             self._compute_dtype = dtype
 
         with torch.autocast("cuda", dtype=dtype):

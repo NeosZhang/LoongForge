@@ -579,10 +579,10 @@ class BaseTrainer(ABC):
                 )
         return states
 
+
     # ═══════════════════════════════════════════════
     # Finalize
     # ═══════════════════════════════════════════════
-
     def _finalize(self):
         """End of training: save final model, close W&B."""
         # Final checkpoint — skip when the last loop iteration already saved

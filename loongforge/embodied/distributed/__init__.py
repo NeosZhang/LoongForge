@@ -4,7 +4,8 @@
 """Core training infrastructure — pure PyTorch native, no third-party training libs."""
 
 from .context import DistributedContext
-from .parallel import wrap_model, unwrap_model
+from .parallel import wrap_model
+from .utils import unwrap_model
 
 __all__ = [
     "DistributedContext",

@@ -39,7 +39,7 @@ from torch.distributed.checkpoint.state_dict import (
 from torch.distributed.fsdp import FSDPModule
 
 from .context import DistributedContext
-from .parallel import unwrap_model
+from .utils import unwrap_model
 
 logger = logging.getLogger(__name__)
 
@@ -635,7 +635,9 @@ def _get_full_state_dict(model: nn.Module, ctx: DistributedContext) -> dict:
 def _is_zero_optimizer(optimizer) -> bool:
     """Check if optimizer is a ZeroRedundancyOptimizer."""
     from torch.distributed.optim import ZeroRedundancyOptimizer
-    return isinstance(optimizer, ZeroRedundancyOptimizer)
+    return isinstance(optimizer, ZeroRedundancyOptimizer) or getattr(
+        optimizer, "_is_multi_dtype_zero_optimizer", False
+    )
 
 
 def _save_training_state(

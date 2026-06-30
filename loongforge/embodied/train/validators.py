@@ -62,6 +62,12 @@ def validate_args(args, cfg):
             f"Got keys: {list(cfg.keys())}"
         )
 
+    # ZeRO optimizer options
+    if getattr(args, "zero_parameters_as_bucket_view", False) and not getattr(args, "zero_optimizer", False):
+        logger.warning(
+            "--zero-parameters-as-bucket-view has no effect without --zero-optimizer."
+        )
+
     # Profiler mutual exclusion
     if getattr(args, "use_pytorch_profiler", False) and getattr(args, "use_nsys_profiler", False):
         raise ValueError(
