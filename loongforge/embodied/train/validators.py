@@ -24,13 +24,13 @@ def validate_args(args, cfg):
         raise ValueError("--model-name or --config-file must be specified.")
 
     # LR sanity checks
-    if args.lr <= 0:
-        raise ValueError(f"--lr must be positive, got {args.lr}")
+    if args.lr_base <= 0:
+        raise ValueError(f"--lr-base must be positive, got {args.lr_base}")
     if args.min_lr < 0:
         raise ValueError(f"--min-lr must be >= 0, got {args.min_lr}")
-    if args.min_lr >= args.lr:
+    if args.min_lr >= args.lr_base:
         logger.warning(
-            f"--min-lr ({args.min_lr}) >= --lr ({args.lr}); "
+            f"--min-lr ({args.min_lr}) >= --lr-base ({args.lr_base}); "
             f"cosine decay will have no effect."
         )
 
