@@ -102,7 +102,7 @@ def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
         supported = ", ".join(OPTIMIZER_REGISTRY)
         raise ValueError(f"Unknown optimizer '{args.optimizer}'. Supported optimizers: {supported}.")
 
-    kwargs = {"lr": args.lr_base, "weight_decay": args.weight_decay}
+    kwargs = {"lr": args.lr, "weight_decay": args.weight_decay}
     if optimizer_cls in (torch.optim.AdamW, torch.optim.Adam):
         kwargs.update(betas=(args.adam_beta1, args.adam_beta2), eps=args.adam_eps)
 

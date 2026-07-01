@@ -64,7 +64,7 @@ TRAINING_ARGS=(
     --seed 1234
     --output-dir $OUTPUT_DIR
     # Learning rate
-    --lr-base 2.5e-8
+    --lr 2.5e-8
     --min-lr 0
     --lr-decay-style cosine
     --lr-warmup-iters 0

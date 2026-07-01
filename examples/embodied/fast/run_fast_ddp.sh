@@ -60,7 +60,7 @@ TRAINING_ARGS=(
     --seed 42
     --output-dir $OUTPUT_DIR
     # Learning rate
-    --lr-base 2.5e-5
+    --lr 2.5e-5
     --lr-backbone 1.0e-5
     --lr-action-model 1.0e-4
     --lr-decay-style cosine_with_min_lr
