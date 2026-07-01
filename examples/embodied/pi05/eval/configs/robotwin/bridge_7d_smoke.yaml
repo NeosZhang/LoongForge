@@ -1,0 +1,52 @@
+benchmark:
+  name: robotwin
+  task_name: adjust_bottle
+  task_config: demo_clean
+  start_seed: 100001
+  episodes_per_task: 1
+  max_steps: 5
+  disable_expert_check: false
+
+model:
+  backend: loongforge
+  model_type: pi05
+  name: loongforge-pi05-robotwin-smoke
+  ckpt_path: /path/to/pi05/checkpoint/steps_10
+  dataset_statistics_path: /path/to/pi05/dataset_statistics.json
+  tokenizer_name: /path/to/paligemma-3b-pt-224
+  action_dim: 7
+  state_dim: 7
+  action_horizon: 50
+  max_action_dim: 32
+  max_state_dim: 32
+  use_bf16: false
+  compile_model: false
+  action_mode: abs
+  robotwin_action_bridge: duplicate_7d
+
+server:
+  host: 127.0.0.1
+  port: 12293
+  health_port: 12294
+  python: /workspace/miniconda3/envs/loongforge/bin/python
+  log: /workspace/LoongForge-VLA/loongforge/embodied/eval/reports/pi05/robotwin/bridge_7d_smoke/policy_server.log
+  start_timeout_sec: 900
+
+env:
+  eval_root: /workspace/LoongForge-VLA/loongforge/embodied/eval
+  loongforge_root: /workspace/LoongForge-VLA
+  robotwin_root: /workspace/RoboTwin
+  robotwin_python: /workspace/miniconda3/envs/robotwin/bin/python
+
+run:
+  output_dir: /workspace/LoongForge-VLA/loongforge/embodied/eval/reports/pi05/robotwin/bridge_7d_smoke
+  seed: 0
+  ckpt_setting: loongforge_pi05_smoke
+  worker_local_files: true
+  disable_eval_video_log: true
+  keep_config: true
+
+timeouts:
+  policy_call_ms: 600000
+  per_step_sec: 600
+  per_episode_sec: 900
