@@ -308,6 +308,7 @@ class BaseTrainer(ABC):
                 self.logger.log_metrics(
                     metrics, self.completed_steps, self.train_iters,
                     args.per_device_batch_size, self.ctx.world_size, self.ctx.is_distributed,
+                    gradient_accumulation_steps=args.gradient_accumulation_steps,
                 )
 
             # ── Per-stage timing log (all ranks call; rank 0 emits) ──

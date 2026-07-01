@@ -108,9 +108,14 @@ def add_training_args(parser: argparse.ArgumentParser):
 
     # ── Learning Rate ──
     g = parser.add_argument_group("Learning Rate")
-    g.add_argument("--lr", type=float, default=2.5e-5, help="Base learning rate")
-    g.add_argument("--lr-backbone", type=float, default=None, help="Backbone LR override")
-    g.add_argument("--lr-action-model", type=float, default=None, help="Action model LR override")
+    g.add_argument("--lr-base", type=float, default=2.5e-5,
+                   help="Base learning rate for unmatched parameters.")
+    g.add_argument("--lr-group", type=str, default=None,
+                   help="Per-module LR overrides in 'module.path=lr' format, "
+                        "comma-separated. "
+                        "Example: 'model.paligemma_with_expert.gemma_expert=1e-4,"
+                        "model.paligemma_with_expert=1e-5'. "
+                        "Order matters: earlier entries consume parameters first.")
     g.add_argument("--lr-decay-style", type=str, default="cosine_with_min_lr")
     g.add_argument("--lr-warmup-iters", type=int, default=2000)
     g.add_argument("--min-lr", type=float, default=1e-6)

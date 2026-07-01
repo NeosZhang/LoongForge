@@ -488,6 +488,7 @@ class TrainingLogger:
         per_device_batch_size: int,
         world_size: int = 1,
         is_distributed: bool = False,
+        gradient_accumulation_steps: int = 1,
     ):
         """Log metrics to console, W&B, and JSONL file.
 
@@ -508,10 +509,11 @@ class TrainingLogger:
         consumed_samples = metrics.get("consumed_samples", 0)
         grad_norm = metrics.get("grad_norm", 0)
 
-        # Global batch size
+        # Global batch size = per-device × world_size × gradient_accumulation_steps
         global_batch_size = per_device_batch_size
         if is_distributed:
             global_batch_size *= world_size
+        global_batch_size *= gradient_accumulation_steps
 
         # Format aligned with main framework
         log_string = "iteration {:8d}/{:8d} |".format(completed_steps, train_iters)

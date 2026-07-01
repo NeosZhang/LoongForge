@@ -58,9 +58,8 @@ TRAINING_ARGS=(
     --seed 42
     --output-dir $OUTPUT_DIR
     # Learning rate
-    --lr 2.5e-5
-    --lr-backbone 1.0e-5
-    --lr-action-model 1.0e-4
+    --lr-base 2.5e-5
+    --lr-group "model.paligemma_with_expert.gemma_expert=1e-4,model.paligemma_with_expert=1e-5"
     --lr-decay-style cosine_with_min_lr
     --lr-warmup-iters 10
     --min-lr 1.0e-6
@@ -104,4 +103,4 @@ PYTHONPATH=$LOONGFORGE_PATH:${PYTHONPATH:-} \
     "${TRAINING_ARGS[@]}" \
     "${DISTRIBUTED_TRAINING_ARGS[@]}" \
     "${LOGGING_ARGS[@]}" \
-    "$@"   # pass-through: --lr 1e-4  OR  backbone.image_size=448
+    "$@"   # pass-through: --lr-base 1e-4  OR  backbone.image_size=448

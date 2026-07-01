@@ -64,7 +64,8 @@ TRAINING_ARGS=(
     --seed 1234
     --output-dir $OUTPUT_DIR
     # Learning rate
-    --lr 2.5e-8
+    --lr-base 2.5e-8
+    --lr-group "model.paligemma_with_expert.gemma_expert=1e-4,model.paligemma_with_expert=1e-5"
     --min-lr 0
     --lr-decay-style cosine
     --lr-warmup-iters 0

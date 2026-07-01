@@ -7,41 +7,116 @@ import logging
 from typing import Dict, List
 
 import torch.nn as nn
+import torch.distributed as dist
 
 from loongforge.embodied.distributed.utils import unwrap_model
 
 logger = logging.getLogger(__name__)
 
 
-def build_param_groups(model: nn.Module, args) -> List[Dict]:
-    """
-    Build optimizer param groups with per-module LR from CLI args.
+def _log_model_lr(model: nn.Module, max_depth: int = 3, groups: List[Dict] = None) -> None:
+    """Log named submodules with trainable parameter counts, and optionally their LR assignment.
 
-    Supports:
-      --lr-backbone → backbone / architecture.pi05_model.paligemma_with_expert
-      --lr-action-model → action_model / architecture.pi05_model.action_expert
-      --lr → everything else (base)
+    When ``groups`` is provided, each module row also shows the lr value assigned to
+    its parameters (aggregated from the first param found in that module).
+    Only logs on rank 0 (or when distributed is not initialized).
+    """
+
+    if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+        return
+
+    # Build param_id → lr mapping when groups are available
+    param_to_lr: dict = {}
+    if groups is not None:
+        for group in groups:
+            for p in group.get("params", []):
+                param_to_lr[id(p)] = group["lr"]
+
+    if groups is not None:
+        title = "[LR Groups] Model modules with LR assignment:"
+    else:
+        title = (
+            "[LR Groups] Model modules"
+            " (use paths below with --lr-group to set per-module LR):"
+        )
+    lines = [title]
+    for name, module in model.named_modules():
+        if not name:
+            continue
+        depth = name.count(".")
+        if depth >= max_depth:
+            continue
+        trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+        if trainable == 0:
+            continue
+        indent = "  " + "  " * depth
+        if trainable >= 1_000_000:
+            param_str = f"{trainable / 1e6:.1f}M"
+        elif trainable >= 1_000:
+            param_str = f"{trainable / 1e3:.1f}K"
+        else:
+            param_str = str(trainable)
+
+        if groups is not None:
+            lrs = {param_to_lr[id(p)] for p in module.parameters() if p.requires_grad and id(p) in param_to_lr}
+            if not lrs:
+                lr_str = "  lr=frozen"
+            elif len(lrs) == 1:
+                lr_str = f"  lr={lrs.pop():.2e}"
+            else:
+                lr_str = "  lr=mixed(" + ", ".join(f"{v:.2e}" for v in sorted(lrs)) + ")"
+        else:
+            lr_str = ""
+
+        lines.append(f"{indent}{name:<60s}  ({param_str} trainable params){lr_str}")
+    logger.info("\n".join(lines))
+
+
+def _parse_lr_group(lr_group_str: str) -> list[tuple[str, float]]:
+    """Parse 'path1=lr1,path2=lr2' into an ordered [(path, lr)] list."""
+    result = []
+    for item in lr_group_str.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid --lr-group entry '{item}': expected 'module.path=lr'"
+            )
+        path, lr_str = item.rsplit("=", 1)
+        result.append((path.strip(), float(lr_str.strip())))
+    return result
+
+
+def build_param_groups(model: nn.Module, args) -> List[Dict]:
+    """Build optimizer param groups with per-module LR from CLI args.
+
+    LR assignment priority (highest to lowest):
+      1. ``--lr-group``  — comma-separated ``module.path=lr`` pairs.
+         Entries are processed in order; earlier entries consume parameters
+         first, so more specific (deeper) paths should be listed before
+         broader ancestor paths.
+         Example: ``model.paligemma_with_expert.gemma_expert=1e-4,
+                   model.paligemma_with_expert=1e-5``
+      2. ``--lr-base``  — fallback for all remaining trainable parameters.
+
+    Parameters are never double-counted: once a parameter is assigned to a
+    group it is excluded from all subsequent groups.
     """
     raw = unwrap_model(model)
     frozen_ids = {id(p) for p in raw.parameters() if not p.requires_grad}
     used_ids = set()
     groups = []
 
-    # Define LR override mappings: try multiple module paths for each CLI arg
-    lr_mappings = []
-    if args.lr_backbone is not None:
-        lr_mappings.append((args.lr_backbone, [
-            "backbone",
-            "architecture.backbone",
-            "architecture.pi05_model.paligemma_with_expert",
-        ]))
-    if args.lr_action_model is not None:
-        lr_mappings.append((args.lr_action_model, [
-            "action_model",
-            "architecture.action_head",
-            "architecture.pi05_model.action_expert",
-            "architecture.pi05_model",
-        ]))
+    base_lr = args.lr_base
+
+    _log_model_lr(raw)
+
+    lr_mappings: list[tuple[float, list[str]]] = []
+    lr_group_str = getattr(args, "lr_group", None)
+    if lr_group_str:
+        for path, lr_val in _parse_lr_group(lr_group_str):
+            lr_mappings.append((lr_val, [path]))
 
     for lr_val, candidate_paths in lr_mappings:
         for path in candidate_paths:
@@ -69,7 +144,9 @@ def build_param_groups(model: nn.Module, args) -> List[Dict]:
         if p.requires_grad and id(p) not in used_ids and id(p) not in frozen_ids
     ]
     if other:
-        groups.append({"params": other, "lr": args.lr, "name": "base"})
+        groups.append({"params": other, "lr": base_lr, "name": "base"})
+
+    _log_model_lr(raw, 3, groups=groups)
 
     return groups
 
