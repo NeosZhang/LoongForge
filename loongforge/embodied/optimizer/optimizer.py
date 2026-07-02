@@ -4,6 +4,9 @@
 """Optimizer construction."""
 
 import logging
+from collections import defaultdict
+from collections.abc import Iterable
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -12,8 +15,21 @@ from loongforge.embodied.optimizer.lr import build_param_groups
 
 logger = logging.getLogger(__name__)
 
+try:
+    from transformer_engine.pytorch.optimizers import FusedAdam as _TEFusedAdam
+except ImportError:
+    _TEFusedAdam = None
+
+try:
+    from apex.optimizers import FusedAdam as _ApexFusedAdam
+except ImportError:
+    _ApexFusedAdam = None
+
 OPTIMIZER_REGISTRY = {
     "AdamW": torch.optim.AdamW,
+    "TorchFusedAdamW": torch.optim.AdamW,
+    "TEFusedAdamW": _TEFusedAdam,
+    "ApexFusedAdamW": _ApexFusedAdam,
     "Adam": torch.optim.Adam,
     "SGD": torch.optim.SGD,
 }
@@ -97,14 +113,28 @@ def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
     """
 
     groups = build_param_groups(model, args)
-    optimizer_cls = OPTIMIZER_REGISTRY.get(args.optimizer)
-    if optimizer_cls is None:
+    optimizer_name = args.optimizer
+    if optimizer_name not in OPTIMIZER_REGISTRY:
         supported = ", ".join(OPTIMIZER_REGISTRY)
         raise ValueError(f"Unknown optimizer '{args.optimizer}'. Supported optimizers: {supported}.")
+    optimizer_cls = OPTIMIZER_REGISTRY[optimizer_name]
+    if optimizer_cls is None:
+        raise ImportError(
+            f"Optimizer '{optimizer_name}' is not available: "
+            "the corresponding backend (TransformerEngine or Apex) is not installed."
+        )
 
     kwargs = {"lr": args.lr_base, "weight_decay": args.weight_decay}
     if optimizer_cls in (torch.optim.AdamW, torch.optim.Adam):
         kwargs.update(betas=(args.adam_beta1, args.adam_beta2), eps=args.adam_eps)
+        if optimizer_name == "TorchFusedAdamW":
+            kwargs["fused"] = True
+    elif optimizer_name in ("TEFusedAdamW", "ApexFusedAdamW"):
+        kwargs.update(betas=(args.adam_beta1, args.adam_beta2), eps=args.adam_eps)
+        kwargs["adam_w_mode"] = True
+        logger.info("Using %s optimizer", optimizer_name)
+
+    use_zero = getattr(args, "zero_optimizer", False)
 
     dtype_stats = {}
     for group in groups:
@@ -122,7 +152,6 @@ def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
         logger.info("Optimizer trainable parameter dtypes: %s", summary or "none")
 
     # ZeRO Stage-1: shard optimizer states across DDP ranks
-    use_zero = getattr(args, "zero_optimizer", False)
     if use_zero:
         strategy = getattr(args, "distributed_strategy", "ddp")
         parameters_as_bucket_view = getattr(args, "zero_parameters_as_bucket_view", False)
@@ -159,7 +188,8 @@ def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
                 f"current strategy is '{strategy}' (already shards optimizer states)."
             )
 
-    return optimizer_cls(groups, **kwargs)
+    optimizer = optimizer_cls(groups, **kwargs)
+    return optimizer
 
 
 def _is_rank_zero() -> bool:

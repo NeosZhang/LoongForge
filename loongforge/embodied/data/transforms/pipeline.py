@@ -64,7 +64,10 @@ def build_transforms_from_args(
     action_horizon = (getattr(args, "action_horizon", None)
                       or model_cfg.get("action_horizon", None))
     max_action_dim = (model_cfg.get("max_action_dim", None))
-    normalization_mode = getattr(args, "normalization_mode", "q99")
+    normalization_mode = model_cfg.get(
+        "action_normalization_mode",
+        getattr(args, "normalization_mode", "q99"),
+    )
 
     # Discover image keys from first sample
     try:
@@ -75,8 +78,9 @@ def build_transforms_from_args(
 
     transforms = []
 
-    # 1. Image transform (configurable via backbone config)
-    if image_keys:
+    # 1. Image transform (configurable via model YAML)
+    use_image_transform = model_cfg.get("use_image_transform", True)
+    if image_keys and use_image_transform:
         img_normalize_mode = model_cfg.get("image_normalize_mode", "identity")
         img_resize_strategy = model_cfg.get("image_resize_strategy", "resize_with_pad")
 
@@ -87,21 +91,36 @@ def build_transforms_from_args(
             normalize_mode=img_normalize_mode,
         ))
 
-    # 2. Action transform (common to all VLA models)
-    action_stats = convert_stats(dataset_stats.get("action")) if dataset_stats else None
-    transforms.append(ActionTransform(
-        apply_to=["action"],
-        action_horizon=action_horizon,
-        max_action_dim=max_action_dim,
-        normalization_mode=normalization_mode,
-        statistics=action_stats,
-    ))
+    # 2. Action transform (configurable via model YAML)
+    use_action_transform = model_cfg.get("use_action_transform", True)
+    if use_action_transform:
+        action_apply_to = model_cfg.get("action_apply_to", ["action"])
+        action_use_statistics = model_cfg.get("action_use_statistics", True)
+        action_stats = (
+            convert_stats(dataset_stats.get("action"))
+            if dataset_stats and action_use_statistics
+            else None
+        )
+        transform_action_horizon = model_cfg.get("action_transform_horizon", action_horizon)
+        transform_max_action_dim = model_cfg.get("action_transform_max_action_dim", max_action_dim)
+        action_padding_strategy = model_cfg.get("action_padding_strategy", "zero")
+        transforms.append(ActionTransform(
+            apply_to=action_apply_to,
+            action_horizon=transform_action_horizon,
+            max_action_dim=transform_max_action_dim,
+            normalization_mode=normalization_mode,
+            statistics=action_stats,
+            padding_strategy=action_padding_strategy,
+        ))
 
     # 3. Pi05-specific transforms: state discretization, collate images, fallback prompt, tokenize
     _append_pi05_transforms(transforms, model_cfg, model_cfg, args, dataset_stats, image_size)
 
     # 4. Fast-specific transforms: key mapping (images→PIL, action→numpy, task→lang)
     _append_fast_transforms(transforms, model_cfg, image_size)
+
+    # 5. GR00T-N1.6-specific transforms: prompt fallback and feature assembly
+    _append_groot_n1_6_transforms(transforms, model_cfg, dataset_stats, dataset)
 
     if not transforms:
         return None
@@ -166,3 +185,30 @@ def _append_fast_transforms(transforms, model_cfg, image_size):
     from loongforge.embodied.data.transforms.fast.fast_transform import FastKeyMappingTransform
 
     transforms.append(FastKeyMappingTransform(image_size=image_size))
+
+
+def _append_groot_n1_6_transforms(transforms, model_cfg, dataset_stats, dataset):
+    """Append GR00T-N1.6-specific per-sample transforms if model_type is Gr00tN1d6."""
+    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
+    if model_type != "Gr00tN1d6":
+        return
+
+    from loongforge.embodied.data.transforms.groot_n1_6.groot_transform import (
+        GrootN1d6FeatureTransform,
+        GrootPromptTransform,
+    )
+
+    preprocess_mode = model_cfg.get("groot_preprocess_mode", "sample")
+    if preprocess_mode != "sample":
+        raise ValueError(
+            "groot_preprocess_mode must be 'sample' after GR00T preprocessing "
+            "was moved into per-sample transforms; "
+            f"got {preprocess_mode!r}"
+        )
+
+    transforms.append(GrootPromptTransform())
+    transforms.append(GrootN1d6FeatureTransform(
+        model_cfg=model_cfg,
+        dataset_stats=dataset_stats,
+        dataset=dataset,
+    ))

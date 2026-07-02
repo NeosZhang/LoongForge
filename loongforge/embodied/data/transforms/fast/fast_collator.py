@@ -59,7 +59,7 @@ class FastPreprocessor(BasePreprocessor):
         self._vlm_processor = None
 
     @classmethod
-    def from_config(cls, cfg) -> "FastPreprocessor":
+    def from_config(cls, cfg, args=None) -> "FastPreprocessor":
         """Build a FastPreprocessor from model config."""
         backbone_cfg = cfg.get("backbone", {}) if hasattr(cfg, "get") else {}
         vlm_path = backbone_cfg.get("base_vlm", "")

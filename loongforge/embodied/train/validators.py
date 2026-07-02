@@ -41,6 +41,31 @@ def validate_args(args, cfg):
         logger.warning(
             f"--lr-warmup-iters ({args.lr_warmup_iters}) >= --train-iters ({args.train_iters})"
         )
+    if args.cuda_graph_warmup_steps <= 0:
+        raise ValueError(
+            f"--cuda-graph-warmup-steps must be positive, got {args.cuda_graph_warmup_steps}"
+        )
+
+    graph_enabled = getattr(args, "cuda_graph_impl", "none") == "local"
+    if graph_enabled:
+        if args.cuda_graph_pad_length is None:
+            raise ValueError(
+                "--cuda-graph-pad-length must be set when --cuda-graph-impl=local."
+            )
+        if args.cuda_graph_pad_length < 0:
+            raise ValueError(
+                f"--cuda-graph-pad-length must be non-negative, got {args.cuda_graph_pad_length}"
+            )
+        if args.cuda_graph_scope not in {"full_iteration", "per_microbatch"}:
+            raise ValueError(
+                f"Unsupported --cuda-graph-scope={args.cuda_graph_scope!r} in embodied trainer."
+            )
+        if getattr(args, "check_for_nan_in_loss_and_grad", True):
+            logger.warning(
+                "Disabling host-side loss/grad NaN checks because CUDA graph mode is enabled. "
+                "This matches the required --no-check-for-nan-in-loss-and-grad behavior."
+            )
+            args.check_for_nan_in_loss_and_grad = False
 
     # Checkpoint
     if args.resume and not args.pretrained_checkpoint:

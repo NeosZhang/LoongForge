@@ -179,8 +179,10 @@ class BaseTrainer(ABC):
             start_msg=f"wrap_model: strategy={args.distributed_strategy}, dtype={args.dtype}",
             end_msg="done in {elapsed}",
         ):
-            # 7. Parallel wrapping (DDP/FSDP + mixed precision via policy)
-            self.model = wrap_model(self.model, args, self.ctx)
+            # 7. Parallel wrapping (DDP/FSDP + mixed precision via policy).
+            # Subclasses may override _wrap_model_for_training to take over the
+            # wrapping step (e.g. to install a CUDA graph runner instead).
+            self._wrap_model_for_training()
 
         with log_stage(
             "optimizer",
@@ -360,11 +362,11 @@ class BaseTrainer(ABC):
         st = self._stage_timers
         grad_clip = self.args.clip_grad
 
-        with st("optimizer-zero-grad"):
-            self.optimizer.zero_grad()
-
         # ── Gradient accumulation + forward + backward (Layer 3, abstract) ──
-        log_dict = self._forward_backward()
+        # Subclasses may override _run_forward_backward_block to take over the
+        # zero_grad + forward + backward + grad sync block (e.g. for CUDA graph
+        # runners that manage these steps internally).
+        log_dict = self._run_forward_backward_block()
 
         # ── NaN gradient cleanup ──
         with st("nan-grad-cleanup"):
@@ -524,6 +526,29 @@ class BaseTrainer(ABC):
     # ═══════════════════════════════════════════════
     # Optional hooks
     # ═══════════════════════════════════════════════
+
+    def _wrap_model_for_training(self):
+        """Wrap ``self.model`` for distributed training.
+
+        Default: invoke :func:`wrap_model` so the model is DDP/FSDP-wrapped with
+        mixed precision applied. Subclasses may override to take over wrapping
+        entirely (e.g. install a custom train-step runner that manages its own
+        wrapping policy).
+        """
+        self.model = wrap_model(self.model, self.args, self.ctx)
+
+    def _run_forward_backward_block(self) -> dict:
+        """Run zero_grad + one optimizer step's forward/backward block.
+
+        Default: ``optimizer.zero_grad`` followed by the abstract
+        :meth:`_forward_backward` gradient-accumulation loop. Returns
+        ``log_dict``. Subclasses may override to take over this block (e.g. a
+        CUDA graph runner that fuses zero_grad + forward + backward + grad sync
+        and returns the same ``log_dict`` shape).
+        """
+        with self._stage_timers("optimizer-zero-grad"):
+            self.optimizer.zero_grad()
+        return self._forward_backward()
 
     def _on_train_begin(self):
         """Hook before training loop starts."""

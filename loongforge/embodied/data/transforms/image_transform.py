@@ -5,7 +5,7 @@
 ImageTransform - Generic image preprocessing transform for VLA models.
 
 Supports configurable resize strategies and normalization modes:
-  - Resize: resize_with_pad | resize_only | center_crop
+  - Resize: resize_with_pad | resize_only | center_crop | none
   - Normalize: siglip ([-1,1]) | imagenet (mean/std) | identity ([0,1])
 
 Default behavior (resize_with_pad + siglip) matches PI0.5 / SigLIP pipeline.
@@ -143,6 +143,7 @@ class ImageTransform(BaseTransform):
         "resize_with_pad" — Aspect-ratio preserving resize + zero-padding (default)
         "resize_only" — Simple resize to target size (distorts aspect ratio)
         "center_crop" — Center crop to target aspect ratio, then resize
+        "none" — Skip resizing while still applying dtype/layout conversion and normalization
 
     Normalization modes:
         "siglip" — Maps [0,1] to [-1,1] via t*2-1 (default, for SigLIP/PaliGemma)
@@ -150,7 +151,7 @@ class ImageTransform(BaseTransform):
         "identity" — No normalization, output stays in [0,1]
     """
 
-    RESIZE_STRATEGIES = ["resize_with_pad", "resize_only", "center_crop"]
+    RESIZE_STRATEGIES = ["resize_with_pad", "resize_only", "center_crop", "none"]
     NORMALIZE_MODES = ["siglip", "imagenet", "identity"]
 
     # ImageNet standard normalization parameters
@@ -216,7 +217,10 @@ class ImageTransform(BaseTransform):
         t = self._to_tensor(img)
 
         # Step 2: Resize
-        if t.shape[-2] != self.image_size or t.shape[-1] != self.image_size:
+        if (
+            self.resize_strategy != "none"
+            and (t.shape[-2] != self.image_size or t.shape[-1] != self.image_size)
+        ):
             t = self._resize(t.unsqueeze(0)).squeeze(0)
 
         # Step 3: Normalize
@@ -235,7 +239,7 @@ class ImageTransform(BaseTransform):
             tensors.append(self._to_tensor(img))
 
         batch = torch.stack(tensors)
-        if batch.shape[-2] != size or batch.shape[-1] != size:
+        if self.resize_strategy != "none" and (batch.shape[-2] != size or batch.shape[-1] != size):
             batch = self._resize(batch, size)
 
         # Normalize
@@ -260,6 +264,8 @@ class ImageTransform(BaseTransform):
             return resize_only(batch, s, s, mode=self.interpolation_mode)
         elif self.resize_strategy == "center_crop":
             return center_crop_resize(batch, s, s, mode=self.interpolation_mode)
+        elif self.resize_strategy == "none":
+            return batch
         raise ValueError(f"Unknown resize_strategy: {self.resize_strategy}")
 
     def _normalize(self, t: torch.Tensor) -> torch.Tensor:
