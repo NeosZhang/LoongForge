@@ -1,6 +1,6 @@
 # LoongForge-VLA 离线评测用户说明
 
-本文档说明如何在 `/workspace/LoongForge-VLA/loongforge/embodied/eval` 中使用统一 YAML 配置运行 LoongForge-VLA 离线评测。当前主要接入 LoongForge pi05 policy server，并已验证 LIBERO rollout 链路，同时提供 CALVIN、SimplerEnv 和 RoboTwin 的 YAML 入口。
+本文档说明如何在 `/workspace/LoongForge-VLA/loongforge/embodied/eval` 中使用统一 YAML 配置运行 LoongForge-VLA 离线评测。当前主要接入 LoongForge pi05 policy server，并已验证 LIBERO rollout 链路，同时提供 CALVIN、SimplerEnv、RoboTwin 和 ManiSkill 的 YAML 入口。
 
 ## 1. 模块定位
 
@@ -22,6 +22,7 @@ flowchart LR
     C -->|calvin| Q[CALVIN runner]
     C -->|simplerenv| E[SimplerEnv runner]
     C -->|robotwin| F[RoboTwin official runner]
+    C -->|maniskill| R[ManiSkill runner]
     B --> G{model.backend}
     G -->|loongforge| H[LoongForge pi05 policy server]
     G -->|mock| I[Mock policy server]
@@ -29,6 +30,7 @@ flowchart LR
     Q --> J
     E --> J
     F --> J
+    R --> J
     J --> K[WebSocket + msgpack-numpy RPC]
     K --> H
     H --> L[LoongForge pi05 inference]
@@ -47,7 +49,7 @@ flowchart LR
 4. observation 通过 WebSocket + msgpack-numpy RPC 发给 policy server。benchmark 侧不直接 import 或修改 LoongForge 模型代码。
 5. LoongForge policy server 根据 YAML 构造 pi05 policy，加载 checkpoint 或按 `model.random_init: true` 随机初始化，然后执行真实 pi05 inference。
 6. pi05 输出 normalized action chunk 后，server 按 LoongForge `dataset_statistics.json["action"]["q01"/"q99"]` 执行 q99 反归一化。
-7. 反归一化后的 action 返回 benchmark client，再由 benchmark action adapter 转成具体环境需要的动作格式，例如 LIBERO/SimplerEnv 的 7D action 或 RoboTwin 的 14D bimanual action。
+7. 反归一化后的 action 返回 benchmark client，再由 benchmark action adapter 转成具体环境需要的动作格式，例如 LIBERO/SimplerEnv/ManiSkill 的 7D action 或 RoboTwin 的 14D bimanual action。
 8. 环境执行 step 后，runner 记录 episode 结果、trace、replay 或 RoboTwin official 日志。policy server 日志独立写入 `server.log`。
 
 ## 2. 已支持内容
@@ -62,12 +64,13 @@ flowchart LR
 | replay GIF / trace / summary 输出 | 已支持 |
 | SimplerEnv rollout | 已接入 Bridge tasks、Vulkan runtime、trace/GIF 输出和固定小动作 sanity；当前模型结果仅作 smoke/debug，正式评测需要 Bridge/WidowX checkpoint 与 stats |
 | RoboTwin official runner | 已接入 YAML 入口；random-init 14D pi05 已跑通 5-step official episode，正式评测需要 14D RoboTwin pi05 权重 |
+| ManiSkill runner | 已接入 YAML 入口和 PickCube 7D 单臂 smoke 配置；正式评测需要 ManiSkill-compatible checkpoint 与 stats |
 
 ## 3. 环境要求
 
 建议按职责隔离环境：
 
-- benchmark 环境：运行 simulator client，不同 benchmark 使用各自 conda 环境，例如 LIBERO 使用 `/workspace/miniconda3/envs/libero/bin/python`，CALVIN 使用 `/workspace/miniconda3/envs/calvin/bin/python`，SimplerEnv 使用 `/workspace/miniconda3/envs/simplerenv/bin/python`。
+- benchmark 环境：运行 simulator client，不同 benchmark 使用各自 conda 环境，例如 LIBERO 使用 `/workspace/miniconda3/envs/libero/bin/python`，CALVIN 使用 `/workspace/miniconda3/envs/calvin/bin/python`，SimplerEnv 使用 `/workspace/miniconda3/envs/simplerenv/bin/python`，ManiSkill 使用 `/workspace/miniconda3/envs/maniskill/bin/python`。
 - model server 环境：运行 LoongForge pi05，例如 `/workspace/miniconda3/envs/loongforge/bin/python`。
 
 `lerobot==0.5.0` 要求 Python >= 3.12，因此 LoongForge pi05 server 不应使用旧的 Python 3.10 环境。各 benchmark 对应的 conda 隔离环境和关键依赖版本见 `benchmark_envs.md`。
@@ -225,9 +228,57 @@ CONFIG=examples/embodied/pi05/eval/configs/simplerenv/carrot_on_plate_60step_int
 
 当前 SimplerEnv 接入状态：runner、YAML 配置、Vulkan/SAPIEN headless runtime、Bridge task reset/step、trace 和 GIF 输出均已打通；固定小尺度 action sanity check 已验证 WidowX controller 可以驱动机械臂。当前内部 pi05 SimplerEnv 配置使用 LIBERO 域 checkpoint 或空 `dataset_statistics_path`，只能作为链路 smoke/debug，不作为可信 SimplerEnv benchmark score。正式 SimplerEnv 评测需要 Bridge/WidowX/SimplerEnv 对应的 pi05 checkpoint 和匹配的 `dataset_statistics.json`；如果临时加入 action scale 让 GIF 动起来，应明确标注为 debug adapter，不计入正式结果。
 
-## 8. 运行 RoboTwin
+### SAPIEN / Vulkan 排障
 
-RoboTwin 官方任务是双臂 14D action。当前 LIBERO/SimplerEnv pi05 checkpoint 是 7D action，因此真实 RoboTwin 评测需要 14D RoboTwin pi05 checkpoint 和对应 `dataset_statistics.json`。
+SimplerEnv、RoboTwin 和 ManiSkill 都依赖 SAPIEN 相关渲染栈。适配新 SAPIEN benchmark 前，先确认 Vulkan ICD，而不是只看 `nvidia-smi`。如果 `vulkaninfo` 只显示 `llvmpipe` 或 `lavapipe`，视觉观测、camera pipeline 或 replay 渲染可能段错误；state-only rollout 通过也不能说明视觉链路可用。
+
+内部环境的快速检查命令：
+
+```bash
+LD_LIBRARY_PATH=/ssd1/opt/nvidia_lib:/usr/lib64:${LD_LIBRARY_PATH:-} \
+VK_ICD_FILENAMES=/ssd1/opt/nvidia_lib/10_nvidia.json \
+vulkaninfo
+```
+
+期望输出里能看到 `deviceName = NVIDIA ...` 和 `driverName = NVIDIA`。runner 需要在 import SAPIEN、svulkan2、ManiSkill 或 benchmark renderer 前设置 `LD_LIBRARY_PATH`、`VK_ICD_FILENAMES`、`XDG_RUNTIME_DIR`，必要时 re-exec 当前 Python 进程；Python 启动后再临时改 `LD_LIBRARY_PATH` 通常不够。
+
+## 8. 运行 ManiSkill
+
+ManiSkill 是基于 SAPIEN 的 GPU-friendly 操作 benchmark。当前接入的是 7D 单臂 smoke 路线，默认任务为 `PickCube-v1`，控制模式为 `pd_ee_delta_pose`。
+
+使用 examples 下的 pi05 ManiSkill 启动脚本：
+
+```bash
+cd /workspace/LoongForge-VLA
+examples/embodied/pi05/eval/run_maniskill_eval.sh
+```
+
+公开脚本使用 `/path/to/...` 占位配置。内部一键运行使用 `_internal.sh` 脚本：
+
+```bash
+cd /workspace/LoongForge-VLA
+examples/embodied/pi05/eval/run_maniskill_eval_internal.sh
+```
+
+关键 ManiSkill 字段：
+
+```yaml
+benchmark:
+  name: maniskill
+  task_name: PickCube-v1
+  robot_uid: panda
+  control_mode: pd_ee_delta_pose
+  obs_mode: rgbd
+  sim_backend: auto
+  render_backend: gpu
+  camera_name: base_camera
+```
+
+当前 ManiSkill 接入状态：runner、adapter、YAML 配置和启动脚本已接入统一 orchestrator。`/workspace/miniconda3/envs/maniskill` 中 `torch`、`mani_skill`、`gymnasium`、`sapien` 导入已验证通过；`PickCube-v1` 在当前宿主机上可通过 `obs_mode=state`、`sim_backend=auto`、`render_backend=gpu` 完成 reset/step smoke。当前宿主机使用 `/ssd1/opt/nvidia_lib/10_nvidia.json` 和 `/ssd1/opt/nvidia_lib` 可枚举 A800 Vulkan GPU，`mock_rgbd_smoke.yaml` 已完成 `rgbd` 视觉链路的 orchestrator + mock policy RPC smoke；`pick_cube_20step_internal.yaml` 已完成 pi05 random-init action RPC smoke，可完成 policy server 启动、WebSocket action RPC、ManiSkill 5-step rollout、trace、summary 和 replay GIF 输出。server health 已改为 policy 构造完成后再 ready，避免误判。由于当前仍是 random-init 或 LIBERO 域 pi05 checkpoint/stats，不作为可信 ManiSkill benchmark score。正式 ManiSkill 评测需要 ManiSkill-compatible checkpoint 和匹配的 `dataset_statistics.json`。
+
+## 9. 运行 RoboTwin
+
+RoboTwin 官方任务是双臂 14D action。当前 LIBERO/SimplerEnv/ManiSkill pi05 checkpoint 是 7D action，因此真实 RoboTwin 评测需要 14D RoboTwin pi05 checkpoint 和对应 `dataset_statistics.json`。
 
 仓库提供的 random-init 配置用于验证 LoongForge pi05 server 与 RoboTwin official runner 的通信链路，不加载 checkpoint，但会构造真实 14D pi05 模型并执行 policy inference：
 
@@ -251,9 +302,9 @@ model:
   dataset_statistics_path: /path/to/robotwin_14d_dataset_statistics.json
 ```
 
-## 9. 输出文件
+## 10. 输出文件
 
-LIBERO / CALVIN / SimplerEnv rollout 会在 `run.output_dir` 下生成：
+LIBERO / CALVIN / SimplerEnv / ManiSkill rollout 会在 `run.output_dir` 下生成：
 
 | 文件 | 说明 |
 |---|---|
@@ -263,7 +314,7 @@ LIBERO / CALVIN / SimplerEnv rollout 会在 `run.output_dir` 下生成：
 | `artifacts/.../replay_*.gif` | replay GIF |
 | `artifacts/.../trace_*.json` | 每步 action trace |
 
-RoboTwin 特殊是因为评测模块复用 RoboTwin 官方 evaluator，该 evaluator 需要通过 `policy_name` import 一个 policy 插件入口；LIBERO/SimplerEnv 则由本模块 runner 直接控制 reset/step。RoboTwin bridge 位于 `loongforge.embodied.eval.bridges.robotwin_policy`，会额外写 `trace.json`，记录每步 state、raw action、最终 14D action 和 latency。RoboTwin official runner 原生结果会写到 `/workspace/RoboTwin/eval_result/.../_result.txt`。开启视频时，官方结果目录还会生成 `*.mp4`；评测模块会在运行结束后把 RoboTwin official 日志、deploy config、`_result.txt`、`trace.json` 和可用 `mp4` 视频统一收集到 `run.output_dir/artifacts/robotwin/<task_name>/<task_config>/`。RoboTwin 不强制转换 GIF，视频产物保留为官方 `mp4`。policy server 日志由 `server.log` 指定。
+RoboTwin 特殊是因为评测模块复用 RoboTwin 官方 evaluator，该 evaluator 需要通过 `policy_name` import 一个 policy 插件入口；LIBERO/SimplerEnv/ManiSkill 则由本模块 runner 直接控制 reset/step。RoboTwin bridge 位于 `loongforge.embodied.eval.bridges.robotwin_policy`，会额外写 `trace.json`，记录每步 state、raw action、最终 14D action 和 latency。RoboTwin official runner 原生结果会写到 `/workspace/RoboTwin/eval_result/.../_result.txt`。开启视频时，官方结果目录还会生成 `*.mp4`；评测模块会在运行结束后把 RoboTwin official 日志、deploy config、`_result.txt`、`trace.json` 和可用 `mp4` 视频统一收集到 `run.output_dir/artifacts/robotwin/<task_name>/<task_config>/`。RoboTwin 不强制转换 GIF，视频产物保留为官方 `mp4`。policy server 日志由 `server.log` 指定。
 
 ### 9.1 configs / reports 目录约定
 
@@ -292,11 +343,11 @@ YAML 中的 `run.output_dir` 应写到稳定 run tag 目录，例如 `reports/pi
 目录语义：
 
 - `<model>`：被评测模型，例如 `pi05`、`mock` 或后续新增模型名。
-- `<benchmark>`：benchmark family，例如 `libero`、`calvin`、`simplerenv`、`robotwin`。
+- `<benchmark>`：benchmark family，例如 `libero`、`calvin`、`simplerenv`、`robotwin`、`maniskill`。
 - `<run_name>`：一次可复现运行；默认由统一入口按 `<timestamp>_<run_tag>` 生成，`run_tag` 来自 YAML 中 `run.output_dir` 的最后一级目录或 `run.run_name`。
 - `policy_server.log`：模型 server 日志，保留在 run 根目录。
 - `results.jsonl`、`summary.csv`、`suite_summary.csv`：标准评测汇总文件；如果 benchmark 原生不直接生成，应在 adapter/runner 中尽量补齐。
-- `artifacts/`：benchmark 相关产物统一入口；内部层级可按 runner 特性组织，例如 LIBERO 使用 `artifacts/<task_suite>/...`，SimplerEnv 使用 `artifacts/simplerenv/<task>/...`，RoboTwin 使用 `artifacts/robotwin/<task>/<task_config>/...`。
+- `artifacts/`：benchmark 相关产物统一入口；内部层级可按 runner 特性组织，例如 LIBERO 使用 `artifacts/<task_suite>/...`，SimplerEnv 使用 `artifacts/simplerenv/<task>/...`，ManiSkill 使用 `artifacts/maniskill/<task>/...`，RoboTwin 使用 `artifacts/robotwin/<task>/<task_config>/...`。
 
 RoboTwin official runner 会在运行时生成 worker-local 文件和 bridge config。评测模块只保留已归档到 `artifacts/robotwin/...` 的 official log、deploy config、`_result.txt`、`trace.json` 和可用 `mp4` 视频；运行时 `worker_files/` 不作为最终报告保留。
 
@@ -308,7 +359,7 @@ LIBERO 结果执行满 300 step，但未完成任务，结果为 `not_successful
 
 CALVIN debug smoke 已完成 1 条 sequence 的首个 subtask 30-step rollout，输出 `results.jsonl`、`summary.csv` 和 `artifacts/calvin/sequence0/trace_successes0.json`。当前使用 LIBERO 域 pi05 checkpoint，因此 `success_count=0` 只作为链路验证，不作为正式 CALVIN long-horizon score。
 
-SimplerEnv Bridge runner 已完成 runtime smoke：`widowx_carrot_on_plate` 60-step rollout 可输出 replay GIF 和 trace，固定小尺度 action sanity 已验证 WidowX controller 能动。当前 SimplerEnv 内部配置仍使用 LIBERO 域 checkpoint 或空 `dataset_statistics_path`，因此只作为链路 smoke/debug，不作为正式 benchmark score。`examples/embodied/pi05/eval/configs/robotwin/random_init_5step.yaml` 已完成 5-step RoboTwin official episode，结果为 0/1 success，符合随机初始化权重预期；后续运行会把 RoboTwin official 结果、bridge `trace.json` 和可用 `mp4` 视频统一归档到 `artifacts/robotwin/...`。当前 7D checkpoint/action stats 未作为正式 RoboTwin 成功率评测。
+SimplerEnv Bridge runner 已完成 runtime smoke：`widowx_carrot_on_plate` 60-step rollout 可输出 replay GIF 和 trace，固定小尺度 action sanity 已验证 WidowX controller 能动。当前 SimplerEnv 内部配置仍使用 LIBERO 域 checkpoint 或空 `dataset_statistics_path`，因此只作为链路 smoke/debug，不作为正式 benchmark score。`examples/embodied/pi05/eval/configs/robotwin/random_init_5step.yaml` 已完成 5-step RoboTwin official episode，结果为 0/1 success，符合随机初始化权重预期；后续运行会把 RoboTwin official 结果、bridge `trace.json` 和可用 `mp4` 视频统一归档到 `artifacts/robotwin/...`。ManiSkill 当前已提供 `PickCube-v1` 20-step YAML 和 runner，用于后续环境 smoke。当前 7D checkpoint/action stats 未作为正式 RoboTwin 或 ManiSkill 成功率评测。
 
 ## 11. 添加新模型评测
 
@@ -333,7 +384,7 @@ SimplerEnv Bridge runner 已完成 runtime smoke：`widowx_carrot_on_plate` 60-s
    - 至少提供一个 smoke 配置，包含 `benchmark.name`、`model.backend`、模型路径、统计文件、server 环境和输出目录。
    - 配置文件按 `examples/embodied/pi05/eval/configs/<benchmark>/<run_name>.yaml` 组织，例如 `examples/embodied/pi05/eval/configs/libero/smoke_steps10.yaml`。
    - `run.output_dir` 必须指向对应的 `reports/<model>/<benchmark>/<run_name>/`，`server.log` 放在同一 run 目录下。
-   - 如果模型支持多个 benchmark，分别提供 LIBERO / CALVIN / SimplerEnv / RoboTwin 等配置，不要依赖额外 CLI 参数。
+   - 如果模型支持多个 benchmark，分别提供 LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill 等配置，不要依赖额外 CLI 参数。
 5. 加最小验证。
    - 先用 mock 或 random-init 验证 server 和 benchmark runner 能通信。
    - 再用真实 checkpoint 跑短 rollout。
@@ -357,7 +408,7 @@ model:
 
 其中最关键的是 action 相关字段：
 
-- `action_dim` 必须和 benchmark 需要的动作维度一致。LIBERO/SimplerEnv 当前是 7D，RoboTwin official 是 14D bimanual。
+- `action_dim` 必须和 benchmark 需要的动作维度一致。LIBERO/SimplerEnv/ManiSkill 当前是 7D，RoboTwin official 是 14D bimanual。
 - `dataset_statistics_path` 必须和该模型训练时使用的 action normalization 规则匹配。
 - 如果模型没有 q99 归一化，不能复用 pi05 的反归一化逻辑，应在新 policy adapter 中实现模型自己的 inverse transform。
 - 如果只是验证通信链路，可以提供 `random_init` 或临时把 YAML 的 `model.backend` 改成 `mock`；mock backend 不是 pi05 示例，不单独提供配置文件。正式评测必须使用训练好的 checkpoint 和匹配的统计文件。
@@ -410,7 +461,7 @@ x = (norm + 1) / 2 * (q99 - q01) + q01
 
 评测 adapter 从 `model.dataset_statistics_path` 读取 `dataset_statistics.json["action"]["q01"]` 和 `q99`，对模型输出 action chunk 做反归一化。gripper 的环境语义转换交给 benchmark adapter，例如 LIBERO adapter。
 
-当前 LeRobot mean/std 兼容逻辑主要用于 LIBERO LeRobot 权重适配。CALVIN debug smoke 使用的是 LoongForge pi05 q99 反归一化，再由 CALVIN adapter 按 CALVIN relative action 约定缩放到 env action；它不是 LeRobot mean/std 路径。SimplerEnv 当前没有 Bridge/WidowX 对应 `dataset_statistics.json`，因此只作为 smoke/debug，正式评测需要匹配 Bridge/WidowX checkpoint 与 stats。
+当前 LeRobot mean/std 兼容逻辑主要用于 LIBERO LeRobot 权重适配。CALVIN debug smoke 使用的是 LoongForge pi05 q99 反归一化，再由 CALVIN adapter 按 CALVIN relative action 约定缩放到 env action；它不是 LeRobot mean/std 路径。SimplerEnv 当前没有 Bridge/WidowX 对应 `dataset_statistics.json`，ManiSkill 当前没有 ManiSkill-compatible `dataset_statistics.json`，因此都只作为 smoke/debug，正式评测需要匹配 checkpoint 与 stats。
 
 ## 13. 验证范围
 
@@ -420,6 +471,7 @@ x = (norm + 1) / 2 * (q99 - q01) + q01
 - `libero_runner.py`：pi05 LIBERO 时间戳目录运行，`new_records: 1`。
 - `simplerenv_runner.py`：SimplerEnv Bridge runtime smoke、60-step carrot rollout 和固定小动作 sanity；模型分数仍为 debug/smoke。
 - `robotwin_runner.py`：pi05 RoboTwin random-init 14D official runner。
+- `maniskill_runner.py`：ManiSkill 7D single-arm PickCube smoke runner。
 - `generate_report.py`、`compare_repro.py`、`archive_traces.py`：已基于真实 LIBERO `results.jsonl` 做轻量 CLI 验证。
 
 TODO：后续如果需要多任务、多 endpoint 调度，再单独引入并验证 `orchestrator/scheduler.py` 和 `orchestrator/work_queue.py`。它们不属于当前 pi05 主链路，本次同步不作为已交付功能。

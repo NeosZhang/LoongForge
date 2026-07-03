@@ -15,6 +15,7 @@ __all__ = [
     "LiberoAdapter",
     "SimplerEnvAdapter",
     "RoboTwinAdapter",
+    "ManiSkillAdapter",
 ]
 
 
@@ -28,4 +29,8 @@ def __getattr__(name: str):
         from .robotwin import RoboTwinAdapter
 
         return RoboTwinAdapter
+    if name == "ManiSkillAdapter":
+        from .maniskill import ManiSkillAdapter
+
+        return ManiSkillAdapter
     raise AttributeError(name)

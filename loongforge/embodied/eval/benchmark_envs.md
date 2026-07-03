@@ -15,6 +15,7 @@ LIBERO      /workspace/miniconda3/envs/libero
 CALVIN      /workspace/miniconda3/envs/calvin
 SimplerEnv  /workspace/miniconda3/envs/simplerenv
 RoboTwin    /workspace/miniconda3/envs/robotwin
+ManiSkill   /workspace/miniconda3/envs/maniskill
 ```
 
 No benchmark currently uses uv for environment isolation.
@@ -83,6 +84,37 @@ Used by:
 examples/embodied/pi05/eval/configs/calvin/*.yaml
 ```
 
+## SAPIEN Vulkan Runtime
+
+SAPIEN-based benchmarks must use a real Vulkan GPU runtime for visual observations, replay rendering, and headless camera pipelines. This has come up repeatedly while adapting SimplerEnv, RoboTwin, and ManiSkill: `nvidia-smi` seeing GPUs is not enough. Verify the Vulkan ICD separately with `vulkaninfo`, and make sure it lists the NVIDIA device rather than only Mesa `llvmpipe`/`lavapipe` CPU devices.
+
+Required environment variables for SAPIEN visual runners:
+
+```text
+LD_LIBRARY_PATH=/path/to/nvidia_lib:/usr/lib64:$LD_LIBRARY_PATH
+VK_ICD_FILENAMES=/path/to/nvidia_icd.json
+XDG_RUNTIME_DIR=/tmp/runtime-<uid>
+```
+
+Internal hosts currently use:
+
+```text
+LD_LIBRARY_PATH=/ssd1/opt/nvidia_lib:/usr/lib64:$LD_LIBRARY_PATH
+VK_ICD_FILENAMES=/ssd1/opt/nvidia_lib/10_nvidia.json
+```
+
+These variables must be effective before Python imports SAPIEN, svulkan2, ManiSkill, or the benchmark renderer. Runners that depend on SAPIEN should prepare the variables and re-exec the benchmark Python process once before constructing the environment. Setting `LD_LIBRARY_PATH` only after Python has already started is not sufficient for this renderer stack.
+
+Use this quick check before debugging benchmark adapter code:
+
+```bash
+LD_LIBRARY_PATH=/ssd1/opt/nvidia_lib:/usr/lib64:${LD_LIBRARY_PATH:-} \
+VK_ICD_FILENAMES=/ssd1/opt/nvidia_lib/10_nvidia.json \
+vulkaninfo
+```
+
+Expected signal: `deviceName = NVIDIA ...` and `driverName = NVIDIA`. If the output only shows `llvmpipe` or `lavapipe`, visual SAPIEN tasks may segfault or fail even if state-only rollout works.
+
 ## SimplerEnv
 
 Runtime Python:
@@ -107,22 +139,7 @@ msgpack                1.1.2
 pyyaml                 6.0.3
 ```
 
-Runtime variables used by the current eval command:
-
-```text
-LD_LIBRARY_PATH=/path/to/nvidia_lib:/usr/lib64:$LD_LIBRARY_PATH
-VK_ICD_FILENAMES=/path/to/nvidia_icd.json
-XDG_RUNTIME_DIR=/tmp/runtime-<uid>
-```
-
-Internal SimplerEnv configs use:
-
-```text
-LD_LIBRARY_PATH=/ssd1/opt/nvidia_lib:/usr/lib64:$LD_LIBRARY_PATH
-VK_ICD_FILENAMES=/ssd1/opt/nvidia_lib/10_nvidia.json
-```
-
-SAPIEN/svulkan2 needs these variables before Python imports the renderer. The SimplerEnv runner therefore prepares `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, and `XDG_RUNTIME_DIR`, then re-execs the benchmark Python process once before constructing the environment. Setting `LD_LIBRARY_PATH` only after Python has already started is not sufficient for this renderer stack.
+Runtime variables are covered in the shared SAPIEN Vulkan Runtime section above. The SimplerEnv runner prepares `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, and `XDG_RUNTIME_DIR`, then re-execs the benchmark Python process once before constructing the environment.
 
 Current SimplerEnv status:
 
@@ -180,6 +197,35 @@ Used by:
 examples/embodied/pi05/eval/configs/robotwin/*.yaml
 ```
 
+## ManiSkill
+
+Runtime Python:
+
+```text
+/workspace/miniconda3/envs/maniskill/bin/python
+```
+
+Current ManiSkill status:
+
+```text
+Initial task configured: PickCube-v1
+Runner type:             Gym/Gymnasium ManiSkill runner
+Runtime import status:   torch / mani_skill / gymnasium / sapien imports pass
+Action interface:        7D single-arm smoke path, pd_ee_delta_pose-style control
+State smoke status:      PickCube-v1 reset/step passes with obs_mode=state, sim_backend=auto, render_backend=gpu
+Policy smoke status:     mock and pi05 random-init end-to-end RPC smoke pass with trace, summary, and replay GIF output
+RGBD smoke status:       mock policy RGBD rollout passes with NVIDIA Vulkan ICD, trace, summary, and replay GIF output
+Model score status:      smoke/debug until ManiSkill-compatible checkpoint and dataset_statistics.json are available
+```
+
+Visual smoke uses the shared SAPIEN Vulkan runtime documented above. The ManiSkill runner prepares the NVIDIA ICD and library path before importing ManiSkill/SAPIEN.
+
+Used by:
+
+```text
+examples/embodied/pi05/eval/configs/maniskill/*.yaml
+```
+
 ## Config-to-Environment Mapping
 
 ```text
@@ -198,6 +244,10 @@ examples/embodied/pi05/eval/configs/simplerenv/*.yaml
 examples/embodied/pi05/eval/configs/robotwin/*.yaml
   benchmark env: /workspace/miniconda3/envs/robotwin
   runtime:       /workspace/miniconda3/envs/robotwin/bin/python
+
+examples/embodied/pi05/eval/configs/maniskill/*.yaml
+  benchmark env: /workspace/miniconda3/envs/maniskill
+  runtime:       /workspace/miniconda3/envs/maniskill/bin/python
 ```
 
 ## Re-check Commands
@@ -209,4 +259,5 @@ Use these commands to refresh version information after environment changes:
 /workspace/miniconda3/bin/conda list -n calvin
 /workspace/miniconda3/bin/conda list -n simplerenv
 /workspace/miniconda3/bin/conda list -n robotwin
+/workspace/miniconda3/bin/conda list -n maniskill
 ```

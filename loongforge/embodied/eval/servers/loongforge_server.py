@@ -19,6 +19,12 @@ from loongforge.embodied.eval.servers.loongforge_policy import LoongForgePI05Pol
 from loongforge.embodied.eval.transport.rpc_server import PolicyServer
 
 
+class ReusableHTTPServer(HTTPServer):
+    """HTTPServer variant that can rebind immediately after short smoke runs."""
+
+    allow_reuse_address = True
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     """Provide HealthHandler behavior."""
 
@@ -43,7 +49,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 def start_health_server(port: int, ckpt_path: str) -> None:
     """Run start_health_server."""
     HealthHandler.ckpt_path = ckpt_path
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server = ReusableHTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
@@ -118,7 +124,6 @@ def main() -> None:
         raise SystemExit("checkpoint must be set by model.ckpt_path in YAML unless model.random_init is true")
 
     logging.basicConfig(level=logging.INFO, force=True)
-    start_health_server(args.health_port, args.ckpt_path)
     policy = LoongForgePI05Policy(
         ckpt_path=str(Path(args.ckpt_path)),
         loongforge_root=args.loongforge_root,
@@ -135,6 +140,7 @@ def main() -> None:
         compile_mode=args.compile_mode,
         random_init=args.random_init,
     )
+    start_health_server(args.health_port, args.ckpt_path)
     PolicyServer(policy=policy, port=args.port, metadata=policy.metadata).serve_forever()
 
 
