@@ -15,7 +15,6 @@ import numpy as np
 import torch
 import torch.distributed as dist
 
-from omegaconf import DictConfig, ListConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
@@ -116,18 +115,18 @@ class Profiler:
     """Unified profiler covering torch.profiler and nsys (cudaProfilerApi).
 
     Mode is chosen at construction time:
-      - args.use_pytorch_profiler  → torch.profiler with tensorboard_trace_handler
-      - args.use_nsys_profiler     → cudaProfilerStart/Stop + emit_nvtx (nsys)
+      - training_args.use_pytorch_profiler  → torch.profiler with tensorboard_trace_handler
+      - training_args.use_nsys_profiler     → cudaProfilerStart/Stop + emit_nvtx (nsys)
     Both honor --profile-step-start / --profile-step-end / --profile-ranks.
 
     Non-profile ranks (or when profiling is disabled) get a no-op instance.
     """
 
-    __slots__ = ("args", "ctx", "output_dir", "mode", "_prof", "_nvtx_ctx",
+    __slots__ = ("training_args", "ctx", "output_dir", "mode", "_prof", "_nvtx_ctx",
                  "_started", "_active")
 
-    def __init__(self, args, ctx, output_dir: str):
-        self.args = args
+    def __init__(self, training_args, ctx, output_dir: str):
+        self.training_args = training_args
         self.ctx = ctx
         self.output_dir = output_dir
         self._prof = None
@@ -135,10 +134,10 @@ class Profiler:
         self._started = False
 
         rank = ctx.rank if ctx is not None else 0
-        in_ranks = rank in getattr(args, "profile_ranks", [])
-        if getattr(args, "use_pytorch_profiler", False) and in_ranks:
+        in_ranks = rank in training_args.profile_ranks
+        if training_args.use_pytorch_profiler and in_ranks:
             self.mode = "pytorch"
-        elif getattr(args, "use_nsys_profiler", False) and in_ranks:
+        elif training_args.use_nsys_profiler and in_ranks:
             self.mode = "nsys"
         else:
             self.mode = "off"
@@ -158,20 +157,20 @@ class Profiler:
         if not self._active:
             return
 
-        args = self.args
-        start = max(args.profile_step_start, 0)
-        end = max(args.profile_step_end, start)
+        training_args = self.training_args
+        start = max(training_args.profile_step_start, 0)
+        end = max(training_args.profile_step_end, start)
 
         if self.mode == "nsys":
             logger.info(
-                f"nsys profiling enabled on profile_ranks={args.profile_ranks}: "
+                f"nsys profiling enabled on profile_ranks={training_args.profile_ranks}: "
                 f"steps [{start}, {end})"
             )
             return
 
         # pytorch mode
         active = max(end - start, 1)
-        trace_dir = args.profile_output_dir or os.path.join(self.output_dir, "profiler")
+        trace_dir = training_args.profile_output_dir or os.path.join(self.output_dir, "profiler")
         # Each profile rank ensures its own trace dir. We can't use a
         # collective ctx.barrier() here because only profile ranks reach this
         # code path — calling barrier on a subset of ranks would deadlock.
@@ -191,7 +190,7 @@ class Profiler:
         self._prof.start()
         self._started = True
         logger.info(
-            f"torch.profiler enabled on profile_ranks={args.profile_ranks}: "
+            f"torch.profiler enabled on profile_ranks={training_args.profile_ranks}: "
             f"steps [{start}, {end}), trace_dir={trace_dir}"
         )
 
@@ -208,7 +207,7 @@ class Profiler:
             if self._prof is not None:
                 self._prof.step()
         else:  # nsys
-            if not self._started and completed_steps == self.args.profile_step_start:
+            if not self._started and completed_steps == self.training_args.profile_step_start:
                 torch.cuda.cudart().cudaProfilerStart()
                 self._nvtx_ctx = torch.autograd.profiler.emit_nvtx(record_shapes=True)
                 self._nvtx_ctx.__enter__()
@@ -218,7 +217,7 @@ class Profiler:
         """True iff this step is profile_step_end on a profiling rank."""
         if not self._active:
             return False
-        return completed_steps == self.args.profile_step_end
+        return completed_steps == self.training_args.profile_step_end
 
     def stop(self):
         """Stop the active profiler (idempotent)."""

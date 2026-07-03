@@ -1,10 +1,12 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-validators.py - VLA training argument validation
+"""validators.py - VLA training config validation.
 
-Called by parse_train_args() after args and cfg are loaded.
+Called by parse_train_args() on the DictConfig stage (before to_object()), so it
+benefits from OmegaConf missing-key / interpolation checks. Operates on the three
+typed configs: training_args (TrainingArgs), model_cfg (ModelConfig),
+data_cfg (DataConfig).
 """
 
 import logging
@@ -13,95 +15,80 @@ import os
 logger = logging.getLogger(__name__)
 
 
-def validate_args(args, cfg):
-    """
-    Validate the combination of CLI args and architecture cfg.
+def validate(training_args, model_cfg, data_cfg):
+    """Validate the combination of TrainingArgs + ModelConfig + DataConfig.
 
     Raises ValueError on hard errors, logs warnings for soft issues.
     """
-    # Model config must be specified
-    if args.model_name is None and args.config_file is None:
-        raise ValueError("--model-name or --config-file must be specified.")
-
-    # LR sanity checks
-    if args.lr_base <= 0:
-        raise ValueError(f"--lr-base must be positive, got {args.lr_base}")
-    if args.min_lr < 0:
-        raise ValueError(f"--min-lr must be >= 0, got {args.min_lr}")
-    if args.min_lr >= args.lr_base:
+    # ── Learning rate ──
+    if training_args.lr_base <= 0:
+        raise ValueError(f"--lr-base must be positive, got {training_args.lr_base}")
+    if training_args.min_lr < 0:
+        raise ValueError(f"--min-lr must be >= 0, got {training_args.min_lr}")
+    if training_args.min_lr >= training_args.lr_base:
         logger.warning(
-            f"--min-lr ({args.min_lr}) >= --lr-base ({args.lr_base}); "
+            f"--min-lr ({training_args.min_lr}) >= --lr-base ({training_args.lr_base}); "
             f"cosine decay will have no effect."
         )
 
-    # Steps
-    if args.train_iters <= 0:
-        raise ValueError(f"--train-iters must be positive, got {args.train_iters}")
-    if args.lr_warmup_iters >= args.train_iters:
+    # ── Steps ──
+    if training_args.train_iters <= 0:
+        raise ValueError(f"--train-iters must be positive, got {training_args.train_iters}")
+    if training_args.lr_warmup_iters >= training_args.train_iters:
         logger.warning(
-            f"--lr-warmup-iters ({args.lr_warmup_iters}) >= --train-iters ({args.train_iters})"
+            f"--lr-warmup-iters ({training_args.lr_warmup_iters}) >= --train-iters ({training_args.train_iters})"
         )
-    if args.cuda_graph_warmup_steps <= 0:
+    if training_args.cuda_graph_warmup_steps <= 0:
         raise ValueError(
-            f"--cuda-graph-warmup-steps must be positive, got {args.cuda_graph_warmup_steps}"
+            f"--cuda-graph-warmup-steps must be positive, got {training_args.cuda_graph_warmup_steps}"
         )
 
-    graph_enabled = getattr(args, "cuda_graph_impl", "none") == "local"
-    if graph_enabled:
-        if args.cuda_graph_pad_length is None:
+    # ── CUDA graph ──
+    if training_args.cuda_graph_impl == "local":
+        if training_args.cuda_graph_pad_length is None:
             raise ValueError(
                 "--cuda-graph-pad-length must be set when --cuda-graph-impl=local."
             )
-        if args.cuda_graph_pad_length < 0:
+        if training_args.cuda_graph_pad_length < 0:
             raise ValueError(
-                f"--cuda-graph-pad-length must be non-negative, got {args.cuda_graph_pad_length}"
+                f"--cuda-graph-pad-length must be non-negative, got {training_args.cuda_graph_pad_length}"
             )
-        if args.cuda_graph_scope not in {"full_iteration", "per_microbatch"}:
+        if training_args.cuda_graph_scope not in {"full_iteration", "per_microbatch"}:
             raise ValueError(
-                f"Unsupported --cuda-graph-scope={args.cuda_graph_scope!r} in embodied trainer."
+                f"Unsupported --cuda-graph-scope={training_args.cuda_graph_scope!r} in embodied trainer."
             )
-        if getattr(args, "check_for_nan_in_loss_and_grad", True):
+        if training_args.check_for_nan_in_loss_and_grad:
             logger.warning(
                 "Disabling host-side loss/grad NaN checks because CUDA graph mode is enabled. "
                 "This matches the required --no-check-for-nan-in-loss-and-grad behavior."
             )
-            args.check_for_nan_in_loss_and_grad = False
+            training_args.check_for_nan_in_loss_and_grad = False
 
-    # Checkpoint
-    if args.resume and not args.pretrained_checkpoint:
-        # Resume without explicit checkpoint is fine (will auto-find in output_dir)
-        pass
-
-    # Tokenizer
-    if args.tokenizer_path is None:
-        if not os.environ.get("TOKENIZER_PATH"):
-            logger.warning(
-                "Neither --tokenizer-path nor TOKENIZER_PATH env var is set. "
-                "Model initialization may fail if a tokenizer is required."
-            )
-
-    # Architecture cfg structure
-    if not hasattr(cfg, "model_type") and not hasattr(cfg, "framework"):
+    # ── Tokenizer ──
+    if training_args.tokenizer_path is None and not os.environ.get("TOKENIZER_PATH"):
         logger.warning(
-            f"Model config YAML has no 'model_type' or 'framework' top-level key. "
-            f"Got keys: {list(cfg.keys())}"
+            "Neither --tokenizer-path nor TOKENIZER_PATH env var is set. "
+            "Model initialization may fail if a tokenizer is required."
         )
 
-    # ZeRO optimizer options
-    if getattr(args, "zero_parameters_as_bucket_view", False) and not getattr(args, "zero_optimizer", False):
+    # ── ZeRO optimizer options ──
+    if training_args.zero_parameters_as_bucket_view and not training_args.zero_optimizer:
         logger.warning(
             "--zero-parameters-as-bucket-view has no effect without --zero-optimizer."
         )
 
-    # Profiler mutual exclusion
-    if getattr(args, "use_pytorch_profiler", False) and getattr(args, "use_nsys_profiler", False):
+    # ── Profiler mutual exclusion ──
+    if training_args.use_pytorch_profiler and training_args.use_nsys_profiler:
         raise ValueError(
             "--use-pytorch-profiler and --use-nsys-profiler are mutually exclusive."
         )
-
-    if getattr(args, "use_pytorch_profiler", False) or getattr(args, "use_nsys_profiler", False):
-        if args.profile_step_end < args.profile_step_start:
+    if training_args.use_pytorch_profiler or training_args.use_nsys_profiler:
+        if training_args.profile_step_end < training_args.profile_step_start:
             raise ValueError(
-                f"--profile-step-end ({args.profile_step_end}) must be greater than "
-                f"--profile-step-start ({args.profile_step_start})."
+                f"--profile-step-end ({training_args.profile_step_end}) must be greater than "
+                f"--profile-step-start ({training_args.profile_step_start})."
             )
+
+    # ── Model config sanity ──
+    if not model_cfg.model_type:
+        raise ValueError("ModelConfig.model_type must be set (from YAML model.model_type).")

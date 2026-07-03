@@ -89,43 +89,49 @@ class GrootN1d6FeatureTransform(BaseTransform):
     def __init__(
         self,
         model_cfg: Any,
+        data_cfg: Any,
         dataset_stats: Optional[Dict[str, Any]] = None,
         dataset: Any = None,
         training: bool = True,
     ):
         super().__init__(apply_to=[], training=training)
         self.model_cfg = model_cfg
-        self.embodiment_tag = str(_cfg_get(model_cfg, "embodiment_tag", "libero_panda") or "libero_panda")
+        self.data_cfg = data_cfg
+        # Data-processing fields → DataConfig; shared dims → ModelConfig fallback.
+        self.embodiment_tag = str(data_cfg.embodiment_tag or "libero_panda")
         self.max_state_dim = int(
-            _cfg_get(model_cfg, "preprocess_max_state_dim", _cfg_get(model_cfg, "max_state_dim", 29))
-            or 29
+            data_cfg.preprocess_max_state_dim
+            if data_cfg.preprocess_max_state_dim is not None
+            else model_cfg.max_state_dim
         )
         self.max_action_dim = int(
-            _cfg_get(model_cfg, "preprocess_max_action_dim", _cfg_get(model_cfg, "max_action_dim", 29))
-            or 29
+            data_cfg.preprocess_max_action_dim
+            if data_cfg.preprocess_max_action_dim is not None
+            else model_cfg.max_action_dim
         )
         self.max_action_horizon = int(
-            _cfg_get(model_cfg, "preprocess_action_horizon", _cfg_get(model_cfg, "action_horizon", 16))
-            or 16
+            data_cfg.preprocess_action_horizon
+            if data_cfg.preprocess_action_horizon is not None
+            else model_cfg.action_horizon
         )
-        self.formalize_language = bool(_cfg_get(model_cfg, "formalize_language", True))
-        self.apply_sincos_state_encoding = bool(_cfg_get(model_cfg, "apply_sincos_state_encoding", False))
-        self.use_relative_action = bool(_cfg_get(model_cfg, "use_relative_action", True))
-        self.use_albumentations = bool(_cfg_get(model_cfg, "use_albumentations_transforms", False))
-        self.use_processor_image_size = bool(_cfg_get(model_cfg, "use_processor_image_size", False))
-        self.use_common_image_transform = bool(_cfg_get(model_cfg, "use_image_transform", False))
-        self.common_image_resize_strategy = str(_cfg_get(model_cfg, "image_resize_strategy", "resize_with_pad"))
-        self.common_image_normalize_mode = str(_cfg_get(model_cfg, "image_normalize_mode", "identity"))
+        self.formalize_language = bool(data_cfg.formalize_language)
+        self.apply_sincos_state_encoding = bool(data_cfg.apply_sincos_state_encoding)
+        self.use_relative_action = bool(data_cfg.use_relative_action)
+        self.use_albumentations = bool(data_cfg.use_albumentations_transforms)
+        self.use_processor_image_size = bool(data_cfg.use_processor_image_size)
+        self.use_common_image_transform = bool(data_cfg.use_image_transform)
+        self.common_image_resize_strategy = str(data_cfg.image_resize_strategy)
+        self.common_image_normalize_mode = str(data_cfg.image_normalize_mode)
         self.common_image_preprocessed = (
             self.use_common_image_transform
             and self.common_image_resize_strategy != "none"
         )
-        self.image_target_size = _as_size_list(_cfg_get(model_cfg, "image_target_size", None), [224, 224])
-        self.image_crop_size = _as_size_list(_cfg_get(model_cfg, "image_crop_size", None), [224, 224])
-        self.shortest_image_edge = _cfg_get(model_cfg, "shortest_image_edge", None) or 256
-        self.crop_fraction = _cfg_get(model_cfg, "crop_fraction", None) or 0.95
-        self.random_rotation_angle = _cfg_get(model_cfg, "random_rotation_angle", None)
-        self.color_jitter_params = _cfg_get(model_cfg, "color_jitter_params", None)
+        self.image_target_size = _as_size_list(data_cfg.image_target_size, [224, 224])
+        self.image_crop_size = _as_size_list(data_cfg.image_crop_size, [224, 224])
+        self.shortest_image_edge = data_cfg.shortest_image_edge or 256
+        self.crop_fraction = data_cfg.crop_fraction or 0.95
+        self.random_rotation_angle = data_cfg.random_rotation_angle
+        self.color_jitter_params = data_cfg.color_jitter_params
 
         self.modality_configs = self._build_modality_configs()
         self.modality_meta = (
@@ -413,12 +419,6 @@ class GrootBatchTransform(BaseTransform):
     def apply(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Pass data through unchanged."""
         return data
-
-
-def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
-    if hasattr(cfg, "get"):
-        return cfg.get(key, default)
-    return getattr(cfg, key, default)
 
 
 def _as_size_list(value: Any, default: list[int]) -> list[int]:

@@ -8,7 +8,8 @@
 # Usage:
 #   bash run_groot_n1_6_ddp.sh
 #   GPUS_PER_NODE=8 bash run_groot_n1_6_ddp.sh
-#   bash run_groot_n1_6_ddp.sh tune_llm=true
+#   bash run_groot_n1_6_ddp.sh --train-iters 50000            # override a training param (flag form)
+#   bash run_groot_n1_6_ddp.sh model.tune_llm=true            # override YAML model:/data: fields (dotlist form)
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
@@ -54,7 +55,6 @@ DATA_ARGS=(
     --dataloader-module lerobot_datasets
     --dataset-path $DATA_PATH
     --robot-type libero_franka
-    --normalization-mode mean_std
     --video-backend torchcodec
     --num-workers 16
     --dataloader-multiprocessing-context spawn
@@ -69,7 +69,7 @@ TRAINING_ARGS=(
     --gradient-accumulation-steps 1
     --seed 1234
     --output-dir $OUTPUT_DIR
-    --lr 1.0e-4
+    --lr-base 1.0e-4
     --lr-decay-style cosine_with_min_lr
     --lr-warmup-iters 2
     --min-lr 0.0

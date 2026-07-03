@@ -32,7 +32,7 @@ import torch.nn.functional as F
 from safetensors.torch import load_file
 from transformers.feature_extraction_utils import BatchFeature
 
-from .configuration_groot_n1_6 import GrootN1d6Config
+from .model_configuration_groot_n1_6 import GrootN1d6ModelConfig
 from .modules.dit import AlternateVLDiT, DiT
 from .eagle3_model import EagleBackbone
 from .modules.embodiment_mlp import (
@@ -55,7 +55,7 @@ class Gr00tN1d6ActionHead(nn.Module):
 
     supports_gradient_checkpointing = True
 
-    def __init__(self, config: GrootN1d6Config):
+    def __init__(self, config: GrootN1d6ModelConfig):
         super().__init__()
         self.config = config
         self.hidden_size = config.hidden_size
@@ -467,7 +467,7 @@ class Gr00tN1d6ActionHead(nn.Module):
         return BatchFeature(data=batch)
 
 
-def get_backbone_cls(config: GrootN1d6Config):
+def get_backbone_cls(config: GrootN1d6ModelConfig):
     """Get backbone class based on model name in config."""
     if "NVEagle" in config.model_name or "nvidia/Eagle" in config.model_name or "eagle" in config.model_name.lower():
         return EagleBackbone
@@ -482,7 +482,7 @@ class Gr00tN1d6(nn.Module):
 
     def __init__(
         self,
-        config: GrootN1d6Config,
+        config: GrootN1d6ModelConfig,
         transformers_loading_kwargs: dict | None = None,
     ):
         """
@@ -592,11 +592,9 @@ class Gr00tN1d6(nn.Module):
         Returns:
             int: The checkpoint's expected action horizon
         """
-        checkpoint_horizon = getattr(self.config, "action_horizon", None)
+        checkpoint_horizon = self.config.action_horizon
         # action_horizon is the model-level diffusion horizon
         # (e.g. 50 for N1.6), so we read it directly.
-        if checkpoint_horizon is None:
-            return 50  # N1.6 default
         return int(checkpoint_horizon)
 
     def _init_pad_bufs(self, inputs: dict) -> None:
@@ -849,8 +847,8 @@ class Gr00tN1d6(nn.Module):
         # Use bf16 autocast for forward computation to satisfy FlashAttention
         # requirements while keeping trainable params in fp32 for optimizer precision.
         # This matches lerobot's "bf16 compute, fp32 params" paradigm.
-        device_type = torch.device(getattr(self.config, "device", "cuda")).type
-        use_bf16 = getattr(self.config, "use_bf16", True)
+        device_type = torch.device("cuda").type
+        use_bf16 = self.config.use_bf16
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16, enabled=use_bf16):
             backbone_outputs = self.backbone(backbone_inputs)
             action_outputs = self.action_head(backbone_outputs, action_inputs)
@@ -872,7 +870,7 @@ class Gr00tN1d6(nn.Module):
 class GrootN1d6Policy(nn.Module):
     """GR00T-N1.6 policy implementation for the embodied trainer."""
 
-    def __init__(self, config: GrootN1d6Config):
+    def __init__(self, config: GrootN1d6ModelConfig):
         super().__init__()
         self.config = config
         self._pretrained_checkpoint_path: str | None = None
@@ -897,7 +895,7 @@ class GrootN1d6Policy(nn.Module):
     @classmethod
     def from_pretrained(cls, cfg) -> "GrootN1d6Policy":
         """Instantiate a policy from a pretrained checkpoint."""
-        return cls(GrootN1d6Config.from_config(cfg))
+        return cls(GrootN1d6ModelConfig.from_config(cfg))
 
     def forward(self, batch) -> Dict[str, torch.Tensor]:
         """Forward pass through the policy."""
@@ -931,7 +929,7 @@ class GrootN1d6Policy(nn.Module):
             self._restore_trainable_params_fp32_impl()
 
     def _restore_trainable_params_fp32_impl(self) -> None:
-        if getattr(self.config, "backbone_trainable_params_fp32", True):
+        if self.config.backbone_trainable_params_fp32:
             _restore_trainable_params_fp32(self.model.backbone)
         _restore_trainable_params_fp32(self.model.action_head)
         _restore_rotary_buffers_fp32(self.model)
@@ -964,7 +962,7 @@ class GrootN1d6Policy(nn.Module):
 
     def _has_trainable_param_below_fp32(self) -> bool:
         modules = [self.model.action_head]
-        if getattr(self.config, "backbone_trainable_params_fp32", True):
+        if self.config.backbone_trainable_params_fp32:
             modules.append(self.model.backbone)
         for module in modules:
             for parameter in module.parameters():

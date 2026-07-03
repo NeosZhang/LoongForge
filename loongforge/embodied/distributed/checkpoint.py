@@ -57,23 +57,23 @@ def save_checkpoint(
     step: int,
     checkpoint_dir: str,
     ctx: DistributedContext,
-    args,
+    training_args,
     epoch: int = 0,
     dataloader_state: Optional[Dict] = None,
 ):
-    """Save checkpoint in the format selected by ``args.save_format``."""
+    """Save checkpoint in the format selected by ``training_args.save_format``."""
     # Make sure any previous async save has finalized before we touch a new
     # ``steps_{N}`` dir or stage another state-dict snapshot.
     flush_pending_save(ctx)
 
     path = os.path.join(checkpoint_dir, f"steps_{step}")
-    save_format = getattr(args, "save_format", "safetensors")
+    save_format = training_args.save_format
     async_save = (
         save_format == "dcp"
-        and getattr(args, "async_save", False)
+        and training_args.async_save
         and hasattr(dcp, "async_save")
     )
-    if getattr(args, "async_save", False) and not async_save and ctx.is_main:
+    if training_args.async_save and not async_save and ctx.is_main:
         if save_format != "dcp":
             logger.warning("--async-save ignored: only effective with --save-format=dcp.")
         elif not hasattr(dcp, "async_save"):
@@ -95,13 +95,13 @@ def save_checkpoint(
 
     if save_format == "dcp":
         future = _save_dcp(
-            model, optimizer, scheduler, path, ctx, args,
+            model, optimizer, scheduler, path, ctx, training_args,
             dataloader_state, async_save=async_save,
         )
     else:
         future = None
         _save_legacy(
-            model, optimizer, scheduler, path, ctx, args, epoch,
+            model, optimizer, scheduler, path, ctx, training_args, epoch,
             dataloader_state, save_format,
         )
 
@@ -336,7 +336,7 @@ def detect_checkpoint_format(path: str) -> str:
 
 
 def _save_legacy(
-    model, optimizer, scheduler, path, ctx, args, epoch,
+    model, optimizer, scheduler, path, ctx, training_args, epoch,
     dataloader_state, save_format,
 ):
     """Original rank0-consolidated save path. Bit-equivalent to prior behavior."""
@@ -352,9 +352,9 @@ def _save_legacy(
         else:
             torch.save(state_dict, os.path.join(path, "pytorch_model.pt"))
 
-    if getattr(args, "save_training_state", True):
+    if training_args.save_training_state:
         _save_training_state(
-            model, optimizer, scheduler, epoch, path, ctx, args,
+            model, optimizer, scheduler, epoch, path, ctx, training_args,
             dataloader_state=dataloader_state,
         )
 
@@ -411,7 +411,7 @@ def _resume_legacy(model, optimizer, scheduler, checkpoint_path, ctx, restore_rn
 
 
 def _save_dcp(
-    model, optimizer, scheduler, path, ctx, args, dataloader_state,
+    model, optimizer, scheduler, path, ctx, training_args, dataloader_state,
     *, async_save: bool = False,
 ):
     """Sharded save: each rank writes its own DCP shard.
@@ -420,7 +420,7 @@ def _save_dcp(
     the caller is responsible for waiting on it before the next save or
     process exit (handled by ``save_checkpoint`` / ``flush_pending_save``).
     """
-    save_training_state = getattr(args, "save_training_state", True)
+    save_training_state = training_args.save_training_state
     optimizers = [optimizer] if save_training_state else []
 
     options = StateDictOptions(full_state_dict=False, cpu_offload=False)
@@ -647,7 +647,7 @@ def _save_training_state(
     epoch,
     path,
     ctx,
-    args=None,
+    training_args=None,
     dataloader_state=None,
 ):
     """Legacy path: rank0-aggregated optimizer + scheduler + per-rank RNG."""

@@ -29,21 +29,21 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
-def wrap_model(model: nn.Module, args, ctx: DistributedContext) -> nn.Module:
-    """Wrap model with DDP or FSDP based on CLI args; mixed precision included."""
-    dtype = resolve_dtype(args.dtype)
+def wrap_model(model: nn.Module, training_args, ctx: DistributedContext) -> nn.Module:
+    """Wrap model with DDP or FSDP based on CLI training_args; mixed precision included."""
+    dtype = resolve_dtype(training_args.dtype)
 
     if not ctx.is_distributed:
         return model.to(dtype=dtype, device=ctx.device)
 
-    strategy = args.distributed_strategy
+    strategy = training_args.distributed_strategy
     if strategy == "fsdp":
-        return _wrap_fsdp(model, args, ctx, dtype)
+        return _wrap_fsdp(model, training_args, ctx, dtype)
     else:
-        return _wrap_ddp(model, args, ctx, dtype)
+        return _wrap_ddp(model, training_args, ctx, dtype)
 
 
-def _wrap_ddp(model: nn.Module, args, ctx: DistributedContext, dtype: torch.dtype) -> nn.Module:
+def _wrap_ddp(model: nn.Module, training_args, ctx: DistributedContext, dtype: torch.dtype) -> nn.Module:
     """Wrap model with DistributedDataParallel."""
     all_modules_by_dtype = get_module_names_by_dtype(model, trainable_only=False)
     if len(all_modules_by_dtype) > 1:
@@ -52,24 +52,21 @@ def _wrap_ddp(model: nn.Module, args, ctx: DistributedContext, dtype: torch.dtyp
         model = model.to(dtype=dtype, device=ctx.device)
 
     ddp_kwargs = {
-        "broadcast_buffers": getattr(args, "ddp_broadcast_buffers", True),
-        "init_sync": getattr(args, "ddp_init_sync", True),
-        "bucket_cap_mb": getattr(args, "ddp_bucket_cap_mb", None),
-        "find_unused_parameters": getattr(args, "ddp_find_unused_parameters", True),
-        "gradient_as_bucket_view": getattr(args, "ddp_gradient_as_bucket_view", False),
-        "static_graph": getattr(args, "ddp_static_graph", False),
+        "broadcast_buffers": training_args.ddp_broadcast_buffers,
+        "init_sync": training_args.ddp_init_sync,
+        "bucket_cap_mb": training_args.ddp_bucket_cap_mb,
+        "find_unused_parameters": training_args.ddp_find_unused_parameters,
+        "gradient_as_bucket_view": training_args.ddp_gradient_as_bucket_view,
+        "static_graph": training_args.ddp_static_graph,
+        "skip_all_reduce_unused_params": training_args.ddp_skip_all_reduce_unused_params,
+        "bucket_cap_mb_list": parse_optional_int_list(training_args.ddp_bucket_cap_mb_list),
+        "batched_grad_copy": training_args.ddp_batched_grad_copy,
     }
-    if hasattr(args, "ddp_skip_all_reduce_unused_params"):
-        ddp_kwargs["skip_all_reduce_unused_params"] = args.ddp_skip_all_reduce_unused_params
-    if hasattr(args, "ddp_bucket_cap_mb_list"):
-        ddp_kwargs["bucket_cap_mb_list"] = parse_optional_int_list(args.ddp_bucket_cap_mb_list)
-    if hasattr(args, "ddp_batched_grad_copy"):
-        ddp_kwargs["batched_grad_copy"] = args.ddp_batched_grad_copy
 
     return DDP(model, **filter_supported_kwargs(DDP, ddp_kwargs))
 
 
-def _wrap_fsdp(model: nn.Module, args, ctx, dtype: torch.dtype) -> nn.Module:
+def _wrap_fsdp(model: nn.Module, training_args, ctx, dtype: torch.dtype) -> nn.Module:
     """Apply FSDP2 with dtype-safe, bottom-up wrapping.
 
     Wrapping has two important constraints:
@@ -105,7 +102,7 @@ def _wrap_fsdp(model: nn.Module, args, ctx, dtype: torch.dtype) -> nn.Module:
     if not mixed_original_dtype:
         model.to(dtype=dtype)
 
-    dp_mesh = _build_fsdp_device_mesh(args, ctx)
+    dp_mesh = _build_fsdp_device_mesh(training_args, ctx)
 
     fsdp_kwargs = {
         "mesh": dp_mesh,
@@ -116,7 +113,7 @@ def _wrap_fsdp(model: nn.Module, args, ctx, dtype: torch.dtype) -> nn.Module:
     # groups do not manage those parameters a second time.
     planner = _FSDPWrapPlanner(
         model=model,
-        args=args,
+        training_args=training_args,
         fsdp_kwargs=fsdp_kwargs,
         dtype=dtype,
         mixed_original_dtype=mixed_original_dtype,
@@ -141,14 +138,14 @@ def _wrap_fsdp(model: nn.Module, args, ctx, dtype: torch.dtype) -> nn.Module:
     return model
 
 
-def _build_fsdp_device_mesh(args, ctx: DistributedContext):
+def _build_fsdp_device_mesh(training_args, ctx: DistributedContext):
     """Build the FSDP/HSDP device mesh used by fully_shard.
 
     FSDP uses a 1D mesh and shards parameters across all data-parallel ranks.
     HSDP uses a 2D mesh: dim 0 is replicated and dim 1 is sharded. Passing
     ``--hsdp-shard-size`` enables HSDP and sets the sharding dimension size.
     """
-    shard_size = getattr(args, "hsdp_shard_size", None)
+    shard_size = training_args.hsdp_shard_size
     if shard_size is None:
         return init_device_mesh(
             "cuda",
@@ -195,13 +192,13 @@ class _FSDPWrapPlanner:
     def __init__(
         self,
         model: nn.Module,
-        args,
+        training_args,
         fsdp_kwargs: dict,
         dtype: torch.dtype,
         mixed_original_dtype: bool,
     ):
         self.model = model
-        self.args = args
+        self.training_args = training_args
         self.fsdp_kwargs = fsdp_kwargs
         self.mixed_original_dtype = mixed_original_dtype
 
@@ -218,25 +215,23 @@ class _FSDPWrapPlanner:
         # - leftover_min_num_params controls large leaf cleanup wrapping.
         # Keeping the leftover threshold configurable avoids wrapping every tiny
         # Linear/Norm leaf, which can increase communication and hook overhead.
-        self.repeated_min_num_params = int(getattr(args, "fsdp_min_num_params", 1_000_000))
-        self.leftover_min_num_params = int(
-            getattr(args, "fsdp_leftover_min_num_params", self.repeated_min_num_params)
-        )
+        self.repeated_min_num_params = int(training_args.fsdp_min_num_params)
+        self.leftover_min_num_params = int(training_args.fsdp_leftover_min_num_params)
 
         # reshard_after_forward is chosen per group:
         # module class override > root setting > default non-root setting.
         # This lets callers keep selected hot modules unsharded after forward
         # while still using memory-saving resharding elsewhere.
-        self.fsdp_reshard_default = getattr(args, "fsdp_reshard_default", None)
-        self.fsdp_reshard_root = getattr(args, "fsdp_reshard_root", False)
+        self.fsdp_reshard_default = training_args.fsdp_reshard_default
+        self.fsdp_reshard_root = training_args.fsdp_reshard_root
         self.fsdp_reshard_module_overrides = (
-            getattr(args, "fsdp_reshard_module_overrides", None) or {}
+            training_args.fsdp_reshard_module_overrides or {}
         )
 
         # Classes listed here are not wrapped as a single boundary. The planner
         # descends into their children instead. This is useful for modules whose
         # parameters are read by custom code outside that module's forward hooks.
-        extra_no_wrap = getattr(args, "fsdp_no_wrap_modules", None)
+        extra_no_wrap = training_args.fsdp_no_wrap_modules
         self.no_wrap_module_classes = {
             name.strip() for name in extra_no_wrap.split(",") if name.strip()
         } if extra_no_wrap else set()
@@ -260,7 +255,7 @@ class _FSDPWrapPlanner:
         This is the highest-priority stage. If the user knows a class is a good
         FSDP boundary, wrap it before heuristic stages see its parameters.
         """
-        wrap_modules = getattr(self.args, "fsdp_wrap_modules", None)
+        wrap_modules = self.training_args.fsdp_wrap_modules
         if not wrap_modules:
             return 0
         class_names = {name.strip() for name in wrap_modules.split(",") if name.strip()}

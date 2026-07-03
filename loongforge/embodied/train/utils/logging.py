@@ -13,7 +13,6 @@ import torch
 import wandb
 from typing import Any, Dict, Optional
 
-from omegaconf import DictConfig, ListConfig, OmegaConf
 from loongforge.embodied.optimizer import get_grad_norm
 from torch.utils.tensorboard import SummaryWriter
 
@@ -44,36 +43,31 @@ def _format_block(title: str, items: dict) -> str:
     return "\n".join(lines)
 
 
-def _flatten_omegaconf(cfg, prefix: str = "") -> dict:
-    """Flatten OmegaConf into a dotted dict: {'a.b.c': value, ...}."""
+def _dataclass_items(obj, prefix: str = "") -> dict:
+    """Flatten a (possibly nested) dataclass instance into dotted keys."""
+    import dataclasses
+
     out = {}
-    if isinstance(cfg, DictConfig):
-        for k, v in cfg.items():
-            key = f"{prefix}.{k}" if prefix else str(k)
-            out.update(_flatten_omegaconf(v, key))
-    elif isinstance(cfg, ListConfig):
-        out[prefix] = OmegaConf.to_container(cfg, resolve=True)
-    else:
-        out[prefix] = cfg
+    for f in dataclasses.fields(obj):
+        value = getattr(obj, f.name)
+        key = f"{prefix}.{f.name}" if prefix else f.name
+        if dataclasses.is_dataclass(value) and not isinstance(value, type):
+            out.update(_dataclass_items(value, key))
+        else:
+            out[key] = value
     return out
 
 
-def log_effective_config(args):
-    """Log fully-resolved CLI args + model YAML config in Megatron-style format.
+def log_effective_config(training_args, model_cfg, data_cfg):
+    """Log fully-resolved TrainingArgs + ModelConfig + DataConfig in Megatron-style.
 
     Output is gated by the logger level: rank 0 is set to INFO and others to
-    WARNING (see setup_logging / parser bootstrap), so non-rank-0 logger.info
-    calls are filtered automatically — no explicit rank check needed here.
+    WARNING (see setup_logging), so non-rank-0 logger.info calls are filtered
+    automatically — no explicit rank check needed here.
     """
-    # CLI args (skip the attached OmegaConf to render it separately)
-    args_items = {
-        k: v for k, v in vars(args).items() if k != "model_cfg"
-    }
-    logger.info("\n%s", _format_block("arguments", args_items))
-
-    # Flatten model YAML config to dotted keys
-    cfg_items = _flatten_omegaconf(args.model_cfg)
-    logger.info("\n%s", _format_block("model config", cfg_items))
+    logger.info("\n%s", _format_block("training training_args", _dataclass_items(training_args)))
+    logger.info("\n%s", _format_block("model config", _dataclass_items(model_cfg)))
+    logger.info("\n%s", _format_block("data config", _dataclass_items(data_cfg)))
 
 
 # ═══════════════════════════════════════════════════════════════════

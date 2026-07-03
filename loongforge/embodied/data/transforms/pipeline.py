@@ -5,7 +5,7 @@
 
 Pipeline builder:
     - convert_stats: Convert dataset statistics to numpy format
-    - build_transforms_from_args: Build per-sample transforms from config + CLI args
+    - build_transforms_from_args: Build per-sample transforms from config + CLI training_args
 """
 
 from typing import Any, Dict, Optional
@@ -42,32 +42,30 @@ def convert_stats(stats_raw: Optional[Dict[str, Any]]) -> Optional[Dict[str, np.
 
 def build_transforms_from_args(
     model_cfg,
-    args,
+    data_cfg,
+    training_args,
     dataset,
     dataset_stats,
 ) -> Optional[ComposedTransform]:
-    """Build per-sample transforms from flat model_cfg + CLI args.
+    """Build per-sample transforms from typed ModelConfig + DataConfig (+ TrainingArgs).
 
     Args:
-        model_cfg: Flat model configuration dict (backbone, action_model at top level)
-        args: CLI args namespace
-        dataset: The dataset instance (used to discover image keys)
-        dataset_stats: Dict of normalization statistics from dataset.meta.stats
+        model_cfg: typed ModelConfig (model structure + shared fields).
+        data_cfg: typed DataConfig (data-processing fields).
+        training_args: TrainingArgs (generic CLI params).
+        dataset: The dataset instance (used to discover image keys).
+        dataset_stats: Dict of normalization statistics from dataset.meta.stats.
 
     Returns:
         ComposedTransform or None if not applicable.
     """
+    model_type = model_cfg.model_type
 
-
-    image_size = (getattr(args, "image_size", None)
-                  or model_cfg.get("image_size", 224))
-    action_horizon = (getattr(args, "action_horizon", None)
-                      or model_cfg.get("action_horizon", None))
-    max_action_dim = (model_cfg.get("max_action_dim", None))
-    normalization_mode = model_cfg.get(
-        "action_normalization_mode",
-        getattr(args, "normalization_mode", "q99"),
-    )
+    # Shared fields → ModelConfig; data-processing fields → DataConfig.
+    image_size = data_cfg.image_size
+    action_horizon = model_cfg.action_horizon
+    max_action_dim = model_cfg.max_action_dim
+    normalization_mode = data_cfg.normalization_mode
 
     # Discover image keys from first sample
     try:
@@ -78,49 +76,48 @@ def build_transforms_from_args(
 
     transforms = []
 
-    # 1. Image transform (configurable via model YAML)
-    use_image_transform = model_cfg.get("use_image_transform", True)
-    if image_keys and use_image_transform:
-        img_normalize_mode = model_cfg.get("image_normalize_mode", "identity")
-        img_resize_strategy = model_cfg.get("image_resize_strategy", "resize_with_pad")
-
+    # 1. Image transform (configurable via DataConfig)
+    if image_keys and data_cfg.use_image_transform:
         transforms.append(ImageTransform(
             apply_to=image_keys,
             image_size=image_size,
-            resize_strategy=img_resize_strategy,
-            normalize_mode=img_normalize_mode,
+            resize_strategy=data_cfg.image_resize_strategy,
+            normalize_mode=data_cfg.image_normalize_mode,
         ))
 
-    # 2. Action transform (configurable via model YAML)
-    use_action_transform = model_cfg.get("use_action_transform", True)
-    if use_action_transform:
-        action_apply_to = model_cfg.get("action_apply_to", ["action"])
-        action_use_statistics = model_cfg.get("action_use_statistics", True)
+    # 2. Action transform (configurable via DataConfig)
+    if data_cfg.use_action_transform:
         action_stats = (
             convert_stats(dataset_stats.get("action"))
-            if dataset_stats and action_use_statistics
+            if dataset_stats and data_cfg.action_use_statistics
             else None
         )
-        transform_action_horizon = model_cfg.get("action_transform_horizon", action_horizon)
-        transform_max_action_dim = model_cfg.get("action_transform_max_action_dim", max_action_dim)
-        action_padding_strategy = model_cfg.get("action_padding_strategy", "zero")
+        transform_action_horizon = (
+            data_cfg.action_transform_horizon
+            if data_cfg.action_transform_horizon is not None
+            else action_horizon
+        )
+        transform_max_action_dim = (
+            data_cfg.action_transform_max_action_dim
+            if data_cfg.action_transform_max_action_dim is not None
+            else max_action_dim
+        )
         transforms.append(ActionTransform(
-            apply_to=action_apply_to,
+            apply_to=data_cfg.action_apply_to,
             action_horizon=transform_action_horizon,
             max_action_dim=transform_max_action_dim,
             normalization_mode=normalization_mode,
             statistics=action_stats,
-            padding_strategy=action_padding_strategy,
+            padding_strategy=data_cfg.action_padding_strategy,
         ))
 
     # 3. Pi05-specific transforms: state discretization, collate images, fallback prompt, tokenize
-    _append_pi05_transforms(transforms, model_cfg, model_cfg, args, dataset_stats, image_size)
+    if model_type == "pi05":
+        _append_pi05_transforms(transforms, model_cfg, data_cfg, training_args, dataset_stats, image_size)
 
-    # 4. Fast-specific transforms: key mapping (images→PIL, action→numpy, task→lang)
-    _append_fast_transforms(transforms, model_cfg, image_size)
-
-    # 5. GR00T-N1.6-specific transforms: prompt fallback and feature assembly
-    _append_groot_n1_6_transforms(transforms, model_cfg, dataset_stats, dataset)
+    # 4. GR00T-N1.6-specific transforms: prompt fallback and feature assembly
+    elif model_type == "Gr00tN1d6":
+        _append_groot_n1_6_transforms(transforms, model_cfg, data_cfg, dataset_stats, dataset)
 
     if not transforms:
         return None
@@ -128,12 +125,8 @@ def build_transforms_from_args(
     return ComposedTransform(transforms)
 
 
-def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, dataset_stats, image_size):
-    """Append Pi05-specific per-sample transforms if model_type is pi05."""
-    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
-    if model_type != "pi05":
-        return
-
+def _append_pi05_transforms(transforms, model_cfg, data_cfg, training_args, dataset_stats, image_size):
+    """Append Pi05-specific per-sample transforms."""
     import os
     from loongforge.embodied.data.transforms.pi05.pi05_transform import (
         StateDiscretizationTransform,
@@ -142,7 +135,7 @@ def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, dataset_s
         Pi05TokenizeTransform,
     )
 
-    normalization_mode = getattr(args, "normalization_mode", "q99")
+    normalization_mode = data_cfg.normalization_mode
     state_stats = convert_stats(dataset_stats.get("observation.state")) if dataset_stats else None
 
     transforms.append(StateDiscretizationTransform(
@@ -155,12 +148,11 @@ def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, dataset_s
         statistics=state_stats,
     ))
 
-    num_images = backbone_cfg.get("num_images", 2)
-    image_mask = backbone_cfg.get("image_mask", None) or [True] * num_images
-    max_token_len = backbone_cfg.get("max_token_len", 200)
+    num_images = data_cfg.num_images
+    image_mask = data_cfg.image_mask or [True] * num_images
+    max_token_len = data_cfg.max_token_len
     tokenizer_path = (
-        getattr(args, "tokenizer_path", None)
-        or backbone_cfg.get("tokenizer_name", "")
+        training_args.tokenizer_path
         or os.environ.get("TOKENIZER_PATH", "")
     )
 
@@ -176,29 +168,14 @@ def _append_pi05_transforms(transforms, model_cfg, backbone_cfg, args, dataset_s
     ))
 
 
-def _append_fast_transforms(transforms, model_cfg, image_size):
-    """Append Fast-specific per-sample transforms if model_type is Fast."""
-    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
-    if model_type != "Fast":
-        return
-
-    from loongforge.embodied.data.transforms.fast.fast_transform import FastKeyMappingTransform
-
-    transforms.append(FastKeyMappingTransform(image_size=image_size))
-
-
-def _append_groot_n1_6_transforms(transforms, model_cfg, dataset_stats, dataset):
-    """Append GR00T-N1.6-specific per-sample transforms if model_type is Gr00tN1d6."""
-    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
-    if model_type != "Gr00tN1d6":
-        return
-
+def _append_groot_n1_6_transforms(transforms, model_cfg, data_cfg, dataset_stats, dataset):
+    """Append GR00T-N1.6-specific per-sample transforms."""
     from loongforge.embodied.data.transforms.groot_n1_6.groot_transform import (
         GrootN1d6FeatureTransform,
         GrootPromptTransform,
     )
 
-    preprocess_mode = model_cfg.get("groot_preprocess_mode", "sample")
+    preprocess_mode = data_cfg.groot_preprocess_mode
     if preprocess_mode != "sample":
         raise ValueError(
             "groot_preprocess_mode must be 'sample' after GR00T preprocessing "
@@ -209,6 +186,7 @@ def _append_groot_n1_6_transforms(transforms, model_cfg, dataset_stats, dataset)
     transforms.append(GrootPromptTransform())
     transforms.append(GrootN1d6FeatureTransform(
         model_cfg=model_cfg,
+        data_cfg=data_cfg,
         dataset_stats=dataset_stats,
         dataset=dataset,
     ))

@@ -43,8 +43,8 @@ class GrootN1d6Trainer(FinetuneTrainer):
     logging, checkpointing) is inherited as-is from the base loop.
     """
 
-    def __init__(self, args):
-        super().__init__(args)
+    def __init__(self, training_args, model_cfg, data_cfg):
+        super().__init__(training_args, model_cfg, data_cfg)
         self._train_step_runner: GrootN1d6PerMicrobatchCudaGraphRunner | None = None
 
     def _wrap_model_for_training(self) -> None:
@@ -62,16 +62,16 @@ class GrootN1d6Trainer(FinetuneTrainer):
             super()._wrap_model_for_training()
             return
 
-        args = self.args
+        training_args = self.training_args
         ctx = self.ctx
         if (
             ctx.is_distributed
             and ctx.world_size > 1
-            and getattr(args, "cuda_graph_ddp_sync_in_graph", True)
+            and training_args.cuda_graph_ddp_sync_in_graph
         ):
-            self.model = wrap_model(self.model, args, ctx)
+            self.model = wrap_model(self.model, training_args, ctx)
         else:
-            self.model = self.model.to(dtype=resolve_dtype(args.dtype), device=ctx.device)
+            self.model = self.model.to(dtype=resolve_dtype(training_args.dtype), device=ctx.device)
 
         # When the model is not wrapped by DDP, parameters were not broadcast
         # from rank 0 by the framework — do it manually so every rank starts

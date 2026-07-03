@@ -64,7 +64,7 @@ def _apply_config(args: argparse.Namespace) -> argparse.Namespace:
     args.dataset_statistics_path = (
         model.get("dataset_statistics_path") or env.get("dataset_statistics_path") or args.dataset_statistics_path
     )
-    args.tokenizer_name = model.get("tokenizer_name") or args.tokenizer_name
+    args.tokenizer_path = model.get("tokenizer_path") or args.tokenizer_path
     args.action_dim = int(model.get("action_dim", args.action_dim))
     args.state_dim = int(model.get("state_dim", args.state_dim))
     args.action_horizon = int(model.get("action_horizon", model.get("action_chunk_size", args.action_horizon)))
@@ -89,7 +89,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--model-type", default="pi05")
     parser.add_argument("--ckpt-path", default="")
     parser.add_argument("--dataset-statistics-path", default="")
-    parser.add_argument("--tokenizer-name", default="google/paligemma-3b-pt-224")
+    parser.add_argument("--tokenizer-path", default="")
     parser.add_argument("--port", type=int, default=10093)
     parser.add_argument("--health-port", type=int, default=10094)
     parser.add_argument("--device", default="cuda")
@@ -125,7 +125,7 @@ def main() -> None:
         device=args.device,
         use_bf16=args.use_bf16,
         dataset_statistics_path=args.dataset_statistics_path,
-        tokenizer_name=args.tokenizer_name,
+        tokenizer_path=args.tokenizer_path,
         action_dim=args.action_dim,
         state_dim=args.state_dim,
         action_horizon=args.action_horizon,

@@ -6,7 +6,8 @@
 #
 # Usage:
 #   bash run_pi05_fsdp_finetune.sh
-#   bash run_pi05_fsdp_finetune.sh --train-iters 50000
+#   bash run_pi05_fsdp_finetune.sh --train-iters 50000                   # override a training param (flag form)
+#   bash run_pi05_fsdp_finetune.sh model.state_dim=8 data.image_size=448 # override YAML model:/data: fields (dotlist form)
 # ============================================================================
 set -euo pipefail
 
@@ -49,7 +50,6 @@ DATA_ARGS=(
     --dataset-path $DATA_PATH
     --tokenizer-path $TOKENIZER_PATH
     --robot-type libero_franka
-    --normalization-mode q99
     --num-workers 16
 )
 
@@ -65,7 +65,6 @@ TRAINING_ARGS=(
     --output-dir $OUTPUT_DIR
     # Learning rate
     --lr-base 2.5e-8
-    --lr-group "model.paligemma_with_expert.gemma_expert=1e-4,model.paligemma_with_expert=1e-5"
     --min-lr 0
     --lr-decay-style cosine
     --lr-warmup-iters 0

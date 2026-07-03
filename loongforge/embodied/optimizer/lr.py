@@ -88,8 +88,8 @@ def _parse_lr_group(lr_group_str: str) -> list[tuple[str, float]]:
     return result
 
 
-def build_param_groups(model: nn.Module, args) -> List[Dict]:
-    """Build optimizer param groups with per-module LR from CLI args.
+def build_param_groups(model: nn.Module, training_args) -> List[Dict]:
+    """Build optimizer param groups with per-module LR from CLI training_args.
 
     LR assignment priority (highest to lowest):
       1. ``--lr-group``  — comma-separated ``module.path=lr`` pairs.
@@ -108,12 +108,12 @@ def build_param_groups(model: nn.Module, args) -> List[Dict]:
     used_ids = set()
     groups = []
 
-    base_lr = args.lr_base
+    base_lr = training_args.lr_base
 
     _log_model_lr(raw)
 
     lr_mappings: list[tuple[float, list[str]]] = []
-    lr_group_str = getattr(args, "lr_group", None)
+    lr_group_str = training_args.lr_group
     if lr_group_str:
         for path, lr_val in _parse_lr_group(lr_group_str):
             lr_mappings.append((lr_val, [path]))
@@ -151,18 +151,18 @@ def build_param_groups(model: nn.Module, args) -> List[Dict]:
     return groups
 
 
-def build_scheduler(optimizer, args):
-    """Build LR scheduler from CLI args."""
+def build_scheduler(optimizer, training_args):
+    """Build LR scheduler from CLI training_args."""
     from transformers import get_scheduler
 
     kwargs = {}
-    if args.min_lr is not None:
-        kwargs["min_lr"] = args.min_lr
+    if training_args.min_lr is not None:
+        kwargs["min_lr"] = training_args.min_lr
 
     return get_scheduler(
-        name=args.lr_decay_style,
+        name=training_args.lr_decay_style,
         optimizer=optimizer,
-        num_warmup_steps=args.lr_warmup_iters,
-        num_training_steps=args.train_iters,
+        num_warmup_steps=training_args.lr_warmup_iters,
+        num_training_steps=training_args.train_iters,
         scheduler_specific_kwargs=kwargs,
     )
