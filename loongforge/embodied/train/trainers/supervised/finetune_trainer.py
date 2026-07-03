@@ -133,7 +133,7 @@ class FinetuneTrainer(BaseTrainer):
         # Print-only losses (summed across micro-steps).
         for key, value in log_loss_dict.items():
             v = value.detach().item() if isinstance(value, torch.Tensor) else float(value)
-            log_dict[key] = log_dict.get(key, 0.0) + v
+            log_dict[key] = log_dict.get(key, 0.0) + v / grad_accum
 
     def _on_train_begin(self):
         if self.ctx.is_main:
