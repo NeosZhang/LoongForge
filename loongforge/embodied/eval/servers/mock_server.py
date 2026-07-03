@@ -17,6 +17,12 @@ from loongforge.embodied.eval.servers.mock_policy import MockPolicy
 from loongforge.embodied.eval.transport.rpc_server import PolicyServer
 
 
+class ReusableHTTPServer(HTTPServer):
+    """HTTPServer variant that can rebind immediately after short smoke runs."""
+
+    allow_reuse_address = True
+
+
 class HealthHandler(BaseHTTPRequestHandler):
     """Provide HealthHandler behavior."""
 
@@ -38,7 +44,7 @@ class HealthHandler(BaseHTTPRequestHandler):
 
 def start_health_server(port: int) -> None:
     """Run start_health_server."""
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server = ReusableHTTPServer(("0.0.0.0", port), HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 

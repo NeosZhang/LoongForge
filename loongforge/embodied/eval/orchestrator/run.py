@@ -33,7 +33,7 @@ def _benchmark_family(config: Dict[str, Any]) -> str:
     name = str(benchmark.get("name") or "").lower()
     if name == "libero" or name.startswith("libero_"):
         return "libero"
-    if name in {"calvin", "simplerenv", "robotwin"}:
+    if name in {"calvin", "simplerenv", "robotwin", "maniskill"}:
         return name
     raise ValueError(f"Unsupported benchmark.name: {benchmark.get('name')!r}")
 
@@ -198,6 +198,26 @@ def _run_robotwin_once(config: Dict[str, Any], config_path: str = "") -> Dict[st
         server.stop()
 
 
+def _run_maniskill_once(config: Dict[str, Any], config_path: str = "") -> Dict[str, Any]:
+    """Run _run_maniskill_once."""
+    from loongforge.embodied.eval.orchestrator.runners import maniskill_runner
+
+    args = maniskill_runner.build_argparser().parse_args([])
+    args = maniskill_runner._apply_config(args, config)
+    maniskill_runner._ensure_vulkan_runtime(args)
+    if not args.task_name:
+        raise ValueError("task name must be set by benchmark.task_name in YAML")
+
+    server = ManagedServer(_server_args(config, config_path))
+    try:
+        server.start()
+        result = maniskill_runner.run_evaluation(args)
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return result
+    finally:
+        server.stop()
+
+
 def _run_once(config: Dict[str, Any], config_path: str = "") -> Dict[str, Any]:
     """Run _run_once."""
     family = _benchmark_family(config)
@@ -209,6 +229,8 @@ def _run_once(config: Dict[str, Any], config_path: str = "") -> Dict[str, Any]:
         return _run_simplerenv_once(config, config_path)
     if family == "robotwin":
         return _run_robotwin_once(config, config_path)
+    if family == "maniskill":
+        return _run_maniskill_once(config, config_path)
     raise AssertionError(f"unreachable benchmark family: {family}")
 
 
