@@ -193,7 +193,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                     cp_group=self.pg_collection.cp,
                 )
 
-        elif self.position_embedding_type == 'yarn':
+        elif self.position_embedding_type == 'yarn' and not self.config.multi_latent_attention:
             self.rotary_pos_emb = YarnRotaryEmbedding(
                 kv_channels=self.config.kv_channels,
                 rotary_percent=rotary_percent,
@@ -387,7 +387,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                     packed_seq=packed_seq_params is not None
                     and packed_seq_params.qkv_format == 'thd',
                 )
-        elif self.position_embedding_type == 'yarn':
+        elif self.position_embedding_type == 'yarn' and not self.config.multi_latent_attention:
             if self.training or not self.config.flash_decode:
                 rotary_seq_len = self.rotary_pos_emb.get_rotary_seq_len(
                     inference_context, self.decoder, decoder_input, self.config, packed_seq_params
@@ -513,15 +513,18 @@ class BaseGPTModel(BaseMegatronLanguageModule):
 
         rotary_pos_cos_sin = preproc_output[5] if len(preproc_output) == 6 else None
 
-        # Filter out MTP-only batch payloads before passing to decoder, as decoder
-        # does not accept them. They will be used later in _postprocess for MTP.
+        # Filter out next_batch from extra_block_kwargs before passing to decoder,
+        # as decoder does not accept it. It will be used later in _postprocess for MTP.
         decoder_extra_kwargs = {
             k: v for k, v in (extra_block_kwargs or {}).items()
             if k not in ('next_batch', 'mtp_batch')
-        } or None
+        }
+        # Thread input_ids into decoder for hash-based MoE routing (DeepSeek-V4).
+        if getattr(self.config, 'moe_n_hash_layers', 0) > 0 and input_ids is not None:
+            decoder_extra_kwargs['input_ids'] = input_ids
 
         # Run decoder.
-        hidden_states = self.decoder(
+        decoder_output = self.decoder(
             hidden_states=decoder_input,
             attention_mask=attention_mask,
             inference_context=inference_context,
@@ -531,8 +534,15 @@ class BaseGPTModel(BaseMegatronLanguageModule):
             rotary_pos_cos_sin=rotary_pos_cos_sin,
             packed_seq_params=packed_seq_params,
             sequence_len_offset=sequence_len_offset,
-            **(decoder_extra_kwargs or {}),
+            **decoder_extra_kwargs,
         )
+
+        # When mHC + MTP, decoder returns (hidden_states, mhc_multistream)
+        if isinstance(decoder_output, tuple):
+            hidden_states, mhc_multistream = decoder_output
+        else:
+            hidden_states = decoder_output
+            mhc_multistream = None
 
         return self._postprocess(
             hidden_states=hidden_states,
@@ -552,6 +562,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
             runtime_gather_output=runtime_gather_output,
             extra_block_kwargs=extra_block_kwargs,
             inference_context=inference_context,
+            mhc_multistream=mhc_multistream,
         )
 
     def _postprocess(
@@ -573,6 +584,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
         runtime_gather_output=None,
         extra_block_kwargs=None,
         inference_context=None,
+        mhc_multistream=None,
     ):
         """Postprocesses decoder hidden states to generate logits or compute loss.
 
@@ -599,9 +611,9 @@ class BaseGPTModel(BaseMegatronLanguageModule):
             mtp_input_ids = input_ids
             mtp_position_ids = position_ids
             mtp_labels = labels
-
             mtp_group_total_tokens = None
             mtp_step_num_groups = None
+
             if getattr(self.config, 'enable_chunkpipe', False):
                 if getattr(self.config, 'sft_chunkpipe_mode', False):
                     mtp_batch = (extra_block_kwargs or {}).pop('mtp_batch', None)
@@ -639,6 +651,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                 input_ids=mtp_input_ids,
                 position_ids=mtp_position_ids,
                 hidden_states=hidden_states,
+                mhc_multistream=mhc_multistream,
                 attention_mask=attention_mask,
                 inference_params=inference_params,
                 rotary_pos_emb=rotary_pos_emb,
@@ -654,7 +667,8 @@ class BaseGPTModel(BaseMegatronLanguageModule):
             return hidden_states
 
         if self.config.mtp_num_layers is not None and self.config.mtp_num_layers > 0:
-            def _fused_output_and_cross_entropy_mtp(hidden_states, output_weight, labels, loss_mask):
+            def _fused_output_and_cross_entropy_mtp(hidden_states, output_weight, 
+                                                runtime_gather_output, labels, packed_seq_params, loss_mask):
                 mtp_labels = labels.clone()
                 hidden_states_list = torch.chunk(hidden_states, 1 + self.config.mtp_num_layers, dim=0)
                 hidden_states = hidden_states_list[0]
@@ -723,6 +737,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                     else:
                         mtp_loss = loss_mask * mtp_loss
 
+
                     # Log MTP loss during training; for chunkpipe, only log during
                     # forward recomputation in backward pass (chunkpipe_forward=False)
                     should_log_mtp_loss = (
@@ -732,6 +747,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                     if self.training and should_log_mtp_loss:
                         # TODO(shifangx): remove the use of parallel_state here
                         # after moving loss logging to loss_func in pretrain_gpt.py
+                        
                         mtp_log_loss = torch.sum(mtp_loss) / num_tokens
                         if getattr(self.config, 'sft_chunkpipe_mode', False):
                             step_num_groups = 1.0
@@ -743,6 +759,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                             mtp_log_loss = mtp_log_loss * (
                                 dp_size * get_num_microbatches() / step_num_groups
                             )
+
                         MTPLossLoggingHelper.save_loss_to_tracker(
                             mtp_log_loss,
                             mtp_layer_number,
@@ -768,14 +785,13 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                 return hidden_states  
 
             if not getattr(self.config, 'enable_chunkpipe', False):
-                hidden_states = _fused_output_and_cross_entropy_mtp(
-                    hidden_states, output_weight, mtp_labels, loss_mask
-                )
+                hidden_states = _fused_output_and_cross_entropy_mtp(hidden_states, output_weight, 
+                                        runtime_gather_output, mtp_labels, packed_seq_params, loss_mask)
             else:
                 hidden_states = tensor_parallel.checkpoint(
                     _fused_output_and_cross_entropy_mtp,
                     self.config.distribute_saved_activations,
-                    hidden_states, output_weight, mtp_labels, loss_mask
+                    hidden_states, output_weight, runtime_gather_output, mtp_labels, packed_seq_params, loss_mask
                 )
 
         sequence_parallel_override = False
