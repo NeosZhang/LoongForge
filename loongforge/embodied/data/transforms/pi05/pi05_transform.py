@@ -11,7 +11,16 @@ import torch
 from transformers import AutoTokenizer
 
 from loongforge.embodied.data.transforms.base import BaseTransform
-from loongforge.embodied.data.transforms.normalizer import Normalizer
+from loongforge.embodied.data.transforms.registry import (
+    TransformBuilderContext,
+    register_transform_builder,
+)
+from loongforge.embodied.data.transforms.utils import (
+    build_action_transform,
+    build_image_transform,
+    convert_stats,
+)
+from loongforge.embodied.data.transforms.utils.normalizer import Normalizer
 from loongforge.embodied.data.transforms.pi05.pi05_collator import tokenize_prompts
 
 
@@ -213,3 +222,72 @@ class Pi05TokenizeTransform(BaseTransform):
         data["input_ids"] = tok_out["input_ids"].squeeze(0)
         data["attention_mask"] = tok_out["attention_mask"].squeeze(0).bool()
         return data
+
+
+@register_transform_builder("pi05")
+def build_pi05_transforms(ctx: TransformBuilderContext):
+    """Build Pi05-specific per-sample transforms."""
+    transforms = []
+    model_cfg = ctx.model_cfg
+    data_cfg = ctx.data_cfg
+    image_keys = _discover_image_keys(ctx.dataset)
+    image_size = data_cfg.image_size
+    action_horizon = model_cfg.action_horizon
+    max_action_dim = model_cfg.max_action_dim
+    normalization_mode = data_cfg.normalization_mode
+
+    image_transform = build_image_transform(data_cfg, image_keys, image_size)
+    if image_transform is not None:
+        transforms.append(image_transform)
+
+    action_transform = build_action_transform(
+        data_cfg,
+        ctx.dataset_stats,
+        action_horizon,
+        max_action_dim,
+        normalization_mode,
+    )
+    if action_transform is not None:
+        transforms.append(action_transform)
+
+    state_stats = (
+        convert_stats(ctx.dataset_stats["observation.state"])
+        if ctx.dataset_stats and "observation.state" in ctx.dataset_stats
+        else None
+    )
+    transforms.append(
+        StateDiscretizationTransform(
+            apply_to=["prompt"],
+            state_key="observation.state",
+            task_key="task",
+            num_bins=256,
+            max_state_dim=None,
+            normalization_mode=normalization_mode,
+            statistics=state_stats,
+        )
+    )
+
+    num_images = data_cfg.num_images
+    image_mask = data_cfg.image_mask or [True] * num_images
+    max_token_len = data_cfg.max_token_len
+    tokenizer_path = ctx.training_args.tokenizer_path or os.environ.get("TOKENIZER_PATH", "")
+
+    transforms.append(
+        Pi05CollateImagesTransform(
+            image_size=image_size,
+            num_images=num_images,
+            image_mask=image_mask,
+        )
+    )
+    transforms.append(Pi05FallbackPromptTransform())
+    transforms.append(Pi05TokenizeTransform(tokenizer_path=tokenizer_path, max_token_len=max_token_len))
+    return transforms
+
+
+def _discover_image_keys(dataset) -> list[str]:
+    """Discover image keys from the first sample for Pi05 image transforms."""
+    try:
+        first_sample = dataset[0]
+    except Exception:
+        return []
+    return sorted(k for k in first_sample.keys() if k.startswith("observation.images."))

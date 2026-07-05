@@ -49,10 +49,6 @@ class GrootN1d6PreparedBatch(PreparedBatch):
             inputs["action_is_pad"] = self.action_is_pad
         return {k: v for k, v in inputs.items() if v is not None}
 
-    def to_legacy_inputs(self) -> Dict[str, Any]:
-        """Backward-compatible alias for older callers."""
-        return self.to_model_inputs()
-
 
 def _vlm_tokenizer_path(model_cfg: Any) -> str:
     return (
@@ -74,16 +70,17 @@ class GrootN1d6Preprocessor(BasePreprocessor):
     def __init__(
         self,
         model_cfg: Any,
+        data_cfg: Any,
         dataset_stats: Optional[Dict[str, Any]] = None,
         dataset: Any = None,
         max_length: Optional[int] = None,
-        preprocess_mode: str = "sample",
     ):
         self.model_cfg = model_cfg
+        self.data_cfg = data_cfg
         self.dataset_stats = dataset_stats
         self.dataset = dataset
         self.max_length = max_length
-        self.preprocess_mode = preprocess_mode
+        self.preprocess_mode = data_cfg.groot_preprocess_mode
         self._collator = None
 
     @classmethod
@@ -101,13 +98,12 @@ class GrootN1d6Preprocessor(BasePreprocessor):
             max_length = None
         if max_length is None:
             max_length = data_cfg.max_token_len
-        preprocess_mode = data_cfg.groot_preprocess_mode
         return cls(
             model_cfg=model_cfg,
+            data_cfg=data_cfg,
             dataset_stats=dataset_stats,
             dataset=dataset,
             max_length=max_length,
-            preprocess_mode=preprocess_mode,
         )
 
     @property

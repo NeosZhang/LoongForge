@@ -178,9 +178,10 @@ class TrainingArgs:
         metadata={"help": "Adam epsilon added to the denominator for numerical stability."})
 
     # ── Data loading control (cross-model; per-model processing lives in DataConfig) ──
-    dataloader_module: str = field(
+    dataset_format: str = field(
         default="lerobot_datasets",
-        metadata={"help": "Dataset builder module to use (e.g. lerobot_datasets, rlds, hdf5, dummy)."})
+        metadata={"help": "Dataset backend to use "
+                          "(e.g. lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets)."})
     dataset_path: Optional[str] = field(
         default=None,
         metadata={"help": "Filesystem path or repo id of the dataset to train on."})
@@ -220,6 +221,10 @@ class TrainingArgs:
     num_workers: int = field(
         default=4,
         metadata={"help": "Number of DataLoader worker processes per rank."})
+    dataloader_seed_workers: bool = field(
+        default=False,
+        metadata={"help": "Set DataLoader worker_init_fn and generator from --seed. "
+                          "Default leaves both unset for baseline precision comparison."})
     dataloader_multiprocessing_context: Optional[str] = field(
         default=None,
         metadata={"choices": ["fork", "spawn", "forkserver"],

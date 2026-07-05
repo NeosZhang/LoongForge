@@ -46,25 +46,12 @@ model:
   num_timestep_buckets: 1000
 
 data:
-  backbone_model_type: eagle
   embodiment_tag: libero_panda
   groot_preprocess_mode: sample
 
   preprocess_action_horizon: 16
   preprocess_max_action_dim: 29
   preprocess_max_state_dim: 29
-
-  use_image_transform: true
-  image_resize_strategy: none
-  image_normalize_mode: identity
-
-  use_action_transform: true
-  action_apply_to: ["action"]
-  action_normalization_mode: identity
-  action_use_statistics: false
-  action_padding_strategy: none
-  action_transform_horizon: null
-  action_transform_max_action_dim: null
 
   image_crop_size: [224, 224]
   image_target_size: [224, 224]

@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 
 from loongforge.embodied.data.transforms.base import BaseTransform
-from loongforge.embodied.data.transforms.normalizer import Normalizer
+from loongforge.embodied.data.transforms.utils.normalizer import Normalizer
 
 
 class ActionTransform(BaseTransform):

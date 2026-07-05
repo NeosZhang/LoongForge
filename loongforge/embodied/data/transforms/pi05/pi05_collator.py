@@ -140,4 +140,3 @@ class Pi05Preprocessor(BasePreprocessor):
             attention_mask=attention_mask,
             actions=actions,
         )
-

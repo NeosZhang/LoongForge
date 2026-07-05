@@ -267,7 +267,7 @@ class LeRobotV2Dataset(Dataset):
 
         timestamp = frame_index / self.fps
 
-        from loongforge.embodied.data.video_backends import decode_video_frame
+        from loongforge.embodied.data.datasets.video_backends import decode_video_frame
         frame = decode_video_frame(str(video_path), timestamp, backend=self.video_backend)
         return torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0
 

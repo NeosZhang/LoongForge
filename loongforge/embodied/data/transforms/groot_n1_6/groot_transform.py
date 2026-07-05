@@ -13,6 +13,10 @@ from PIL import Image
 import torch
 
 from loongforge.embodied.data.transforms.base import BaseTransform
+from loongforge.embodied.data.transforms.registry import (
+    TransformBuilderContext,
+    register_transform_builder,
+)
 from loongforge.embodied.data.transforms.groot_n1_6.processor_groot_n1_6 import (
     StateActionProcessor,
 )
@@ -48,7 +52,7 @@ class GrootPromptTransform(BaseTransform):
 
     def apply(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply prompt normalization transform to data."""
-        task = data.get(self.task_key, None)
+        task = data[self.task_key] if self.task_key in data else None
         if task is None or task == "":
             task = self.default_prompt
         data[self.prompt_key] = _normalize_text(task)
@@ -119,13 +123,6 @@ class GrootN1d6FeatureTransform(BaseTransform):
         self.use_relative_action = bool(data_cfg.use_relative_action)
         self.use_albumentations = bool(data_cfg.use_albumentations_transforms)
         self.use_processor_image_size = bool(data_cfg.use_processor_image_size)
-        self.use_common_image_transform = bool(data_cfg.use_image_transform)
-        self.common_image_resize_strategy = str(data_cfg.image_resize_strategy)
-        self.common_image_normalize_mode = str(data_cfg.image_normalize_mode)
-        self.common_image_preprocessed = (
-            self.use_common_image_transform
-            and self.common_image_resize_strategy != "none"
-        )
         self.image_target_size = _as_size_list(data_cfg.image_target_size, [224, 224])
         self.image_crop_size = _as_size_list(data_cfg.image_crop_size, [224, 224])
         self.shortest_image_edge = data_cfg.shortest_image_edge or 256
@@ -153,7 +150,7 @@ class GrootN1d6FeatureTransform(BaseTransform):
 
         self.train_image_transform = None
         self.eval_image_transform = None
-        if not self.use_processor_image_size and not self.common_image_preprocessed:
+        if not self.use_processor_image_size:
             self.train_image_transform, self.eval_image_transform = self._build_image_transforms()
 
     def apply(self, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -167,7 +164,7 @@ class GrootN1d6FeatureTransform(BaseTransform):
         images = {
             key.split("observation.images.", 1)[-1]: _extract_frames(
                 _to_numpy(data[key]),
-                normalize_mode=self.common_image_normalize_mode if self.use_common_image_transform else "identity",
+                normalize_mode="identity",
             )
             for key in image_keys
         }
@@ -238,7 +235,7 @@ class GrootN1d6FeatureTransform(BaseTransform):
         if self.embodiment_tag in EMBODIMENT_STAT_CONFIGS:
             action_cfg = EMBODIMENT_STAT_CONFIGS[self.embodiment_tag]["modality_config"]["action"]
             needs_relative_stats = any(
-                getattr(cfg.rep, "value", cfg.rep) == "relative"
+                cfg.rep.value == "relative"
                 for cfg in (action_cfg.action_configs or [])
             )
             if needs_relative_stats and "relative_action" not in dataset_stats_local:
@@ -364,7 +361,7 @@ class GrootN1d6FeatureTransform(BaseTransform):
     ) -> dict[str, Any]:
         image_keys = list(images.keys()) or self.modality_configs[self.embodiment_tag]["video"].modality_keys
         image_transform = None
-        if not self.use_processor_image_size and not self.common_image_preprocessed:
+        if not self.use_processor_image_size:
             image_transform = self.train_image_transform if self.training else self.eval_image_transform
 
         temporal_stacked_images = {}
@@ -448,7 +445,7 @@ def _to_uint8_hwc(frame: np.ndarray, normalize_mode: str = "identity") -> np.nda
     if arr.dtype != np.uint8:
         if normalize_mode != "identity":
             raise ValueError(
-                "GR00T expects common ImageTransform to use image_normalize_mode='identity'. "
+                "GR00T expects image preprocessing to keep identity normalization. "
                 f"Got {normalize_mode!r}; Eagle processor owns VLM image rescale/normalize."
             )
         finite_vals = arr[np.isfinite(arr)]
@@ -477,3 +474,23 @@ def _normalize_text(text_value: Any) -> str:
     if isinstance(value, bytes):
         value = value.decode("utf-8")
     return value if isinstance(value, str) else str(value)
+
+
+@register_transform_builder("Gr00tN1d6")
+def build_groot_n1_6_transforms(ctx: TransformBuilderContext):
+    """Build GR00T-N1.6-specific per-sample transforms."""
+    preprocess_mode = ctx.data_cfg.groot_preprocess_mode
+    if preprocess_mode != "sample":
+        raise ValueError(
+            f"Unsupported GR00T-N1.6 preprocess mode for per-sample transforms: {preprocess_mode!r}"
+        )
+
+    return [
+        GrootPromptTransform(),
+        GrootN1d6FeatureTransform(
+            model_cfg=ctx.model_cfg,
+            data_cfg=ctx.data_cfg,
+            dataset_stats=ctx.dataset_stats,
+            dataset=ctx.dataset,
+        ),
+    ]

@@ -18,7 +18,7 @@ export NCCL_ALGO="${NCCL_ALGO:-Ring}"
 export NVTE_ALLOW_NONDETERMINISTIC_ALGO="${NVTE_ALLOW_NONDETERMINISTIC_ALGO:-0}"
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-8}"
 
-export LOONGFORGE_PATH="${LOONGFORGE_PATH:-/workspace/AIAK-Training-Omni-new}"
+export LOONGFORGE_PATH="${LOONGFORGE_PATH:-/workspace/LoongForge}"
 export EAGLE_LOCAL_PATH=${EAGLE_LOCAL_PATH:-"/workspace/huggingface.co/aravindhs-NV/eagle3-processor-groot-n1d6"}
 
 # ── Paths ─────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ MODEL_CONFIG_ARGS=(
 
 
 DATA_ARGS=(
-    --dataloader-module lerobot_datasets
+    --dataset-format lerobot_datasets
     --dataset-path $DATA_PATH
     --robot-type libero_franka
     --video-backend torchcodec
@@ -92,6 +92,7 @@ TRAINING_ARGS=(
     --cuda-graph-grad-sync-bucket-mb 400
     --cuda-graph-grad-sync-impl coalesced
     --cuda-graph-grad-sync-dtype bf16
+    --no-check-for-nan-in-loss-and-grad
 )
 
 DISTRIBUTED_TRAINING_ARGS=(

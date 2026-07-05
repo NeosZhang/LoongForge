@@ -123,11 +123,10 @@ class GrootN1d6ModelConfig:
         elif isinstance(cfg, dict):
             items = dict(cfg)
         else:
-            items = {
-                key: getattr(cfg, key)
-                for key in cls.__dataclass_fields__
-                if hasattr(cfg, key)
-            }
+            raise TypeError(
+                "GrootN1d6ModelConfig.from_config expects a typed "
+                "GrootN1d6ModelConfig or a mapping object."
+            )
         values = {
             key: value
             for key, value in items.items()

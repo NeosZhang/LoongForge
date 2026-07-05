@@ -13,6 +13,7 @@ from loongforge.embodied.data.transforms.pi05.pi05_transform import (
     Pi05CollateImagesTransform,
     Pi05FallbackPromptTransform,
     Pi05TokenizeTransform,
+    build_pi05_transforms,
 )
 
 __all__ = [
@@ -22,5 +23,6 @@ __all__ = [
     "Pi05CollateImagesTransform",
     "Pi05FallbackPromptTransform",
     "Pi05TokenizeTransform",
+    "build_pi05_transforms",
     "tokenize_prompts",
 ]

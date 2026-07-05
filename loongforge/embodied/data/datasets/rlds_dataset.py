@@ -36,10 +36,8 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import IterableDataset
 
-from loongforge.embodied.data.transforms import (
-    ComposedTransform,
-    ImageTransform,
-)
+from loongforge.embodied.data.transforms import ComposedTransform
+from loongforge.embodied.data.transforms.utils import ImageTransform
 
 logger = logging.getLogger(__name__)
 

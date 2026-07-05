@@ -47,7 +47,7 @@ MODEL_CONFIG_ARGS=(
 
 # ── Data params ───────────────────────────────────────────────
 DATA_ARGS=(
-    --dataloader-module lerobot_datasets
+    --dataset-format lerobot_datasets
     --dataset-path $DATA_PATH
     --tokenizer-path $TOKENIZER_PATH
     --robot-type libero_franka

@@ -22,11 +22,8 @@ import numpy as np
 from PIL import Image
 from torch.utils.data import Dataset
 
-from loongforge.embodied.data.transforms import (
-    ActionTransform,
-    ComposedTransform,
-    ImageTransform,
-)
+from loongforge.embodied.data.transforms import ComposedTransform
+from loongforge.embodied.data.transforms.utils import ActionTransform, ImageTransform
 
 logger = logging.getLogger(__name__)
 

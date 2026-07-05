@@ -7,7 +7,7 @@ Dummy Dataset - Synthetic data for debugging and CI testing
 Generates random image/action/state/lang samples without real data files.
 
 Usage (CLI):
-    --dataloader-module dummy_datasets model.action_horizon=7 data.image_size=224
+    --dataset-format dummy_datasets model.action_horizon=7 data.image_size=224
 """
 
 import logging

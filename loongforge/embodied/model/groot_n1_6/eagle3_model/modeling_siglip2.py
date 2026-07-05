@@ -445,8 +445,10 @@ class Siglip2VisionEmbeddings(nn.Module):
         self.position_embedding = nn.Embedding(self.num_patches, self.embed_dim)
         # Cached index permutation for graph-safe window reordering (fixed for constant batch config)
         self.register_buffer("_window_sort_idx", None, persistent=False)
+        self._window_sort_key_cache = None
         # Cached reverse mapping for graph-safe token reordering (fixed for constant batch config)
         self.register_buffer("_reverse_mapping_cache", None, persistent=False)
+        self._reverse_mapping_key_cache = None
         # Cached batch_hw list from .tolist() for graph capture (shapes are fixed in training)
         self._cached_batch_hw_list = None
         # Cached spatial shapes GPU tensor for graph capture
@@ -561,7 +563,7 @@ class Siglip2VisionEmbeddings(nn.Module):
         if (
             self._window_sort_idx is None
             or self._window_sort_idx.shape[0] != len(sorted_idx)
-            or getattr(self, '_window_sort_key_cache', None) != _new_sort_key
+            or self._window_sort_key_cache != _new_sort_key
         ):
             self._window_sort_idx = torch.tensor(
                 sorted_idx, dtype=torch.long, device=patch_embeds.device
@@ -618,7 +620,7 @@ class Siglip2VisionEmbeddings(nn.Module):
         if (
             self._reverse_mapping_cache is None
             or self._reverse_mapping_cache.shape[0] != len(mapping)
-            or getattr(self, '_reverse_mapping_key_cache', None) != _new_mapping_key
+            or self._reverse_mapping_key_cache != _new_mapping_key
         ):
             self._reverse_mapping_cache = torch.tensor(
                 mapping, dtype=torch.long, device=patch_embeds.device

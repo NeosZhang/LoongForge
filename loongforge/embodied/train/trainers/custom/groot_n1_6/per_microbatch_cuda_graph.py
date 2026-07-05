@@ -405,18 +405,6 @@ class GrootN1d6PerMicrobatchCudaGraphRunner:
             ddp_model.logger = self._saved_ddp_logger
             self._saved_ddp_logger = None
 
-    def _train_forward_for_capture(self, batch: GrootN1d6PreparedBatch) -> dict[str, torch.Tensor]:
-        if not self._ddp_sync_in_graph:
-            return _as_output_dict(self.trainer._train_forward(batch))
-        from loongforge.embodied.distributed.parallel import resolve_dtype
-
-        dtype = getattr(self.trainer, "_compute_dtype", None)
-        if dtype is None:
-            dtype = resolve_dtype(self.training_args.dtype)
-            self.trainer._compute_dtype = dtype
-        with torch.autocast("cuda", dtype=dtype):
-            return _as_output_dict(self._raw_model(batch))
-
     def _backward(self, loss: torch.Tensor, micro_idx: int) -> None:
         if self.ctx.is_distributed and micro_idx < self.grad_accum - 1 and hasattr(self.trainer.model, "no_sync"):
             with self.trainer.model.no_sync():
@@ -448,7 +436,7 @@ class GrootN1d6PerMicrobatchCudaGraphRunner:
 
     def _allocate_rng_buffers(self) -> None:
         action_head = self._find_action_head()
-        actions_shape = getattr(action_head, "_split_actions_shape", None)
+        actions_shape = action_head._split_actions_shape
         if actions_shape is None:
             raise RuntimeError(
                 "GR00T action shape was not recorded during CUDA graph warmup. "

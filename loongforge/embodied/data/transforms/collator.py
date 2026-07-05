@@ -9,13 +9,17 @@ Classes:
     - register_preprocessor: Decorator to register model-specific collators
 """
 
+import importlib
+import pkgutil
 from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any, Dict, List, Type
 
 import torch
 
 
 _PREPROCESSOR_REGISTRY: Dict[str, Type["BasePreprocessor"]] = {}
+_DISCOVERED_PREPROCESSORS = False
 
 
 def register_preprocessor(name: str):
@@ -93,11 +97,16 @@ class BasePreprocessor:
 
     @classmethod
     def from_config(
-        cls, model_cfg, data_cfg, training_args=None, dataset_stats=None, dataset=None,
+        cls,
+        model_cfg,
+        data_cfg,
+        training_args=None,
+        dataset_stats=None,
+        dataset=None,
     ) -> "BasePreprocessor":
-        """Construct preprocessor from typed ModelConfig + DataConfig (+ TrainingArgs)."""
+        """Construct preprocessor from typed configs."""
         raise NotImplementedError(
-            f"{cls.__name__} must implement from_config(model_cfg, data_cfg, training_args=None, ...) classmethod"
+            f"{cls.__name__} must implement from_config(model_cfg, data_cfg, ...) classmethod"
         )
 
     def __call__(self, examples: List[Dict[str, Any]]) -> PreparedBatch:
@@ -107,6 +116,7 @@ class BasePreprocessor:
 
 def get_preprocessor(name: str) -> Type[BasePreprocessor]:
     """Look up a registered preprocessor class by name."""
+    discover_preprocessors()
     if name not in _PREPROCESSOR_REGISTRY:
         raise ValueError(
             f"Unknown preprocessor '{name}'. "
@@ -116,13 +126,36 @@ def get_preprocessor(name: str) -> Type[BasePreprocessor]:
 
 
 def build_preprocessor(
-    name: str, model_cfg, data_cfg, training_args=None, dataset_stats=None, dataset=None,
+    name: str,
+    model_cfg,
+    data_cfg,
+    training_args=None,
+    dataset_stats=None,
+    dataset=None,
 ) -> BasePreprocessor:
     """Instantiate a registered preprocessor via its from_config classmethod."""
     cls = get_preprocessor(name)
     return cls.from_config(
-        model_cfg, data_cfg, training_args=training_args, dataset_stats=dataset_stats, dataset=dataset,
+        model_cfg,
+        data_cfg,
+        training_args=training_args,
+        dataset_stats=dataset_stats,
+        dataset=dataset,
     )
+
+
+def discover_preprocessors() -> None:
+    """Import transform subpackages so collator decorators can register."""
+    global _DISCOVERED_PREPROCESSORS
+    if _DISCOVERED_PREPROCESSORS:
+        return
+
+    _DISCOVERED_PREPROCESSORS = True
+    package_dir = Path(__file__).resolve().parent
+    package_name = __package__
+    for module_info in pkgutil.iter_modules([str(package_dir)]):
+        if module_info.ispkg and not module_info.name.startswith("_"):
+            importlib.import_module(f"{package_name}.{module_info.name}")
 
 
 @register_preprocessor("dummy")
@@ -131,7 +164,12 @@ class DummyPreprocessor(BasePreprocessor):
 
     @classmethod
     def from_config(
-        cls, model_cfg, data_cfg, training_args=None, dataset_stats=None, dataset=None,
+        cls,
+        model_cfg,
+        data_cfg,
+        training_args=None,
+        dataset_stats=None,
+        dataset=None,
     ) -> "DummyPreprocessor":
         return cls()
 

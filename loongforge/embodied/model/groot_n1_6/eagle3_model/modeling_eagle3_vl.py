@@ -66,7 +66,7 @@ def _runtime_attention_impl(preferred: str | None = None) -> str:
 
 
 def _config_attention_impl(config) -> str:
-    return _runtime_attention_impl(getattr(config, "_attn_implementation", None))
+    return _runtime_attention_impl(config.__dict__.get("_attn_implementation"))
 
 
 def _is_cuda_capturing() -> bool:
@@ -427,10 +427,10 @@ class Eagle3VlForConditionalGeneration(Eagle3VlPreTrainedModel, GenerationMixin)
         _maybe_install_fa2_patches()
 
         self.select_layer = config.select_layer
-        self.template = getattr(config, "template", None)
+        self.template = config.template
         self.downsample_ratio = config.downsample_ratio
-        self.loss_version = getattr(config, "loss_version", "v1")
-        self.mlp_checkpoint = getattr(config, "mlp_checkpoint", False)
+        self.loss_version = config.loss_version
+        self.mlp_checkpoint = config.mlp_checkpoint
 
         logger.info(f"mlp_checkpoint: {self.mlp_checkpoint}")
 
@@ -453,30 +453,26 @@ class Eagle3VlForConditionalGeneration(Eagle3VlPreTrainedModel, GenerationMixin)
             self.language_model = Phi3ForCausalLM(config.text_config)
         elif text_arch == "Qwen2ForCausalLM":
             attn_impl = _config_attention_impl(config.text_config)
-            if getattr(config.text_config, "_attn_implementation", None) != attn_impl:
+            current_attn_impl = config.text_config.__dict__.get("_attn_implementation")
+            if current_attn_impl != attn_impl:
                 logger.warning(
                     "Qwen2 attention implementation is %s; overriding to %s.",
-                    getattr(config.text_config, "_attn_implementation", None),
+                    current_attn_impl,
                     attn_impl,
                 )
                 config.text_config._attn_implementation = attn_impl
             self.language_model = Qwen2ForCausalLM(config.text_config)
         elif text_arch == "Qwen3ForCausalLM":
             attn_impl = _config_attention_impl(config.text_config)
-            if getattr(config.text_config, "_attn_implementation", None) != attn_impl:
+            current_attn_impl = config.text_config.__dict__.get("_attn_implementation")
+            if current_attn_impl != attn_impl:
                 logger.warning(
                     "Qwen3 attention implementation is %s; overriding to %s.",
-                    getattr(config.text_config, "_attn_implementation", None),
+                    current_attn_impl,
                     attn_impl,
                 )
                 config.text_config._attn_implementation = attn_impl
 
-            # if getattr(config.text_config, "_attn_implementation", None) != "eager":
-            #     logger.warning(
-            #         "Qwen2 attention implementation is %s; overriding to eager.",
-            #         getattr(config.text_config, "_attn_implementation", None),
-            #     )
-            #     config.text_config._attn_implementation = "eager"
             self.language_model = Qwen3ForCausalLM(config.text_config)
         else:
             raise NotImplementedError(f"{text_arch} is not implemented.")
@@ -495,9 +491,11 @@ class Eagle3VlForConditionalGeneration(Eagle3VlPreTrainedModel, GenerationMixin)
         self.neftune_alpha = None
         # Cached spatial shapes for CUDA graph capture (fixed in training)
         self._cached_pixel_shuffle_shapes = None
+        self._capture_has_invalid_images = False
+        self._in_graph_warmup = False
 
-        self.use_backbone_lora = getattr(config, "use_backbone_lora", 0) != 0
-        self.use_llm_lora = getattr(config, "use_llm_lora", 0) != 0
+        self.use_backbone_lora = config.use_backbone_lora != 0
+        self.use_llm_lora = config.use_llm_lora != 0
 
         if self.use_backbone_lora:
             self.wrap_backbone_lora(r=config.use_backbone_lora, lora_alpha=2 * config.use_backbone_lora)
@@ -752,7 +750,7 @@ class Eagle3VlForConditionalGeneration(Eagle3VlPreTrainedModel, GenerationMixin)
             if _is_cuda_capturing():
                 # During capture, rely on warmup-phase validation: if warmup detected
                 # invalid images, capture must not proceed (would bake in wrong path).
-                if getattr(self, '_capture_has_invalid_images', False):
+                if self._capture_has_invalid_images:
                     raise RuntimeError(
                         "CUDA graph capture: image_flags contained zeros during warmup. "
                         "Ensure all batches have valid images when using full-iteration "
@@ -762,7 +760,7 @@ class Eagle3VlForConditionalGeneration(Eagle3VlPreTrainedModel, GenerationMixin)
                 # Only record the flag during graph warmup phase, not during
                 # unrelated eager calls (eval, inference) which should not block
                 # subsequent graph capture.
-                if getattr(self, '_in_graph_warmup', False):
+                if self._in_graph_warmup:
                     self._capture_has_invalid_images = True
                 vit_embeds = self.mask_valid_tokens(vit_embeds, spatial_shapes, image_flags)
 

@@ -75,7 +75,7 @@ def _load_lerobot_eager_eagle(
     if (
         hasattr(config, "vision_config")
         and config.vision_config is not None
-        and getattr(config.vision_config, "model_type", None) in {"siglip_vision_model", "siglip2_vision_model"}
+        and config.vision_config.model_type in {"siglip_vision_model", "siglip2_vision_model"}
     ):
         config.vision_config._attn_implementation = "flash_attention_2"
 
@@ -260,9 +260,7 @@ class EagleBackbone(torch.nn.Module):
             outputs = outputs.hidden_states[-1]
 
         # Get image token index from config
-        image_token_index = getattr(self.model, "image_token_index", 0)
-        if hasattr(self.model, "config"):
-            image_token_index = getattr(self.model.config, "image_token_index", image_token_index)
+        image_token_index = self.model.config.image_token_index
         image_mask = vl_input["input_ids"] == image_token_index
         attention_mask = vl_input["attention_mask"] == 1
 

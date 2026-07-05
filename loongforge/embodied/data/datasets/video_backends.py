@@ -72,8 +72,6 @@ def decode_video_frames_by_indices(
 
 
 # ─── Backend Implementations ───────────────────────────────────────────────────
-
-
 def _decode_torchcodec(video_path, timestamps=None):
     from torchcodec.decoders import VideoDecoder
     decoder = VideoDecoder(str(video_path))

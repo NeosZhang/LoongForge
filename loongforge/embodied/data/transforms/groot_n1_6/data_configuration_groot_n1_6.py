@@ -45,20 +45,6 @@ class GrootN1d6DataConfig:
     preprocess_max_action_dim: int = 29
     preprocess_max_state_dim: int = 29
 
-    # Image transform
-    use_image_transform: bool = True
-    image_resize_strategy: str = "none"
-    image_normalize_mode: str = "identity"
-
-    # Action transform
-    use_action_transform: bool = True
-    action_apply_to: List[str] = field(default_factory=lambda: ["action"])
-    action_normalization_mode: str = "identity"
-    action_use_statistics: bool = False
-    action_padding_strategy: str = "none"
-    action_transform_horizon: Optional[int] = None
-    action_transform_max_action_dim: Optional[int] = None
-
     # Image geometry / augmentation
     image_crop_size: List[int] = field(default_factory=lambda: [224, 224])
     image_target_size: List[int] = field(default_factory=lambda: [224, 224])

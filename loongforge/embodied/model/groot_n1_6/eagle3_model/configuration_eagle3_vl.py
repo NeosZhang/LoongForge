@@ -107,7 +107,7 @@ class Eagle3VLConfig(PretrainedConfig):
         self.downsample_ratio = downsample_ratio
         self.template = template
         self.loss_version = loss_version
-        self.tie_word_embeddings = getattr(self.text_config, "tie_word_embeddings", False)
+        self.tie_word_embeddings = self.text_config.tie_word_embeddings
         self.image_token_index = image_token_index
         self.initializer_range = initializer_range
 
@@ -124,8 +124,8 @@ class Eagle3VLConfig(PretrainedConfig):
         output["template"] = self.template
         output["image_token_index"] = self.image_token_index
         output["initializer_range"] = self.initializer_range
-        output["_attn_implementation"] = getattr(self, "_attn_implementation", None)
-        output["_attn_implementation_autoset"] = getattr(self, "_attn_implementation_autoset", None)
+        output["_attn_implementation"] = self.__dict__.get("_attn_implementation")
+        output["_attn_implementation_autoset"] = self.__dict__.get("_attn_implementation_autoset")
         return output
 
 

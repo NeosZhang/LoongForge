@@ -126,6 +126,12 @@ class Gr00tN1d6ActionHead(nn.Module):
             config.noise_beta_alpha, config.noise_beta_beta
         )
         self.num_timestep_buckets = config.num_timestep_buckets
+        self._split_noise_buf = None
+        self._split_time_buf = None
+        self._split_record_shape = False
+        self._split_actions_shape = None
+        self._split_actions_device = None
+        self._split_actions_dtype = None
         self.set_trainable_parameters(
             config.tune_projector, config.tune_diffusion_model, config.tune_vlln
         )
@@ -329,7 +335,7 @@ class Gr00tN1d6ActionHead(nn.Module):
         # In per-microbatch graph mode: use external static buffers for noise/time
         # so that graph captures reads from fixed addresses, and we can
         # overwrite them with fresh Beta.sample() values before each replay.
-        _noise_buf = getattr(self, '_split_noise_buf', None)
+        _noise_buf = self._split_noise_buf
         if _noise_buf is not None:
             # Split graph mode: read from pre-allocated static buffers.
             # Buffers are allocated before capture with correct shape.
@@ -338,7 +344,7 @@ class Gr00tN1d6ActionHead(nn.Module):
             t = t_1d[:, None, None]
         else:
             # Record action shape during warmup for later buffer allocation
-            if getattr(self, '_split_record_shape', False):
+            if self._split_record_shape:
                 self._split_actions_shape = actions.shape
                 self._split_actions_device = actions.device
                 self._split_actions_dtype = actions.dtype
@@ -428,7 +434,7 @@ class Gr00tN1d6ActionHead(nn.Module):
 
         # Compute masked MSE loss
         # Get action_mask from input, or create default (all valid) if missing
-        action_mask = getattr(action_input, "action_mask", None)
+        action_mask = action_input.action_mask
         if action_mask is None:
             # Create default mask (all valid) matching pred_actions shape
             action_mask = torch.ones_like(pred_actions)
@@ -1054,9 +1060,11 @@ def _restore_rotary_buffers_fp32(module: nn.Module) -> None:
     for submodule in module.modules():
         if type(submodule).__name__ not in {"Qwen2RotaryEmbedding", "Qwen3RotaryEmbedding"}:
             continue
-        inv_freq = getattr(submodule, "inv_freq", None)
-        rope_init_fn = getattr(submodule, "rope_init_fn", None)
-        config = getattr(submodule, "config", None)
+        if not all(hasattr(submodule, attr) for attr in ("inv_freq", "rope_init_fn", "config")):
+            continue
+        inv_freq = submodule.inv_freq
+        rope_init_fn = submodule.rope_init_fn
+        config = submodule.config
         if inv_freq is None or inv_freq.device.type == "meta" or not callable(rope_init_fn) or config is None:
             continue
 

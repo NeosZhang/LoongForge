@@ -1,8 +1,7 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-LoongForge VLA Data Transforms & Collators
+"""Public API for data transform pipelines and registries.
 
 Per-sample transforms:
   - BaseTransform / ComposedTransform: Transform base classes
@@ -22,64 +21,30 @@ Utilities:
 """
 
 from loongforge.embodied.data.transforms.base import BaseTransform, ComposedTransform
-from loongforge.embodied.data.transforms.normalizer import Normalizer
-from loongforge.embodied.data.transforms.image_transform import ImageTransform
-from loongforge.embodied.data.transforms.action_transform import ActionTransform
 from loongforge.embodied.data.transforms.collator import (
     BasePreprocessor,
     PreparedBatch,
-    register_preprocessor,
-    get_preprocessor,
     build_preprocessor,
+    get_preprocessor,
+    register_preprocessor,
 )
-from loongforge.embodied.data.transforms.pipeline import (
-    build_transforms_from_args,
-    convert_stats,
-)
-from loongforge.embodied.data.transforms.pi05 import (
-    StateDiscretizationTransform,
-    Pi05Preprocessor,
-    Pi05PreparedBatch,
-    Pi05CollateImagesTransform,
-    Pi05FallbackPromptTransform,
-    Pi05TokenizeTransform,
-    tokenize_prompts,
-)
-from loongforge.embodied.data.transforms.groot_n1_6 import (
-    GrootBatchTransform,
-    GrootN1d6FeatureTransform,
-    GrootN1d6PreparedBatch,
-    GrootN1d6Preprocessor,
-    GrootPromptTransform,
-    GrootStateActionTransform,
+from loongforge.embodied.data.transforms.pipeline import build_transforms_from_args
+from loongforge.embodied.data.transforms.registry import (
+    TransformBuilderContext,
+    get_transform_builder,
+    register_transform_builder,
 )
 
 __all__ = [
-    # Per-sample transforms
+    "BasePreprocessor",
     "BaseTransform",
     "ComposedTransform",
-    "Normalizer",
-    "ImageTransform",
-    "ActionTransform",
-    "StateDiscretizationTransform",
-    "Pi05CollateImagesTransform",
-    "Pi05FallbackPromptTransform",
-    "Pi05TokenizeTransform",
-    "convert_stats",
-    "build_transforms_from_args",
-    # Collator framework
-    "BasePreprocessor",
     "PreparedBatch",
+    "TransformBuilderContext",
+    "build_preprocessor",
+    "build_transforms_from_args",
+    "get_preprocessor",
+    "get_transform_builder",
     "register_preprocessor",
-    # Pi05 collator
-    "Pi05Preprocessor",
-    "Pi05PreparedBatch",
-    "tokenize_prompts",
-    # GR00T-N1.6 collator
-    "GrootBatchTransform",
-    "GrootN1d6FeatureTransform",
-    "GrootPromptTransform",
-    "GrootStateActionTransform",
-    "GrootN1d6Preprocessor",
-    "GrootN1d6PreparedBatch",
+    "register_transform_builder",
 ]
