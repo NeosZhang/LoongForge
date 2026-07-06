@@ -51,7 +51,7 @@ class FinetuneTrainer(BaseTrainer):
         return build_model(self.model_cfg)
 
     def _build_dataloaders(self) -> Dict[str, DataLoader]:
-        dl = build_dataloader(self.model_cfg, self.args, self.ctx)
+        dl = build_dataloader(self.model_cfg, self.data_cfg, self.training_args, self.ctx)
         return {"vla": dl}
 
     def _train_forward(self, batch) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -63,7 +63,7 @@ class FinetuneTrainer(BaseTrainer):
         """
         dtype = getattr(self, "_compute_dtype", None)
         if dtype is None:
-            dtype = resolve_dtype(self.args.dtype)
+            dtype = resolve_dtype(self.training_args.dtype)
             self._compute_dtype = dtype
 
         with torch.autocast("cuda", dtype=dtype):
@@ -79,7 +79,7 @@ class FinetuneTrainer(BaseTrainer):
         feeds it straight to collect_metrics.
         """
         st = self._stage_timers
-        grad_accum = self.args.gradient_accumulation_steps
+        grad_accum = self.training_args.gradient_accumulation_steps
         log_dict: Dict[str, float] = {}
         with st("forward-backward"):
             for micro in range(grad_accum):
@@ -106,7 +106,7 @@ class FinetuneTrainer(BaseTrainer):
         the backward loss goes under ``action_loss`` (the main reported loss),
         while ``log_loss_dict`` carries print-only losses by their own keys.
         """
-        threshold = self.args.loss_spike_threshold
+        threshold = self.training_args.loss_spike_threshold
         with self._stage_timers("backward-compute"):
             # Scale + loss spike protection (zero out to prevent NaN propagation).
             raw_loss = loss
@@ -146,11 +146,11 @@ class FinetuneTrainer(BaseTrainer):
 
     def _build_optimizer(self) -> torch.optim.Optimizer:
         """Build AdamW with per-module LR groups."""
-        return build_optimizer(self.model, self.args)
+        return build_optimizer(self.model, self.training_args)
 
     def _build_scheduler(self):
         """Build LR scheduler."""
-        return build_scheduler(self.optimizer, self.args)
+        return build_scheduler(self.optimizer, self.training_args)
 
     def _clip_gradients(self, max_norm: float) -> float:
         """Gradient clipping. Returns the pre-clip global gradient norm."""
@@ -212,7 +212,7 @@ class FinetuneTrainer(BaseTrainer):
     def _save_checkpoint(self):
         save_checkpoint(
             self.model, self.optimizer, self.lr_scheduler,
-            self.completed_steps, self.checkpoint_dir, self.ctx, self.args,
+            self.completed_steps, self.checkpoint_dir, self.ctx, self.training_args,
             epoch=self.current_epoch,
             dataloader_state=self._get_dataloader_state(),
         )

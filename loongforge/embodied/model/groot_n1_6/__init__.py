@@ -3,12 +3,12 @@
 
 """GR00T-N1.6 model package."""
 
-from loongforge.embodied.model.groot_n1_6.configuration_groot_n1_6 import (
-    GrootN1d6Config,
+from loongforge.embodied.model.groot_n1_6.model_configuration_groot_n1_6 import (
+    GrootN1d6ModelConfig,
 )
 from loongforge.embodied.model.groot_n1_6.modeling_groot_n1_6 import (
     Gr00tN1d6,
     GrootN1d6Policy,
 )
 
-__all__ = ["Gr00tN1d6", "GrootN1d6Config", "GrootN1d6Policy"]
+__all__ = ["Gr00tN1d6", "GrootN1d6ModelConfig", "GrootN1d6Policy"]

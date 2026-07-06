@@ -92,10 +92,12 @@ class BasePreprocessor:
     """Abstract base for model-specific DataLoader collate functions."""
 
     @classmethod
-    def from_config(cls, cfg, args=None) -> "BasePreprocessor":
-        """Construct preprocessor from a full config object."""
+    def from_config(
+        cls, model_cfg, data_cfg, training_args=None, dataset_stats=None, dataset=None,
+    ) -> "BasePreprocessor":
+        """Construct preprocessor from typed ModelConfig + DataConfig (+ TrainingArgs)."""
         raise NotImplementedError(
-            f"{cls.__name__} must implement from_config(cfg, args=None) classmethod"
+            f"{cls.__name__} must implement from_config(model_cfg, data_cfg, training_args=None, ...) classmethod"
         )
 
     def __call__(self, examples: List[Dict[str, Any]]) -> PreparedBatch:
@@ -113,10 +115,14 @@ def get_preprocessor(name: str) -> Type[BasePreprocessor]:
     return _PREPROCESSOR_REGISTRY[name]
 
 
-def build_preprocessor(name: str, cfg, args=None) -> BasePreprocessor:
+def build_preprocessor(
+    name: str, model_cfg, data_cfg, training_args=None, dataset_stats=None, dataset=None,
+) -> BasePreprocessor:
     """Instantiate a registered preprocessor via its from_config classmethod."""
     cls = get_preprocessor(name)
-    return cls.from_config(cfg, args=args)
+    return cls.from_config(
+        model_cfg, data_cfg, training_args=training_args, dataset_stats=dataset_stats, dataset=dataset,
+    )
 
 
 @register_preprocessor("dummy")
@@ -124,7 +130,9 @@ class DummyPreprocessor(BasePreprocessor):
     """Pass-through preprocessor that returns examples as-is in a PreparedBatch."""
 
     @classmethod
-    def from_config(cls, cfg, args=None) -> "DummyPreprocessor":
+    def from_config(
+        cls, model_cfg, data_cfg, training_args=None, dataset_stats=None, dataset=None,
+    ) -> "DummyPreprocessor":
         return cls()
 
     def __call__(self, examples: List[Dict[str, Any]]) -> PreparedBatch:

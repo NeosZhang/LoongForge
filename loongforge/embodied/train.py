@@ -8,9 +8,9 @@ from loongforge.embodied.train.trainers import build_model_trainer
 
 
 def main():
-    """Parse args, build trainer, and start training loop."""
-    args = parse_train_args()
-    trainer = build_model_trainer(args)
+    """Parse configs, build trainer, and start training loop."""
+    training_args, model_cfg, data_cfg = parse_train_args()
+    trainer = build_model_trainer(training_args, model_cfg, data_cfg)
     trainer.train()
 
 

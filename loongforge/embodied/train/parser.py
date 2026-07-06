@@ -1,83 +1,94 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""
-Unified argument parsing: YAML (model structure) + CLI (training control).
+"""Unified argument parsing → three typed configs.
 
-Design: args and cfg are strictly separated:
-  - args (argparse Namespace): all training/data/running params, used directly by trainer
-  - cfg  (OmegaConf):          model architecture params only (framework.*), stored globally
+Flow:
+  1. Parse CLI: TrainingArgs flags (--lr-base ...) + positional dotlist overrides.
+  2. Build TrainingArgs DictConfig: structured(TrainingArgs) merged with CLI values.
+  3. Route model_name → (ModelConfig, DataConfig) classes + shared YAML.
+  4. Merge YAML model:/data: sections into structured schemas.
+  5. Apply Shell dotlist overrides (model.* / data.*) — still DictConfig stage.
+  6. Validate on DictConfig (missing-key / interpolation checks).
+  7. to_object() → frozen TrainingArgs / ModelConfig / DataConfig instances.
+  8. Store in global singletons; return the triple.
 
 Usage:
     from loongforge.embodied.train.parser import parse_train_args
-    args = parse_train_args()
-    # cfg available via: from loongforge.embodied.train.global_vars import get_model_config
+    training_args, model_cfg, data_cfg = parse_train_args()
+    # also accessible via global_vars.get_training_args / get_model_config / get_data_config
 """
 
-import argparse
 import os
 
 from omegaconf import OmegaConf
 
-from .arguments import add_model_override_args, embodied_args_provider
-from .config_map import get_config_path
-from .global_vars import set_args, set_model_config
-from .validators import validate_args
+from .training_args import build_arg_parser, TrainingArgs
+from .config_map import get_config_path, get_model_schema
+from .global_vars import set_data_config, set_model_config, set_training_args
+from .validators import validate
 
 
 def parse_train_args():
-    """
-    Parse flow:
-      1. Top-level CLI: --model-name / --training-phase / --config-file + model switches
-      2. Parse all CLI training args → args namespace
-      3. Load YAML → model_cfg (OmegaConf, model structure only)
-      4. Process positional overrides → override model_cfg fields
-      5. Store cfg globally via set_model_config(), args via set_args()
-      6. Validate args + cfg
-      7. Attach model_cfg to args.model_cfg (for backward compat)
-      8. Return args; cfg also accessible via get_model_config()
-    """
-    parser = argparse.ArgumentParser(
-        description="LoongForge Embodied Training",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+    """Parse CLI + YAML into (TrainingArgs, ModelConfig, DataConfig) instances."""
+    parser = build_arg_parser()
+    raw = parser.parse_args()
+    raw_dict = vars(raw)
+    overrides = raw_dict.pop("overrides", [])
 
-    # Model routing + switches + training + distributed
-    embodied_args_provider(parser)
-
-    # Model field overrides (positional dotlist)
-    add_model_override_args(parser)
-
-    args = parser.parse_args()
+    # ── 1. TrainingArgs: structured defaults ← CLI overrides ──
+    base = OmegaConf.structured(TrainingArgs)
+    cli = OmegaConf.create(dict(raw_dict))
+    training_dc = OmegaConf.merge(base, cli)
 
     # Propagate tokenizer path to env var (model builder reads TOKENIZER_PATH)
-    if args.tokenizer_path:
-        os.environ["TOKENIZER_PATH"] = args.tokenizer_path
+    if training_dc.tokenizer_path:
+        os.environ["TOKENIZER_PATH"] = training_dc.tokenizer_path
 
-    # ── Load model structure YAML ──
-    if args.config_file:
-        config_path = args.config_file
-    elif args.model_name:
-        config_path = get_config_path(args.model_name)
+    # ── 2. Route model_name / config_file → schema + YAML ──
+    if training_dc.config_file:
+        config_path = training_dc.config_file
+        if not training_dc.model_name:
+            raise ValueError(
+                "--model-name is required to select ModelConfig/DataConfig classes "
+                "even when --config-file is provided."
+            )
+    elif training_dc.model_name:
+        config_path = get_config_path(training_dc.model_name)
     else:
-        raise ValueError("Must specify --model-name or --config-file")
+        raise ValueError("Must specify --model-name (and optionally --config-file).")
 
-    model_cfg = OmegaConf.load(config_path)
+    schema = get_model_schema(training_dc.model_name)
+    yaml_cfg = OmegaConf.load(config_path)
 
-    # Apply CLI dotlist overrides to model config
-    if args.overrides:
-        override_cfg = OmegaConf.from_dotlist(args.overrides)
-        model_cfg = OmegaConf.merge(model_cfg, override_cfg)
+    # ── 3. ModelConfig / DataConfig: structured schema ← YAML section ──
+    model_dc = OmegaConf.merge(
+        OmegaConf.structured(schema.model_config_cls),
+        yaml_cfg.get("model", {}),
+    )
+    data_dc = OmegaConf.merge(
+        OmegaConf.structured(schema.data_config_cls),
+        yaml_cfg.get("data", {}),
+    )
 
-    # Store globally (aligned with loongforge main-path pattern)
+    # ── 4. Shell dotlist overrides (model.* / data.*) ──
+    if overrides:
+        ov = OmegaConf.from_dotlist(list(overrides))
+        if "model" in ov:
+            model_dc = OmegaConf.merge(model_dc, ov.model)
+        if "data" in ov:
+            data_dc = OmegaConf.merge(data_dc, ov.data)
+
+    # ── 5. Validate (DictConfig stage) ──
+    validate(training_dc, model_dc, data_dc)
+
+    # ── 6. Instantiate frozen dataclasses ──
+    training_args = OmegaConf.to_object(training_dc)
+    model_cfg = OmegaConf.to_object(model_dc)
+    data_cfg = OmegaConf.to_object(data_dc)
+
+    # ── 7. Store globally + return ──
+    set_training_args(training_args)
     set_model_config(model_cfg)
-    set_args(args)
-
-    # Validate
-    validate_args(args, model_cfg)
-
-    # Backward compat: attach to args for trainer access
-    args.model_cfg = model_cfg
-    args.config_path = config_path
-
-    return args
+    set_data_config(data_cfg)
+    return training_args, model_cfg, data_cfg

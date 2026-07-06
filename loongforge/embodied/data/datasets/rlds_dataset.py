@@ -210,21 +210,19 @@ class RLDSVLADataset(IterableDataset):
 # Builder (called by data/__init__.py)
 # ═══════════════════════════════════════════════════════════════
 
-def build_rlds_dataset(model_cfg, args) -> IterableDataset:
+def build_rlds_dataset(model_cfg, data_cfg, training_args) -> IterableDataset:
     """
-    Build RLDS dataset from CLI args.
+    Build RLDS dataset from typed configs + CLI training_args.
 
-    Required args attributes:
-      - dataset_name: HuggingFace dataset name or OXE registry key
-    Required model_cfg fields:
-      - action_model.action_horizon, backbone.image_size: data format params
+    Shared dims (action_horizon / image_size) come from ModelConfig;
+    data-processing params from DataConfig; dataset selection from TrainingArgs.
     """
-    dataset_name = getattr(args, "dataset_name", "bridge_v2")
-    split = getattr(args, "split", "train")
-    action_horizon = model_cfg.get("action_model", {}).get("action_horizon", 7)
-    image_size = model_cfg.get("backbone", {}).get("image_size", 224)
-    streaming = getattr(args, "streaming", True)
-    normalization_mode = getattr(args, "normalization_mode", "min_max")
+    dataset_name = training_args.dataset_name
+    split = training_args.split
+    action_horizon = model_cfg.action_horizon
+    image_size = data_cfg.image_size
+    streaming = training_args.streaming
+    normalization_mode = data_cfg.normalization_mode
 
     return RLDSVLADataset(
         dataset_name=dataset_name,

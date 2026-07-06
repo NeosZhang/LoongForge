@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,7 +27,7 @@ class LoongForgePI05Policy:
         device: str = "cuda",
         use_bf16: bool = True,
         dataset_statistics_path: str = "",
-        tokenizer_name: str = "google/paligemma-3b-pt-224",
+        tokenizer_path: str = "",
         action_dim: int = 7,
         state_dim: int = 7,
         action_horizon: int = 50,
@@ -43,20 +44,22 @@ class LoongForgePI05Policy:
 
         CONFIG_MAPPING.register("paligemma", PaliGemmaConfig, exist_ok=True)
         from loongforge.embodied.model.pi05.modeling_pi05 import PI05Policy
+        from loongforge.embodied.model.pi05.model_configuration_pi05 import Pi05ModelConfig
 
         pretrained_path = str(Path(ckpt_path).expanduser())
-        config = {
-            "tokenizer_name": tokenizer_name,
-            "action_dim": int(action_dim),
-            "state_dim": int(state_dim),
-            "action_horizon": int(action_horizon),
-            "max_action_dim": int(max_action_dim),
-            "max_state_dim": int(max_state_dim),
-            "compile_model": bool(compile_model),
-            "compile_mode": compile_mode,
-        }
+        config = Pi05ModelConfig(
+            action_dim=int(action_dim),
+            state_dim=int(state_dim),
+            action_horizon=int(action_horizon),
+            max_action_dim=int(max_action_dim),
+            max_state_dim=int(max_state_dim),
+            compile_model=bool(compile_model),
+            compile_mode=compile_mode,
+        )
+        self._tokenizer_path = tokenizer_path or os.environ.get("TOKENIZER_PATH", "")
         self._device = torch.device(device if torch.cuda.is_available() or not device.startswith("cuda") else "cpu")
         self._policy = PI05Policy.from_pretrained(config)
+        self._policy._tokenizer_path = self._tokenizer_path
         if not random_init:
             self._load_checkpoint(self._policy.model, pretrained_path, self._device)
         self._policy = self._policy.to(self._device)

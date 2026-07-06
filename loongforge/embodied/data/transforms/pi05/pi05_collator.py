@@ -9,7 +9,6 @@ Batch-level collator (DataLoader collate_fn):
 
 Utilities:
     tokenize_prompts(prompts, tokenizer, max_length) -> dict
-    build_tokenizer(config) -> AutoTokenizer
 """
 
 import os
@@ -42,19 +41,6 @@ def tokenize_prompts(
     finally:
         tokenizer.padding_side = original_padding_side
     return {"input_ids": encoded["input_ids"], "attention_mask": encoded["attention_mask"]}
-
-
-def build_tokenizer(config):
-    """Build the PaliGemma tokenizer from PI05Config."""
-    if not config.tokenizer_name:
-        raise ValueError(
-            "PI05Config.tokenizer_name is empty. "
-            "Set it to the tokenizer path or set TOKENIZER_PATH env variable."
-        )
-    return AutoTokenizer.from_pretrained(
-        config.tokenizer_name,
-        local_files_only=config.tokenizer_local_files_only,
-    )
 
 
 @dataclass
@@ -93,27 +79,24 @@ class Pi05Preprocessor(BasePreprocessor):
         self.tokenizer_path = tokenizer_path
 
     @classmethod
-    def from_config(cls, cfg, args=None) -> "Pi05Preprocessor":
-        """Construct from model config (OmegaConf dict or object).
+    def from_config(
+        cls, model_cfg, data_cfg, training_args=None, dataset_stats=None, dataset=None,
+    ) -> "Pi05Preprocessor":
+        """Construct from typed ModelConfig + DataConfig (+ TrainingArgs).
 
-        Accepts either:
-            - A dict with top-level 'backbone' key (model_cfg style)
-            - An object with .framework.backbone (full training config style)
+        Tokenizer path: training_args.tokenizer_path (--tokenizer-path) > TOKENIZER_PATH env.
+        Image/token processing fields come from DataConfig.
         """
-        if hasattr(cfg, "get"):
-            backbone_cfg = cfg.get("backbone", {})
-        elif hasattr(cfg, "framework"):
-            backbone_cfg = cfg.framework.get("backbone", {}) if cfg.framework else {}
-        else:
-            backbone_cfg = {}
-
-        tokenizer_path = backbone_cfg.get("tokenizer_name", "") or os.environ.get("TOKENIZER_PATH", "")
+        tokenizer_path = (
+            (training_args.tokenizer_path if training_args is not None else None)
+            or os.environ.get("TOKENIZER_PATH", "")
+        )
 
         return cls(
-            image_size=backbone_cfg.get("image_size", 224),
-            num_images=backbone_cfg.get("num_images", 2),
-            image_mask=backbone_cfg.get("image_mask", None),
-            max_token_len=backbone_cfg.get("max_token_len", 200),
+            image_size=data_cfg.image_size,
+            num_images=data_cfg.num_images,
+            image_mask=data_cfg.image_mask,
+            max_token_len=data_cfg.max_token_len,
             tokenizer_path=tokenizer_path,
         )
 

@@ -16,7 +16,6 @@ from loongforge.embodied.data.transforms.collator import (
     PreparedBatch,
     register_preprocessor,
 )
-from loongforge.embodied.model.groot_n1_6.configuration_groot_n1_6 import GrootN1d6Config
 from loongforge.embodied.data.transforms.groot_n1_6.processor_groot_n1_6 import (
     Gr00tN1d6DataCollator,
 )
@@ -55,16 +54,10 @@ class GrootN1d6PreparedBatch(PreparedBatch):
         return self.to_model_inputs()
 
 
-def _cfg_get(cfg: Any, key: str, default: Any = None) -> Any:
-    if hasattr(cfg, "get"):
-        return cfg.get(key, default)
-    return getattr(cfg, key, default)
-
-
-def _vlm_tokenizer_path(cfg: Any) -> str:
+def _vlm_tokenizer_path(model_cfg: Any) -> str:
     return (
         os.environ.get("EAGLE_LOCAL_PATH")
-        or getattr(cfg, "vlm_tokenizer_path", None)
+        or model_cfg.vlm_tokenizer_path
         or "aravindhs-NV/eagle3-processor-groot-n1d6"
     )
 
@@ -80,13 +73,13 @@ class GrootN1d6Preprocessor(BasePreprocessor):
 
     def __init__(
         self,
-        policy_cfg: Any,
+        model_cfg: Any,
         dataset_stats: Optional[Dict[str, Any]] = None,
         dataset: Any = None,
         max_length: Optional[int] = None,
         preprocess_mode: str = "sample",
     ):
-        self.policy_cfg = policy_cfg
+        self.model_cfg = model_cfg
         self.dataset_stats = dataset_stats
         self.dataset = dataset
         self.max_length = max_length
@@ -96,21 +89,21 @@ class GrootN1d6Preprocessor(BasePreprocessor):
     @classmethod
     def from_config(
         cls,
-        cfg,
-        args=None,
+        model_cfg,
+        data_cfg,
+        training_args=None,
         dataset_stats: Optional[Dict[str, Any]] = None,
         dataset: Any = None,
     ) -> "GrootN1d6Preprocessor":
-        """Construct GrootN1d6Preprocessor from a config object."""
-        policy_cfg = GrootN1d6Config.from_config(cfg)
-        max_length = getattr(args, "cuda_graph_pad_length", None)
+        """Construct GrootN1d6Preprocessor from typed ModelConfig + DataConfig."""
+        max_length = training_args.cuda_graph_pad_length if training_args is not None else None
         if max_length == 0:
             max_length = None
         if max_length is None:
-            max_length = _cfg_get(cfg, "max_token_len", None)
-        preprocess_mode = _cfg_get(cfg, "groot_preprocess_mode", "sample")
+            max_length = data_cfg.max_token_len
+        preprocess_mode = data_cfg.groot_preprocess_mode
         return cls(
-            policy_cfg=policy_cfg,
+            model_cfg=model_cfg,
             dataset_stats=dataset_stats,
             dataset=dataset,
             max_length=max_length,
@@ -123,9 +116,9 @@ class GrootN1d6Preprocessor(BasePreprocessor):
         if self._collator is None:
             kwargs = {"local_files_only": True, "trust_remote_code": True}
             self._collator = Gr00tN1d6DataCollator(
-                model_name=getattr(self.policy_cfg, "model_name", "nvidia/Eagle-Block2A-2B-v2"),
-                vlm_tokenizer_path=_vlm_tokenizer_path(self.policy_cfg),
-                model_type=getattr(self.policy_cfg, "backbone_model_type", "eagle"),
+                model_name=self.model_cfg.model_name,
+                vlm_tokenizer_path=_vlm_tokenizer_path(self.model_cfg),
+                model_type=self.model_cfg.backbone_model_type,
                 transformers_loading_kwargs=kwargs,
                 max_length=self.max_length,
             )

@@ -128,16 +128,16 @@ class LeRobotV3Dataset(LeRobotDataset):
 
 
 class LeRobotV2Dataset(Dataset):
-    """LeRobot v2.0/v2.1 format dataset (不依赖 lerobot 官方库).
+    """LeRobot v2.0/v2.1 format dataset (does not depend on the official lerobot library).
 
-    v2.0/v2.1 格式:
-      - meta/info.json: fps, chunks_size, video keys 等
-      - meta/episodes.jsonl: 每行一个 episode {episode_index, length, ...}
-      - meta/tasks.jsonl: 每行一个 task {task_index, task}
-      - data/{chunk}/episode_{idx:06d}.parquet: 每 episode 一个 parquet
-      - videos/{key}/{chunk}/episode_{idx:06d}.mp4: 视频文件
+    v2.0/v2.1 layout:
+      - meta/info.json: fps, chunks_size, video keys, etc.
+      - meta/episodes.jsonl: one episode per line  {episode_index, length, ...}
+      - meta/tasks.jsonl: one task per line  {task_index, task}
+      - data/{chunk}/episode_{idx:06d}.parquet: one parquet file per episode
+      - videos/{key}/{chunk}/episode_{idx:06d}.mp4: video files
 
-    Output format 与 v3.0 LeRobotV3Dataset 对齐。
+    Output format is aligned with the v3.0 LeRobotV3Dataset.
     """
 
     def __init__(
@@ -438,7 +438,7 @@ def _build_lerobot_dataset(
         lerobotdataset_version: Dataset format version ("v2.0", "v2.1", "v3.0").
             v2.0/v2.1 use JSONL metadata + one-parquet-per-episode (no lerobot lib needed).
             v3.0 uses lerobot official LeRobotDataset API.
-        (other args: see individual dataset classes)
+        (other training_args: see individual dataset classes)
 
     Returns:
         Dataset instance matching the requested version/streaming mode.
@@ -484,20 +484,19 @@ def _build_lerobot_dataset(
     return dataset
 
 
-def build_lerobot_dataset(model_cfg, args):
-    """Build lerobot-based VLA dataset from model config and CLI args."""
-    dataset_path = getattr(args, "dataset_path", None)
+def build_lerobot_dataset(model_cfg, data_cfg, training_args):
+    """Build lerobot-based VLA dataset from typed configs and CLI training_args."""
+    dataset_path = training_args.dataset_path
     if not dataset_path:
         raise ValueError("Must specify --dataset-path")
 
     dataset_path = Path(dataset_path)
     repo_id = dataset_path.name
 
-    action_cfg = model_cfg.get("action_model", {}) if hasattr(model_cfg, "get") else {}
-    action_horizon = getattr(args, "action_horizon", action_cfg.get("action_horizon", 50))
-    lerobotdataset_version = getattr(args, "lerobotdataset_version", "v3.0")
-    video_backend = getattr(args, "video_backend", "torchcodec")
-    streaming = getattr(args, "streaming", False)
+    action_horizon = model_cfg.action_horizon
+    lerobotdataset_version = training_args.lerobotdataset_version
+    video_backend = training_args.video_backend
+    streaming = training_args.streaming
 
     return _build_lerobot_dataset(
         repo_id=repo_id,

@@ -4,8 +4,7 @@
 #
 # Usage:
 #   bash run_pi05_ddp.sh                                        # paligemma default
-#   bash run_pi05_ddp.sh --lr 1e-4                              # override training param
-#   bash run_pi05_ddp.sh backbone.image_size=448                # override YAML field
+#   bash run_pi05_ddp.sh model.state_dim=8 data.image_size=448  # override YAML model:/data: fields (dotlist form)
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -45,7 +44,6 @@ DATA_ARGS=(
     --dataset-path $DATA_PATH
     --tokenizer-path $TOKENIZER_PATH
     --robot-type libero_franka
-    --normalization-mode q99
     --num-workers 16
 )
 
@@ -59,7 +57,6 @@ TRAINING_ARGS=(
     --output-dir $OUTPUT_DIR
     # Learning rate
     --lr-base 2.5e-5
-    --lr-group "model.paligemma_with_expert.gemma_expert=1e-4,model.paligemma_with_expert=1e-5"
     --lr-decay-style cosine_with_min_lr
     --lr-warmup-iters 10
     --min-lr 1.0e-6
@@ -103,4 +100,4 @@ PYTHONPATH=$LOONGFORGE_PATH:${PYTHONPATH:-} \
     "${TRAINING_ARGS[@]}" \
     "${DISTRIBUTED_TRAINING_ARGS[@]}" \
     "${LOGGING_ARGS[@]}" \
-    "$@"   # pass-through: --lr-base 1e-4  OR  backbone.image_size=448
+    "$@" 

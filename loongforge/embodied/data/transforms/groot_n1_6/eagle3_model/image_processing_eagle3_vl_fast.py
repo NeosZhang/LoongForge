@@ -31,11 +31,9 @@ except ImportError:
 try:
     from transformers.image_processing_utils_fast import (
         BASE_IMAGE_PROCESSOR_FAST_DOCSTRING,
-        BASE_IMAGE_PROCESSOR_FAST_DOCSTRING_PREPROCESS,
     )
 except ImportError:
     BASE_IMAGE_PROCESSOR_FAST_DOCSTRING = ""
-    BASE_IMAGE_PROCESSOR_FAST_DOCSTRING_PREPROCESS = ""
 from transformers.image_utils import (
     IMAGENET_STANDARD_MEAN,  # 0.5, 0.5, 0.5
     IMAGENET_STANDARD_STD,  # 0.5, 0.5, 0.5

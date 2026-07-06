@@ -38,7 +38,7 @@ class BaseTrainer(ABC):
     """
     Training skeleton — Template Method pattern.
 
-    Lifecycle: __init__(args) → train() → [_setup → _training_loop → _finalize]
+    Lifecycle: __init__(training_args) → train() → [_setup → _training_loop → _finalize]
 
     The base class holds ONLY:
       - abstract methods: model/data/paradigm-dependent compute and training
@@ -56,9 +56,10 @@ class BaseTrainer(ABC):
         backward + loss combination (ABSTRACT — subclass implements).
     """
 
-    def __init__(self, args):
-        self.args = args
-        self.model_cfg = args.model_cfg
+    def __init__(self, training_args, model_cfg, data_cfg):
+        self.training_args = training_args
+        self.model_cfg = model_cfg
+        self.data_cfg = data_cfg
 
         # Initialized in _setup()
         self.ctx: Optional[DistributedContext] = None
@@ -71,7 +72,7 @@ class BaseTrainer(ABC):
         # Training state
         self.completed_steps: int = 0
         self.current_epoch: int = 0
-        self.train_iters: int = args.train_iters
+        self.train_iters: int = training_args.train_iters
 
         # Data iterators (managed by _fetch_batch for epoch cycling)
         self._data_iters: Dict[str, Any] = {}
@@ -102,7 +103,7 @@ class BaseTrainer(ABC):
 
     def _setup(self):
         """One-shot initialization of all training resources."""
-        args = self.args
+        training_args = self.training_args
 
         # 1. Distributed context
         self.ctx = DistributedContext()
@@ -110,45 +111,45 @@ class BaseTrainer(ABC):
 
         # 2. Seed — use the same seed on all ranks (align with lerobot/accelerate baseline).
         # DistributedSampler handles per-rank data partitioning internally via its own seed+rank offset.
-        set_seed(args.seed)
-        if getattr(args, "deterministic_mode", False):
+        set_seed(training_args.seed)
+        if training_args.deterministic_mode:
             set_deterministic()
 
         # 3. Output directories + logging
-        self.output_dir = args.output_dir
+        self.output_dir = training_args.output_dir
         self.checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
         if self.ctx.is_main:
             os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.ctx.barrier()
         setup_logging(self.output_dir, self.ctx.rank)
 
-        # Dump fully-resolved CLI args + model config now that the file
+        # Dump fully-resolved CLI training_args + model config now that the file
         # handler is attached, so the effective config also lands in the log.
-        log_effective_config(args)
+        log_effective_config(training_args, self.model_cfg, self.data_cfg)
 
         # 4. TrainingLogger (initialize early for logging during setup)
         self.logger = TrainingLogger(
             output_dir=self.output_dir,
-            wandb_project=args.wandb_project,
-            wandb_mode=args.wandb_mode,
+            wandb_project=training_args.wandb_project,
+            wandb_mode=training_args.wandb_mode,
             is_main=self.ctx.is_main,
             model_cfg=self.model_cfg,
-            tensorboard_dir=getattr(args, "tensorboard_dir", None),
-            tensorboard_queue_size=getattr(args, "tensorboard_queue_size", 1000),
+            tensorboard_dir=training_args.tensorboard_dir,
+            tensorboard_queue_size=training_args.tensorboard_queue_size,
             run_name=os.path.basename(self.output_dir),
         )
 
         # 5. Build model (from YAML model_cfg)
         with log_stage(
             "model",
-            start_msg=f"building: model_type={getattr(self.model_cfg, 'model_type', '?')}",
+            start_msg=f"building: model_type={self.model_cfg.model_type}",
             end_msg="built in {elapsed}",
         ):
             self.model = self._build_model()
 
         # 5. Pretrained weights / Resume (before wrapping)
         latest_path = None
-        if args.resume:
+        if training_args.resume:
             latest_path, latest_step, latest_epoch = get_latest_checkpoint(self.checkpoint_dir)
             assert latest_path, (
                 f"--resume set but no checkpoint was found in {self.checkpoint_dir}. "
@@ -161,22 +162,22 @@ class BaseTrainer(ABC):
                 end_msg="resume done in {elapsed}",
             ):
                 self._handle_resume(latest_path, latest_step, latest_epoch)
-        elif args.pretrained_checkpoint:
+        elif training_args.pretrained_checkpoint:
             with log_stage(
                 "ckpt",
-                start_msg=f"loading pretrained: {args.pretrained_checkpoint}",
+                start_msg=f"loading pretrained: {training_args.pretrained_checkpoint}",
                 end_msg="pretrained loaded in {elapsed}",
             ):
-                self._load_pretrained(args.pretrained_checkpoint)
+                self._load_pretrained(training_args.pretrained_checkpoint)
         else:
             logger.info("No pretrained weights or resume checkpoint found. Using random initialization.")
 
         # 6. Freeze modules
-        self._freeze_modules(args.freeze_modules)
+        self._freeze_modules(training_args.freeze_modules)
 
         with log_stage(
             "wrap_model",
-            start_msg=f"wrap_model: strategy={args.distributed_strategy}, dtype={args.dtype}",
+            start_msg=f"wrap_model: strategy={training_args.distributed_strategy}, dtype={training_args.dtype}",
             end_msg="done in {elapsed}",
         ):
             # 7. Parallel wrapping (DDP/FSDP + mixed precision via policy).
@@ -193,10 +194,10 @@ class BaseTrainer(ABC):
             self.lr_scheduler = self._build_scheduler()
 
         # 9. Resume optimizer/scheduler/RNG state (after wrapping + optimizer creation).
-        # Gate on `args.resume` only — step==0 is a valid resume point and must
+        # Gate on `training_args.resume` only — step==0 is a valid resume point and must
         # still restore optimizer/scheduler/RNG/dataloader, otherwise we'd run
         # with resumed weights but a fresh optimizer (half-resume).
-        if args.resume and latest_path:
+        if training_args.resume and latest_path:
             with log_stage(
                 "ckpt",
                 start_msg=f"restoring optimizer/scheduler/RNG state from {latest_path}",
@@ -230,13 +231,13 @@ class BaseTrainer(ABC):
     # ═══════════════════════════════════════════════
 
     def _training_loop(self):
-        args = self.args
-        log_interval = args.log_interval
-        detail_log_interval = args.detail_log_interval
-        save_interval = args.save_interval
+        training_args = self.training_args
+        log_interval = training_args.log_interval
+        detail_log_interval = training_args.detail_log_interval
+        save_interval = training_args.save_interval
 
         # ── Profiler setup ──
-        prof = Profiler(args, self.ctx, self.output_dir)
+        prof = Profiler(training_args, self.ctx, self.output_dir)
         prof.start()
 
         # ── Per-stage timing (shared via instance attr) ──
@@ -279,7 +280,7 @@ class BaseTrainer(ABC):
             #       rank-0 backends (W&B/TB/JSONL) below are unaffected.
             # grad_norm is already global (clip_gradients / get_grad_norm all-reduce
             # internally), so it is NOT touched here.
-            loss_log_ranks = getattr(args, "loss_log_rank", [-1])
+            loss_log_ranks = training_args.loss_log_rank
             if any(r < 0 for r in loss_log_ranks):
                 for key in list(log_dict.keys()):
                     if "loss" in key:
@@ -290,7 +291,7 @@ class BaseTrainer(ABC):
 
             # ── Metrics ──
             step_time = time.perf_counter() - t0
-            batch_size = args.gradient_accumulation_steps * args.per_device_batch_size
+            batch_size = training_args.gradient_accumulation_steps * training_args.per_device_batch_size
             metrics = self.logger.collect_metrics(
                 log_dict, step_time,
                 self.completed_steps, self.lr_scheduler,
@@ -309,14 +310,14 @@ class BaseTrainer(ABC):
             if self.completed_steps % log_interval == 0:
                 self.logger.log_metrics(
                     metrics, self.completed_steps, self.train_iters,
-                    args.per_device_batch_size, self.ctx.world_size, self.ctx.is_distributed,
-                    gradient_accumulation_steps=args.gradient_accumulation_steps,
+                    training_args.per_device_batch_size, self.ctx.world_size, self.ctx.is_distributed,
+                    gradient_accumulation_steps=training_args.gradient_accumulation_steps,
                 )
 
             # ── Per-stage timing log (all ranks call; rank 0 emits) ──
             if enable_detail:
                 self.logger.log_stage_times(
-                    self._stage_timers, self.ctx, log_level=args.timing_log_level
+                    self._stage_timers, self.ctx, log_level=training_args.timing_log_level
                 )
                 self._stage_timers.reset()
 
@@ -360,7 +361,7 @@ class BaseTrainer(ABC):
         scalar metrics to log.
         """
         st = self._stage_timers
-        grad_clip = self.args.clip_grad
+        grad_clip = self.training_args.clip_grad
 
         # ── Gradient accumulation + forward + backward (Layer 3, abstract) ──
         # Subclasses may override _run_forward_backward_block to take over the
@@ -412,7 +413,7 @@ class BaseTrainer(ABC):
 
     @abstractmethod
     def _build_dataloaders(self) -> Dict[str, DataLoader]:
-        """Build dataloaders from self.args. Must include 'vla' key."""
+        """Build dataloaders from self.training_args. Must include 'vla' key."""
         ...
 
     @abstractmethod
@@ -535,7 +536,7 @@ class BaseTrainer(ABC):
         entirely (e.g. install a custom train-step runner that manages its own
         wrapping policy).
         """
-        self.model = wrap_model(self.model, self.args, self.ctx)
+        self.model = wrap_model(self.model, self.training_args, self.ctx)
 
     def _run_forward_backward_block(self) -> dict:
         """Run zero_grad + one optimizer step's forward/backward block.
@@ -614,7 +615,7 @@ class BaseTrainer(ABC):
         # Final checkpoint — skip when the last loop iteration already saved
         # at this exact step (train_iters % save_interval == 0), otherwise
         # we'd overwrite the same steps_{N} dir twice and waste I/O.
-        if self.completed_steps % self.args.save_interval != 0:
+        if self.completed_steps % self.training_args.save_interval != 0:
             self._save_checkpoint()
 
         # Wait for any in-flight async DCP save before tearing down the

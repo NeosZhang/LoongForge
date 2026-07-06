@@ -16,13 +16,13 @@ _TRAINER_CLASSES = {
 }
 
 
-def build_model_trainer(args):
-    """Build Trainer from --trainer-type argument.
+def build_model_trainer(training_args, model_cfg, data_cfg):
+    """Build Trainer from ``training_args.trainer_type``.
 
-    Resolves the trainer class from args.trainer_type (e.g. "FinetuneTrainer")
-    via _TRAINER_CLASSES, instantiates with args.
+    Resolves the trainer class from training_args.trainer_type (e.g.
+    "FinetuneTrainer") via _TRAINER_CLASSES, instantiates with the three configs.
     """
-    trainer_type = getattr(args, "trainer_type", None)
+    trainer_type = training_args.trainer_type
 
     if not trainer_type:
         raise ValueError(
@@ -37,4 +37,4 @@ def build_model_trainer(args):
             f"Available: {list(_TRAINER_CLASSES.keys())}"
         )
 
-    return trainer_cls(args)
+    return trainer_cls(training_args, model_cfg, data_cfg)

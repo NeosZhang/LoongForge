@@ -9,7 +9,7 @@ Usage:
     class Pi05Model(nn.Module): ...
 
     # Build
-    model = build_model(cfg)   # cfg.model_type = "pi05"
+    model = build_model(model_cfg)   # model_cfg.model_type = "pi05"
 """
 
 import importlib
@@ -46,21 +46,18 @@ def _auto_import_model_modules():
                 pass
 
 
-def build_model(cfg) -> nn.Module:
-    """Build a model instance by cfg.model_type.
+def build_model(model_cfg) -> nn.Module:
+    """Build a model instance by model_cfg.model_type.
 
     Args:
-        cfg: OmegaConf / dict, must contain the model_type field.
+        model_cfg: typed ModelConfig instance (must have a ``model_type`` attribute).
 
     Returns:
         Initialized nn.Module.
     """
     _auto_import_model_modules()
 
-    model_type = cfg.get("model_type") if hasattr(cfg, "get") else getattr(cfg, "model_type", None)
-    if model_type is None:
-        raise ValueError("cfg.model_type is required for build_model()")
-
+    model_type = model_cfg.model_type
     if model_type not in MODEL_REGISTRY:
         raise KeyError(
             f"Unknown model_type: '{model_type}'. "
@@ -68,4 +65,4 @@ def build_model(cfg) -> nn.Module:
         )
 
     cls = MODEL_REGISTRY[model_type]
-    return cls.from_pretrained(cfg)
+    return cls.from_pretrained(model_cfg)

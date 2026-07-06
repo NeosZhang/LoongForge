@@ -7,7 +7,6 @@ from loongforge.embodied.data.transforms.pi05.pi05_collator import (
     Pi05Preprocessor,
     Pi05PreparedBatch,
     tokenize_prompts,
-    build_tokenizer,
 )
 from loongforge.embodied.data.transforms.pi05.pi05_transform import (
     StateDiscretizationTransform,
@@ -24,5 +23,4 @@ __all__ = [
     "Pi05FallbackPromptTransform",
     "Pi05TokenizeTransform",
     "tokenize_prompts",
-    "build_tokenizer",
 ]

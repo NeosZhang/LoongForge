@@ -7,7 +7,7 @@ LoongForge VLA Data Engine
 Data loading for VLA (Vision-Language-Action) training.
 
 Public API:
-    - build_dataloader(model_cfg, args, ctx): Factory that builds DataLoader with
+    - build_dataloader(model_cfg, data_cfg, training_args, ctx): Factory that builds DataLoader with
       model-specific preprocessor as collate_fn
     - save_dataset_statistics: Save stats to JSON
     - BasePreprocessor / PreparedBatch: Base classes for extension
@@ -189,27 +189,28 @@ class _SeedWorkerInit:
         torch.manual_seed(worker_seed)
 
 
-def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLoader:
+def build_dataloader(model_cfg, data_cfg, training_args, ctx: DistributedContext) -> StatefulDataLoader:
     """Build DataLoader with model-specific preprocessor as collate_fn.
 
     The returned DataLoader yields PreparedBatch objects (CPU tensors).
     Call batch.to(device) before passing to model.forward().
 
     Args:
-        model_cfg: OmegaConf/dict model config (backbone, action_model at top level)
-        args: CLI args namespace (dataset path, batch size, etc.)
+        model_cfg: typed ModelConfig (model structure + shared fields).
+        data_cfg: typed DataConfig (data-processing fields).
+        training_args: TrainingArgs (generic CLI params: dataset path, batch size, ...).
         ctx: DistributedContext
 
     Returns:
         torch.utils.data.DataLoader (yielding PreparedBatch subclass)
     """
-    module = getattr(args, "dataloader_module", "lerobot_datasets")
-    batch_size = args.per_device_batch_size
-    num_workers = getattr(args, "num_workers", 4)
-    mp_context = getattr(args, "dataloader_multiprocessing_context", None) or ("spawn" if num_workers > 0 else None)
+    module = training_args.dataloader_module
+    batch_size = training_args.per_device_batch_size
+    num_workers = training_args.num_workers
+    mp_context = training_args.dataloader_multiprocessing_context or ("spawn" if num_workers > 0 else None)
 
     # Build dataset (without transform first to get stats)
-    dataset = _build_dataset(model_cfg, args, module)
+    dataset = _build_dataset(model_cfg, data_cfg, training_args, module)
 
     # Get dataset stats
     dataset_stats = {}
@@ -217,7 +218,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
         dataset_stats = dataset.meta.stats
 
     # Build per-sample transforms and inject into dataset
-    transform = build_transforms_from_args(model_cfg, args, dataset, dataset_stats)
+    transform = build_transforms_from_args(model_cfg, data_cfg, training_args, dataset, dataset_stats)
     if transform is not None:
         if hasattr(dataset, "_transform"):
             dataset._transform = transform
@@ -227,17 +228,17 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
             dataset = _TransformedMapDataset(dataset, transform)
 
     # Build preprocessor (collate_fn)
-    preprocessor = _build_preprocessor(model_cfg, args)
+    preprocessor = _build_preprocessor(model_cfg, data_cfg, training_args, dataset_stats, dataset)
 
     # Save statistics
     if ctx.is_main:
-        output_dir = getattr(args, "output_dir", "")
+        output_dir = training_args.output_dir
         if output_dir and dataset_stats:
             stats_path = os.path.join(output_dir, "dataset_statistics.json")
             save_dataset_statistics(dataset_stats, stats_path)
 
     # Build DataLoader
-    seed = getattr(args, "seed", 0) or 0
+    seed = training_args.seed or 0
     if isinstance(dataset, IterableDataset):
         dl = StatefulDataLoader(
             dataset,
@@ -253,7 +254,7 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
     else:
         sampler = None
         shuffle = True
-        sampler_mode = getattr(args, "distributed_sampler_mode", "cyclic")
+        sampler_mode = training_args.distributed_sampler_mode
         generator = torch.Generator().manual_seed(seed)
         use_distributed_sampler = ctx.is_distributed and ctx.world_size > 1
         if use_distributed_sampler:
@@ -298,43 +299,40 @@ def build_dataloader(model_cfg, args, ctx: DistributedContext) -> StatefulDataLo
     return dl
 
 
-def _build_preprocessor(model_cfg, args):
+def _build_preprocessor(model_cfg, data_cfg, training_args, dataset_stats, dataset):
     """Build batch-level preprocessor (collate_fn) from the registry.
 
     Resolves model_type to a registered preprocessor name, then
-    instantiates via from_config.
+    instantiates via from_config with the typed configs.
     """
-    model_type = model_cfg.get("model_type", "") if hasattr(model_cfg, "get") else ""
-    if not model_type:
-        model_type = "dummy"
+    model_type = model_cfg.model_type or "dummy"
 
-    preprocessor = build_preprocessor(model_type, model_cfg, args=args)
-
-    # Override fast_tokenizer_path with CLI --tokenizer-path if provided
-    if hasattr(preprocessor, "fast_tokenizer_path") and getattr(args, "tokenizer_path", None):
-        preprocessor.fast_tokenizer_path = args.tokenizer_path
+    preprocessor = build_preprocessor(
+        model_type, model_cfg, data_cfg, training_args,
+        dataset_stats=dataset_stats, dataset=dataset,
+    )
 
     logger.info(f"Using preprocessor: {model_type}")
     return preprocessor
 
 
-def _build_dataset(model_cfg, args, module: str):
+def _build_dataset(model_cfg, data_cfg, training_args, module: str):
     """Build dataset instance based on dataloader_module."""
     if module == "lerobot_datasets":
         from .datasets.lerobot_dataset import build_lerobot_dataset
-        return build_lerobot_dataset(model_cfg, args)
+        return build_lerobot_dataset(model_cfg, data_cfg, training_args)
 
     elif module == "rlds_datasets":
         from .datasets.rlds_dataset import build_rlds_dataset
-        return build_rlds_dataset(model_cfg, args)
+        return build_rlds_dataset(model_cfg, data_cfg, training_args)
 
     elif module == "hdf5_datasets":
         from .datasets.hdf5_dataset import build_hdf5_dataset
-        return build_hdf5_dataset(model_cfg, args)
+        return build_hdf5_dataset(model_cfg, data_cfg, training_args)
 
     elif module == "dummy_datasets":
         from .datasets.dummy_dataset import build_dummy_dataset
-        return build_dummy_dataset(model_cfg, args)
+        return build_dummy_dataset(model_cfg, data_cfg, training_args)
 
     else:
         raise ValueError(

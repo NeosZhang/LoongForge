@@ -2,49 +2,66 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-global_vars.py - Embodied training global state
+global_vars.py - Embodied training global state (three typed singletons).
 
-Aligned with loongforge/utils/global_vars.py design:
-  - set_model_config() / get_model_config(): model architecture cfg (OmegaConf, framework.*)
-  - set_args() / get_args():                  training args (argparse Namespace)
+  - set_training_args() / get_training_args(): generic CLI args (TrainingArgs).
+  - set_model_config()  / get_model_config():  model-structure config (ModelConfig).
+  - set_data_config()   / get_data_config():   data-processing config (DataConfig).
 
-Training params (lr, steps, gradient_checkpointing, freeze_vision_encoder, ...) live in args.
-Architecture params (paligemma_variant, action_dim, ...) live in cfg.
+All three are frozen dataclass instances produced by parse_train_args().
 """
 
+_EMBODIED_TRAINING_ARGS = None
 _EMBODIED_MODEL_CONFIG = None
-_EMBODIED_ARGS = None
+_EMBODIED_DATA_CONFIG = None
 
 
-def set_model_config(cfg):
-    """Store model architecture config globally. Must be called exactly once before training."""
+def set_training_args(training_args):
+    """Store generic training args globally. Call exactly once per process."""
+    global _EMBODIED_TRAINING_ARGS
+    assert _EMBODIED_TRAINING_ARGS is None, (
+        "training args already set; set_training_args() should only be called once per process"
+    )
+    _EMBODIED_TRAINING_ARGS = training_args
+
+
+def get_training_args():
+    """Retrieve the globally stored training args (TrainingArgs)."""
+    assert _EMBODIED_TRAINING_ARGS is not None, (
+        "training args not initialized; call parse_train_args() first"
+    )
+    return _EMBODIED_TRAINING_ARGS
+
+
+def set_model_config(model_cfg):
+    """Store model-structure config globally. Call exactly once per process."""
     global _EMBODIED_MODEL_CONFIG
     assert _EMBODIED_MODEL_CONFIG is None, (
         "model config already set; set_model_config() should only be called once per process"
     )
-    _EMBODIED_MODEL_CONFIG = cfg
+    _EMBODIED_MODEL_CONFIG = model_cfg
 
 
 def get_model_config():
-    """Retrieve the globally stored model architecture config (OmegaConf)."""
+    """Retrieve the globally stored model-structure config (ModelConfig)."""
     assert _EMBODIED_MODEL_CONFIG is not None, (
         "model config not initialized; call parse_train_args() first"
     )
     return _EMBODIED_MODEL_CONFIG
 
 
-def set_args(args):
-    """Store training args globally. Must be called exactly once before training."""
-    global _EMBODIED_ARGS
-    assert _EMBODIED_ARGS is None, (
-        "args already set; set_args() should only be called once per process"
+def set_data_config(data_cfg):
+    """Store data-processing config globally. Call exactly once per process."""
+    global _EMBODIED_DATA_CONFIG
+    assert _EMBODIED_DATA_CONFIG is None, (
+        "data config already set; set_data_config() should only be called once per process"
     )
-    _EMBODIED_ARGS = args
+    _EMBODIED_DATA_CONFIG = data_cfg
 
 
-def get_args():
-    """Retrieve the globally stored training args (argparse Namespace)."""
-    assert _EMBODIED_ARGS is not None, (
-        "args not initialized; call parse_train_args() first"
+def get_data_config():
+    """Retrieve the globally stored data-processing config (DataConfig)."""
+    assert _EMBODIED_DATA_CONFIG is not None, (
+        "data config not initialized; call parse_train_args() first"
     )
-    return _EMBODIED_ARGS
+    return _EMBODIED_DATA_CONFIG

@@ -238,12 +238,12 @@ def _is_graph_mode_active() -> bool:
     - OR we're currently in a CUDA graph capture stream
     """
     try:
-        from loongforge.embodied.train.global_vars import get_args
+        from loongforge.embodied.train.global_vars import get_training_args
 
-        args = get_args()
+        training_args = get_training_args()
         if (
-            getattr(args, "cuda_graph_impl", "none") == "local"
-            and getattr(args, "cuda_graph_scope", "full_iteration") in {"full_iteration", "per_microbatch"}
+            training_args.cuda_graph_impl == "local"
+            and training_args.cuda_graph_scope in {"full_iteration", "per_microbatch"}
         ):
             return True
     except (ImportError, RuntimeError, AssertionError):

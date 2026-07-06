@@ -103,20 +103,20 @@ class _MultiDtypeZeroOptimizer(torch.optim.Optimizer):
             opt.consolidate_state_dict(to=to)
 
 
-def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
+def build_optimizer(model: nn.Module, training_args) -> torch.optim.Optimizer:
     """Build the training optimizer.
 
     - Build per-module LR parameter groups via ``build_param_groups``.
-    - Select AdamW/Adam/SGD from ``args.optimizer``.
+    - Select AdamW/Adam/SGD from ``training_args.optimizer``.
     - Use ZeRO-1 to shard optimizer states when ``--zero-optimizer`` is enabled with DDP.
     - Split mixed-dtype parameters into per-dtype ZeRO optimizers to satisfy ZeroRedundancyOptimizer dtype constraints.
     """
 
-    groups = build_param_groups(model, args)
-    optimizer_name = args.optimizer
+    groups = build_param_groups(model, training_args)
+    optimizer_name = training_args.optimizer
     if optimizer_name not in OPTIMIZER_REGISTRY:
         supported = ", ".join(OPTIMIZER_REGISTRY)
-        raise ValueError(f"Unknown optimizer '{args.optimizer}'. Supported optimizers: {supported}.")
+        raise ValueError(f"Unknown optimizer '{training_args.optimizer}'. Supported optimizers: {supported}.")
     optimizer_cls = OPTIMIZER_REGISTRY[optimizer_name]
     if optimizer_cls is None:
         raise ImportError(
@@ -124,17 +124,17 @@ def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
             "the corresponding backend (TransformerEngine or Apex) is not installed."
         )
 
-    kwargs = {"lr": args.lr_base, "weight_decay": args.weight_decay}
+    kwargs = {"lr": training_args.lr_base, "weight_decay": training_args.weight_decay}
     if optimizer_cls in (torch.optim.AdamW, torch.optim.Adam):
-        kwargs.update(betas=(args.adam_beta1, args.adam_beta2), eps=args.adam_eps)
+        kwargs.update(betas=(training_args.adam_beta1, training_args.adam_beta2), eps=training_args.adam_eps)
         if optimizer_name == "TorchFusedAdamW":
             kwargs["fused"] = True
     elif optimizer_name in ("TEFusedAdamW", "ApexFusedAdamW"):
-        kwargs.update(betas=(args.adam_beta1, args.adam_beta2), eps=args.adam_eps)
+        kwargs.update(betas=(training_args.adam_beta1, training_args.adam_beta2), eps=training_args.adam_eps)
         kwargs["adam_w_mode"] = True
         logger.info("Using %s optimizer", optimizer_name)
 
-    use_zero = getattr(args, "zero_optimizer", False)
+    use_zero = training_args.zero_optimizer
 
     dtype_stats = {}
     for group in groups:
@@ -153,8 +153,8 @@ def build_optimizer(model: nn.Module, args) -> torch.optim.Optimizer:
 
     # ZeRO Stage-1: shard optimizer states across DDP ranks
     if use_zero:
-        strategy = getattr(args, "distributed_strategy", "ddp")
-        parameters_as_bucket_view = getattr(args, "zero_parameters_as_bucket_view", False)
+        strategy = training_args.distributed_strategy
+        parameters_as_bucket_view = training_args.zero_parameters_as_bucket_view
         if strategy == "ddp":
             # Check for mixed dtype parameters - ZeroRedundancyOptimizer requires uniform dtype
             if len(param_dtypes) > 1:

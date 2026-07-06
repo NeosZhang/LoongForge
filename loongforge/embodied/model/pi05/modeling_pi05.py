@@ -55,7 +55,7 @@ except ImportError:
     layernorm_forward = None
     _transformers_available = False
 
-from loongforge.embodied.model.pi05.configuration_pi05 import Pi05Config
+from loongforge.embodied.model.pi05.model_configuration_pi05 import Pi05ModelConfig
 from loongforge.embodied.model.registry import register_model
 
 logger = logging.getLogger(__name__)
@@ -86,7 +86,6 @@ class _PI05InternalConfig:
     min_period: float = 4e-3
     max_period: float = 4.0
     image_resolution: tuple = (DEFAULT_IMAGE_SIZE, DEFAULT_IMAGE_SIZE)
-    tokenizer_name: str = ""
     tokenizer_local_files_only: bool = True
     tokenizer_max_length: int = 200
     gradient_checkpointing: bool = False
@@ -548,8 +547,8 @@ class PI05Pytorch(nn.Module):
         self.gradient_checkpointing_enabled = False
         torch.set_float32_matmul_precision("high")
 
-        if getattr(config, "compile_model", False):
-            compile_mode = getattr(config, "compile_mode", "max-autotune")
+        if config.compile_model:
+            compile_mode = config.compile_mode
             self.paligemma_with_expert.forward = torch.compile(
                 self.paligemma_with_expert.forward,
                 mode=compile_mode,
@@ -779,7 +778,7 @@ class PI05Pytorch(nn.Module):
 class PI05Policy(nn.Module):
     """LoongForge policy wrapper around PI05Pytorch, aligned with LeRobot's PI05Policy layer."""
 
-    def __init__(self, config: Pi05Config):
+    def __init__(self, config: Pi05ModelConfig):
         """Initialize PI05Policy with given configuration."""
         super().__init__()
         self.config = config
@@ -789,7 +788,6 @@ class PI05Policy(nn.Module):
             n_action_steps=config.action_horizon,
             max_action_dim=config.max_action_dim,
             max_state_dim=config.max_state_dim,
-            tokenizer_name=config.tokenizer_name,
             freeze_vision_encoder=config.freeze_vision_encoder,
             train_expert_only=config.train_expert_only,
             gradient_checkpointing=config.gradient_checkpointing,
@@ -804,12 +802,14 @@ class PI05Policy(nn.Module):
         self.pi05 = self.model
         self._image_size = DEFAULT_IMAGE_SIZE
         self._tokenizer = None
+        self._tokenizer_path = ""
 
     @property
     def tokenizer(self):
         """Lazily build and cache the tokenizer configured for this model."""
         if self._tokenizer is None:
-            self._tokenizer = build_tokenizer(self.config.tokenizer_name)
+            path = self._tokenizer_path or os.environ.get("TOKENIZER_PATH", "")
+            self._tokenizer = build_tokenizer(path)
         return self._tokenizer
 
     def forward(self, batch) -> Dict[str, torch.Tensor]:
@@ -910,29 +910,11 @@ class PI05Policy(nn.Module):
         return self.model.sample_actions(images_list, img_masks, tokens, masks).cpu().numpy()
 
     @classmethod
-    def from_pretrained(cls, config_or_path) -> "PI05Policy":
-        """Create PI05Policy from config or pretrained path."""
-        if isinstance(config_or_path, Pi05Config):
-            cfg, pretrained_path = config_or_path, None
-        else:
-            def _get(k, d):
-                return config_or_path.get(k, d) if hasattr(config_or_path, "get") else getattr(config_or_path, k, d)
-            cfg = Pi05Config(
-                tokenizer_name=_get("tokenizer_name", ""),
-                action_dim=_get("action_dim", 7),
-                state_dim=_get("state_dim", 7),
-                action_horizon=_get("action_horizon", 50),
-                max_action_dim=_get("max_action_dim", 32),
-                max_state_dim=_get("max_state_dim", 32),
-                freeze_vision_encoder=_get("freeze_vision_encoder", False),
-                train_expert_only=_get("train_expert_only", False),
-                gradient_checkpointing=_get("gradient_checkpointing", False),
-                compile_model=_get("compile_model", True),
-                compile_mode=_get("compile_mode", "max-autotune"),
+    def from_pretrained(cls, model_cfg) -> "PI05Policy":
+        """Create PI05Policy from a typed Pi05 ModelConfig."""
+        if not isinstance(model_cfg, Pi05ModelConfig):
+            raise TypeError(
+                "PI05Policy.from_pretrained expects a typed Pi05 ModelConfig instance; "
+                f"got {type(model_cfg).__name__}. build_model now passes ModelConfig directly."
             )
-            pretrained_path = _get("pretrained_path", None)
-
-        model = cls(cfg)
-        if pretrained_path:
-            model.model.load_pretrained(pretrained_path, strict=False)
-        return model
+        return cls(model_cfg)

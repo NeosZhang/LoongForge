@@ -102,10 +102,10 @@ class GrootN1d6PerMicrobatchCudaGraphRunner:
 
     def __init__(self, trainer):
         self.trainer = trainer
-        self.args = trainer.args
+        self.training_args = trainer.training_args
         self.ctx = trainer.ctx
-        self.grad_accum = trainer.args.gradient_accumulation_steps
-        self.warmup_steps = max(int(getattr(trainer.args, "cuda_graph_warmup_steps", 3)), 1)
+        self.grad_accum = trainer.training_args.gradient_accumulation_steps
+        self.warmup_steps = max(int(trainer.training_args.cuda_graph_warmup_steps), 1)
 
         self._warmup_count = 0
         self._captured = False
@@ -123,10 +123,10 @@ class GrootN1d6PerMicrobatchCudaGraphRunner:
         self._profile_enabled = os.environ.get("LOONGFORGE_PROFILE_TRAIN_STEP", "0") == "1"
         self._last_profile: dict[str, float] = {}
         self._last_grad_sync_ms: float | None = None
-        bucket_mb = float(getattr(self.args, "cuda_graph_grad_sync_bucket_mb", 200.0))
+        bucket_mb = float(self.training_args.cuda_graph_grad_sync_bucket_mb)
         self._max_grad_sync_bucket_numel = max(int(bucket_mb * 1024 * 1024 / 4), 1)
-        self._grad_sync_impl = getattr(self.args, "cuda_graph_grad_sync_impl", "coalesced")
-        self._grad_sync_dtype = getattr(self.args, "cuda_graph_grad_sync_dtype", "fp32")
+        self._grad_sync_impl = self.training_args.cuda_graph_grad_sync_impl
+        self._grad_sync_dtype = self.training_args.cuda_graph_grad_sync_dtype
         self._grad_sync_reduce_op = (
             dist.ReduceOp.AVG if hasattr(dist.ReduceOp, "AVG") else dist.ReduceOp.SUM
         )
@@ -146,7 +146,7 @@ class GrootN1d6PerMicrobatchCudaGraphRunner:
             self.ctx.is_distributed
             and self.ctx.world_size > 1
             and hasattr(trainer.model, "reducer")
-            and getattr(self.args, "cuda_graph_ddp_sync_in_graph", True)
+            and self.training_args.cuda_graph_ddp_sync_in_graph
         )
         if self.ctx.is_main:
             logger.info(
@@ -169,11 +169,11 @@ class GrootN1d6PerMicrobatchCudaGraphRunner:
             ``True`` when CUDA is available, ``cuda_graph_impl`` is ``"local"``,
             and ``cuda_graph_scope`` is ``"per_microbatch"``; ``False`` otherwise.
         """
-        args = trainer.args
+        training_args = trainer.training_args
         return (
             torch.cuda.is_available()
-            and getattr(args, "cuda_graph_impl", "none") == "local"
-            and getattr(args, "cuda_graph_scope", "full_iteration") == "per_microbatch"
+            and training_args.cuda_graph_impl == "local"
+            and training_args.cuda_graph_scope == "per_microbatch"
         )
 
     def step(self) -> tuple[dict[str, torch.Tensor], float]:
@@ -412,7 +412,7 @@ class GrootN1d6PerMicrobatchCudaGraphRunner:
 
         dtype = getattr(self.trainer, "_compute_dtype", None)
         if dtype is None:
-            dtype = resolve_dtype(self.args.dtype)
+            dtype = resolve_dtype(self.training_args.dtype)
             self.trainer._compute_dtype = dtype
         with torch.autocast("cuda", dtype=dtype):
             return _as_output_dict(self._raw_model(batch))
