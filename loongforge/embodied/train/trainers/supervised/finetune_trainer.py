@@ -112,8 +112,12 @@ class FinetuneTrainer(BaseTrainer):
             raw_loss = loss
             loss = raw_loss / grad_accum
             loss_val = loss.detach().item()
-            if torch.isnan(loss) or torch.isinf(loss) or loss_val > threshold:
+            is_nan = bool(torch.isnan(loss) or torch.isinf(loss))
+            if is_nan or loss_val > threshold:
                 self.logger.log_loss_spike(self.completed_steps, loss_val)
+                if is_nan:
+                    self._step_loss_is_nan = True
+                self._step_loss_spiked = True
                 loss = loss * 0.0
 
             # Backward; skip cross-rank gradient sync except on the final

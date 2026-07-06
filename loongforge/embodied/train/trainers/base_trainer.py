@@ -74,6 +74,14 @@ class BaseTrainer(ABC):
         self.current_epoch: int = 0
         self.train_iters: int = training_args.train_iters
 
+        # Cumulative iteration-health counters (reported in the training log).
+        # nan: steps whose loss was NaN/Inf. skipped: steps whose loss-spike
+        # guard fired (NaN/Inf loss or loss above --loss-spike-threshold), so
+        # the loss was zeroed and the update contributed no real gradient.
+        # Not persisted across checkpoint resume (reset to 0 on restart).
+        self.nan_iterations: int = 0
+        self.skipped_iterations: int = 0
+
         # Data iterators (managed by _fetch_batch for epoch cycling)
         self._data_iters: Dict[str, Any] = {}
         self._resume_dataloader_state: Dict[str, Dict[str, Any]] = {}
@@ -298,6 +306,8 @@ class BaseTrainer(ABC):
                 self.completed_steps * batch_size,
                 self.model, batch_size, grad_norm,
             )
+            metrics["nan_iterations"] = self.nan_iterations
+            metrics["skipped_iterations"] = self.skipped_iterations
 
             # ── Step-end hook (optional; default pass) ──
             self._on_step_end(metrics)
@@ -363,11 +373,22 @@ class BaseTrainer(ABC):
         st = self._stage_timers
         grad_clip = self.training_args.clip_grad
 
+        # Per-step health flags; subclass _backward_loss sets these when the
+        # loss spike/NaN guard fires during gradient accumulation. Reset each
+        # step so they reflect only the current iteration.
+        self._step_loss_is_nan = False
+        self._step_loss_spiked = False
+
         # ── Gradient accumulation + forward + backward (Layer 3, abstract) ──
         # Subclasses may override _run_forward_backward_block to take over the
         # zero_grad + forward + backward + grad sync block (e.g. for CUDA graph
         # runners that manage these steps internally).
         log_dict = self._run_forward_backward_block()
+
+        if self._step_loss_is_nan:
+            self.nan_iterations += 1
+        if self._step_loss_spiked:
+            self.skipped_iterations += 1
 
         # ── NaN gradient cleanup ──
         with st("nan-grad-cleanup"):

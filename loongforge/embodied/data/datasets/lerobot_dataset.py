@@ -493,18 +493,13 @@ def build_lerobot_dataset(model_cfg, data_cfg, training_args):
     dataset_path = Path(dataset_path)
     repo_id = dataset_path.name
 
-    action_horizon = model_cfg.action_horizon
-    lerobotdataset_version = training_args.lerobotdataset_version
-    video_backend = training_args.video_backend
-    streaming = training_args.streaming
-
     return _build_lerobot_dataset(
         repo_id=repo_id,
         root=str(dataset_path),
-        action_horizon=action_horizon,
-        streaming=streaming,
+        action_horizon=model_cfg.action_horizon,
+        streaming=training_args.streaming,
         episodes=None,
-        video_backend=video_backend,
+        video_backend=training_args.video_backend,
         tolerance_s=1e-4,
-        lerobotdataset_version=lerobotdataset_version,
+        lerobotdataset_version=training_args.lerobotdataset_version,
     )

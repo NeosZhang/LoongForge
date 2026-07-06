@@ -1,7 +1,7 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""validators.py - VLA training config validation.
+"""VLA training config validation.
 
 Called by parse_train_args() on the DictConfig stage (before to_object()), so it
 benefits from OmegaConf missing-key / interpolation checks. Operates on the three
@@ -66,9 +66,9 @@ def validate(training_args, model_cfg, data_cfg):
 
     # ── Tokenizer ──
     if training_args.tokenizer_path is None and not os.environ.get("TOKENIZER_PATH"):
-        logger.warning(
+        raise ValueError(
             "Neither --tokenizer-path nor TOKENIZER_PATH env var is set. "
-            "Model initialization may fail if a tokenizer is required."
+            "A tokenizer is required for model initialization."
         )
 
     # ── ZeRO optimizer options ──

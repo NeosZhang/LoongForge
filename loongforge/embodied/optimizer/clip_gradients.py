@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 from torch.distributed.fsdp import FSDPModule
 import torch.distributed as dist
+
+
 def get_grad_norm(model: nn.Module) -> float:
     """Compute global gradient norm, accounting for FSDP sharding.
 
@@ -47,7 +49,6 @@ def clip_gradients(model: nn.Module, max_norm: float) -> float:
         The global gradient L2 norm computed *before* clipping. Reuse this for
         logging instead of recomputing the (post-clip) norm separately.
     """
-    
 
     is_fsdp = isinstance(model, FSDPModule)
     if not is_fsdp:

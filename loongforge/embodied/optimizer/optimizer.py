@@ -13,8 +13,6 @@ import torch.nn as nn
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from loongforge.embodied.optimizer.lr import build_param_groups
 
-logger = logging.getLogger(__name__)
-
 try:
     from transformer_engine.pytorch.optimizers import FusedAdam as _TEFusedAdam
 except ImportError:
@@ -24,6 +22,8 @@ try:
     from apex.optimizers import FusedAdam as _ApexFusedAdam
 except ImportError:
     _ApexFusedAdam = None
+
+logger = logging.getLogger(__name__)
 
 OPTIMIZER_REGISTRY = {
     "AdamW": torch.optim.AdamW,

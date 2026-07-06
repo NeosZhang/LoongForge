@@ -24,23 +24,26 @@ import contextlib
 import json
 import logging
 import os
+import warnings
 from pathlib import Path
 from typing import Dict, Tuple
+
 import torch
-from torch import nn
 import torch.nn.functional as F
 from safetensors.torch import load_file
+from torch import nn
 from transformers.feature_extraction_utils import BatchFeature
 
+from loongforge.embodied.model.registry import register_model
+
+from .eagle3_model import EagleBackbone
 from .model_configuration_groot_n1_6 import GrootN1d6ModelConfig
 from .modules.dit import AlternateVLDiT, DiT
-from .eagle3_model import EagleBackbone
 from .modules.embodiment_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
 )
-from loongforge.embodied.model.registry import register_model
-import warnings
+
 warnings.filterwarnings("ignore", message="torch.get_autocast_gpu_dtype", category=DeprecationWarning)
 
 logger = logging.getLogger(__name__)

@@ -8,14 +8,14 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from typing import Any, Dict, Optional
+
 import numpy as np
 import torch
 import wandb
-from typing import Any, Dict, Optional
-
-from loongforge.embodied.optimizer import get_grad_norm
 from torch.utils.tensorboard import SummaryWriter
 
+from loongforge.embodied.optimizer import get_grad_norm
 
 
 logger = logging.getLogger(__name__)
@@ -502,6 +502,8 @@ class TrainingLogger:
         step_time = metrics.get("step_time", 0)
         consumed_samples = metrics.get("consumed_samples", 0)
         grad_norm = metrics.get("grad_norm", 0)
+        skipped_iters = int(metrics.get("skipped_iterations", 0))
+        nan_iters = int(metrics.get("nan_iterations", 0))
 
         # Global batch size = per-device × world_size × gradient_accumulation_steps
         global_batch_size = per_device_batch_size
@@ -522,8 +524,8 @@ class TrainingLogger:
         log_string += " loss scale: 1.0 |"
         if grad_norm is not None and grad_norm > 0:
             log_string += " grad norm: {:.6f} |".format(grad_norm)
-        log_string += " number of skipped iterations:   0 |"
-        log_string += " number of nan iterations:   0 |"
+        log_string += " number of skipped iterations: {:3d} |".format(skipped_iters)
+        log_string += " number of nan iterations: {:3d} |".format(nan_iters)
 
         logger.info(log_string)
 

@@ -217,18 +217,11 @@ def build_rlds_dataset(model_cfg, data_cfg, training_args) -> IterableDataset:
     Shared dims (action_horizon / image_size) come from ModelConfig;
     data-processing params from DataConfig; dataset selection from TrainingArgs.
     """
-    dataset_name = training_args.dataset_name
-    split = training_args.split
-    action_horizon = model_cfg.action_horizon
-    image_size = data_cfg.image_size
-    streaming = training_args.streaming
-    normalization_mode = data_cfg.normalization_mode
-
     return RLDSVLADataset(
-        dataset_name=dataset_name,
-        split=split,
-        action_horizon=action_horizon,
-        image_size=image_size,
-        streaming=streaming,
-        normalization_mode=normalization_mode,
+        dataset_name=training_args.dataset_name,
+        split=training_args.split,
+        action_horizon=model_cfg.action_horizon,
+        image_size=data_cfg.image_size,
+        streaming=training_args.streaming,
+        normalization_mode=data_cfg.normalization_mode,
     )
