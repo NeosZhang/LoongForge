@@ -21,8 +21,8 @@ from loongforge.embodied.distributed.checkpoint import (
     load_pretrained,
     save_checkpoint,
 )
-from loongforge.embodied.distributed.parallel import resolve_dtype
 from loongforge.embodied.distributed.utils import unwrap_model
+from loongforge.embodied.train.utils.utils import resolve_dtype
 from loongforge.embodied.model import build_model
 from loongforge.embodied.optimizer import (
     build_optimizer,
@@ -202,16 +202,20 @@ class FinetuneTrainer(BaseTrainer):
         """Freeze specified modules by dot-path."""
         if not freeze_str:
             return
-        for path in [p.strip() for p in freeze_str.split(",") if p.strip()]:
-            module = self.model
+        for dot_path in [p.strip() for p in freeze_str.split(",") if p.strip()]:
+            current_module = self.model
+            successfully_traversed = []
             try:
-                for attr in path.split("."):
-                    module = getattr(module, attr)
-                for p in module.parameters():
-                    p.requires_grad = False
-                self.logger.log_frozen_module(path)
+                for attr_name in dot_path.split("."):
+                    current_module = getattr(current_module, attr_name)
+                    successfully_traversed.append(attr_name)
+                for param in current_module.parameters():
+                    param.requires_grad = False
+                self.logger.log_frozen_module(dot_path)
             except AttributeError:
-                self.logger.log_freeze_not_found(path)
+                resolved_prefix = ".".join(successfully_traversed) if successfully_traversed else "<root>"
+                missing_attr = dot_path.split(".")[len(successfully_traversed)]
+                self.logger.log_freeze_not_found(dot_path, resolved_prefix, missing_attr)
 
     def _save_checkpoint(self):
         save_checkpoint(

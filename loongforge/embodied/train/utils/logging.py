@@ -163,6 +163,7 @@ class StageTimers:
         if not names:
             return None
 
+        # ── Phase 1: collective gather (all ranks must participate) ──────────
         # Timing data is tiny; gather on CPU (gloo) to avoid occupying the GPU
         # stream and a GPU->host sync. The default process group is created with
         # backend "cpu:gloo,cuda:nccl", so CPU tensors are routed via gloo.
@@ -172,32 +173,29 @@ class StageTimers:
             device="cpu",
         )
 
-        gathered = None
         if ctx.is_distributed and ctx.world_size > 1:
+            # all_gather is a collective op — early return must NOT happen before
+            # this point, otherwise non-rank-0 processes would skip it and hang.
             gathered = [torch.zeros_like(local) for _ in range(ctx.world_size)]
             torch.distributed.all_gather(gathered, local)
-            max_times = torch.stack(gathered, dim=0).max(dim=0).values
         else:
-            max_times = local
+            # Normalise to a list so rank-0 formatting code is uniform.
+            gathered = [local]
 
+        # ── Phase 2: rank-0 only formatting ─────────────────────────────────
         if ctx.rank != 0:
             return None
 
-        max_times = max_times.tolist()
+        max_times = torch.stack(gathered, dim=0).max(dim=0).values.tolist()
         output_string = "max time across ranks (ms):"
         for name, t in zip(names, max_times):
             ms = (t / normalizer) * 1000.0
             output_string += "\n    {}: {:.2f}".format(name.ljust(48, "."), ms)
 
         if log_level >= 1:
-            per_rank = (
-                [g.tolist() for g in gathered]
-                if gathered is not None
-                else [local.tolist()]
-            )
-            for r, times in enumerate(per_rank):
+            for r, g in enumerate(gathered):
                 output_string += "\n  rank {} time (ms):".format(r)
-                for name, t in zip(names, times):
+                for name, t in zip(names, g.tolist()):
                     ms = (t / normalizer) * 1000.0
                     output_string += "\n    {}: {:.2f}".format(
                         name.ljust(48, "."), ms
@@ -306,8 +304,11 @@ class TrainingLogger:
         try:
             if wandb.run:
                 wandb.log(metrics, step=step)
-        except Exception:
-            pass
+        except Exception as e:
+            # debug: this is called every log step; a persistent failure (e.g.
+            # network drop) would flood the log at warning level. Enable DEBUG
+            # logging to diagnose W&B connectivity issues.
+            logger.debug(f"W&B log failed at step {step}: {e}")
 
     def finish_wandb(self):
         """Finish W&B run."""
@@ -316,8 +317,10 @@ class TrainingLogger:
         try:
             if wandb.run:
                 wandb.finish()
-        except Exception:
-            pass
+        except Exception as e:
+            # warning: finish() is called once at training end; failure may
+            # cause run data loss in W&B, so the user should be notified.
+            logger.warning(f"W&B finish failed: {e}")
 
     # ═══════════════════════════════════════════════════════════════
     # TensorBoard Integration
@@ -338,8 +341,10 @@ class TrainingLogger:
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 try:
                     self._tb_writer.add_scalar(k, float(v), step)
-                except Exception:
-                    pass
+                except Exception as e:
+                    # debug: called every step per metric key; use debug to
+                    # avoid log flooding on persistent write errors.
+                    logger.debug(f"TensorBoard add_scalar failed for '{k}' at step {step}: {e}")
 
     def finish_tensorboard(self):
         """Flush and close the TensorBoard writer."""
@@ -348,8 +353,10 @@ class TrainingLogger:
         try:
             self._tb_writer.flush()
             self._tb_writer.close()
-        except Exception:
-            pass
+        except Exception as e:
+            # warning: flush/close is called once at training end; failure may
+            # cause incomplete trace files, so the user should be notified.
+            logger.warning(f"TensorBoard finish failed: {e}")
         self._tb_writer = None
 
     def finish(self):
@@ -387,7 +394,7 @@ class TrainingLogger:
             return 0
 
         # 3. Dataclass/object format: check common attributes for batch dimension
-        for key in ("actions", "input_ids", "attention_mask", "state"):
+        for key in ("actions", "action", "input_ids", "attention_mask", "state"):
             if hasattr(batch, key):
                 val = getattr(batch, key)
                 if val is not None:
@@ -600,25 +607,33 @@ class TrainingLogger:
             return
         logger.warning("--resume set but no checkpoint found, starting from scratch")
 
-    def log_frozen_module(self, path: str):
+    def log_frozen_module(self, dot_path: str):
         """Log frozen module.
 
         Args:
-            path: Dot-path of frozen module
+            dot_path: Dot-path of frozen module
         """
         if not self.is_main:
             return
-        logger.info(f"Frozen: {path}")
+        logger.info(f"Frozen: {dot_path}")
 
-    def log_freeze_not_found(self, path: str):
+    def log_freeze_not_found(self, dot_path: str, resolved_prefix: str = "", missing_attr: str = ""):
         """Log that freeze target was not found.
 
         Args:
-            path: Dot-path that was not found
+            dot_path: Full dot-path that was requested.
+            resolved_prefix: How far traversal succeeded before the failure.
+            missing_attr: The attribute name that caused the AttributeError.
         """
         if not self.is_main:
             return
-        logger.warning(f"Freeze target not found: {path}")
+        if resolved_prefix and missing_attr:
+            logger.warning(
+                f"Freeze target not found: '{dot_path}' "
+                f"(resolved up to '{resolved_prefix}', then '{missing_attr}' does not exist)"
+            )
+        else:
+            logger.warning(f"Freeze target not found: '{dot_path}'")
 
     def log_loss_spike(self, step: int, loss_val: float):
         """Log loss spike detection.

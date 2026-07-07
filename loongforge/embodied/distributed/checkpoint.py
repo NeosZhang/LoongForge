@@ -43,6 +43,13 @@ from .utils import unwrap_model
 
 logger = logging.getLogger(__name__)
 
+# Canonical file names for each checkpoint format.
+# Update these constants when adding new formats rather than editing each call site.
+_DCP_METADATA_FILE = "dcp/.metadata"  # relative to checkpoint step dir
+_SAFETENSORS_FILE = "model.safetensors"
+_PT_FILE = "pytorch_model.pt"
+_VALID_FORMATS = ("safetensors", "pt", "dcp")
+
 # Module-level state for async DCP save. At most one in-flight save at a time;
 # subsequent saves (or shutdown) wait on the previous future before launching a
 # new one to avoid contending CPU-staging buffers and to prevent
@@ -260,7 +267,7 @@ def get_latest_checkpoint(
         raise FileNotFoundError(f"resume_meta.json not found in {ckpt_dir}")
     dcp_dir = os.path.join(ckpt_dir, "dcp")
     has_dcp_training_state = (
-        os.path.exists(os.path.join(dcp_dir, ".metadata"))
+        os.path.exists(os.path.join(ckpt_dir, _DCP_METADATA_FILE))
         and _dcp_has_key(dcp_dir, "optim")
     )
     has_training_state = os.path.exists(os.path.join(ckpt_dir, "training_state.pt"))
@@ -324,13 +331,13 @@ def detect_checkpoint_format(path: str) -> str:
     if os.path.exists(meta_path):
         with open(meta_path) as f:
             fmt = json.load(f).get("ckpt_format")
-        if fmt in ("safetensors", "pt", "dcp"):
+        if fmt in _VALID_FORMATS:
             return fmt
-    if os.path.exists(os.path.join(path, "dcp", ".metadata")):
+    if os.path.exists(os.path.join(path, _DCP_METADATA_FILE)):
         return "dcp"
-    if os.path.exists(os.path.join(path, "model.safetensors")):
+    if os.path.exists(os.path.join(path, _SAFETENSORS_FILE)):
         return "safetensors"
-    if os.path.exists(os.path.join(path, "pytorch_model.pt")):
+    if os.path.exists(os.path.join(path, _PT_FILE)):
         return "pt"
     raise FileNotFoundError(f"No recognizable checkpoint in {path}")
 
@@ -473,7 +480,7 @@ def _resume_dcp(model, optimizer, scheduler, checkpoint_path, ctx, restore_rng):
       raises rather than silently degrading to a fresh optimizer.
     """
     dcp_dir = os.path.join(checkpoint_path, "dcp")
-    if not os.path.exists(os.path.join(dcp_dir, ".metadata")):
+    if not os.path.exists(os.path.join(checkpoint_path, _DCP_METADATA_FILE)):
         raise FileNotFoundError(f"No dcp/ metadata in {checkpoint_path}")
 
     has_optim = _dcp_has_key(dcp_dir, "optim")
@@ -552,7 +559,38 @@ def _resume_dcp(model, optimizer, scheduler, checkpoint_path, ctx, restore_rng):
 
 
 def _dcp_has_key(dcp_dir: str, key: str) -> bool:
-    """Probe DCP metadata to see if a top-level key (e.g. 'optim') was saved."""
+    """Probe DCP metadata to check whether a top-level key was saved.
+
+    Reads the ``.metadata`` file written by ``torch.distributed.checkpoint``
+    and scans the top-level state-dict keys for an exact match or a dotted
+    prefix match.
+
+    Examples
+    --------
+    A checkpoint saved with ``{"model": ..., "optim": ...}`` will produce
+    metadata keys like ``"model.encoder.weight"``, ``"optim.state.0.exp_avg"``,
+    etc.  Calling ``_dcp_has_key(dcp_dir, "optim")`` returns ``True`` because
+    at least one key starts with ``"optim."``.
+
+    Calling ``_dcp_has_key(dcp_dir, "scheduler")`` returns ``False`` when
+    the scheduler was not included in the saved state dict.
+
+    Raises
+    ------
+    OSError
+        If the checkpoint directory or ``.metadata`` file cannot be read
+        (e.g. path does not exist, permission denied, corrupted file).
+    RuntimeError
+        If the DCP reader raises an internal error while parsing metadata.
+
+    Notes
+    -----
+    Only ``OSError`` and ``RuntimeError`` are caught and re-raised explicitly.
+    All other exceptions (e.g. ``KeyboardInterrupt``, unexpected bugs in the
+    DCP library) are intentionally **not** caught and will propagate normally.
+    In particular, this function never silently returns ``True`` on failure —
+    any probe error surfaces immediately rather than masking a broken checkpoint.
+    """
     try:
         reader = FileSystemReader(dcp_dir)
         meta = reader.read_metadata()
@@ -560,9 +598,8 @@ def _dcp_has_key(dcp_dir: str, key: str) -> bool:
             if k == key or k.startswith(key + "."):
                 return True
         return False
-    except Exception:
-        # On any probe failure, assume present and let downstream raise.
-        return True
+    except (OSError, RuntimeError):
+        raise
 
 
 def _save_aux_per_rank(path, ctx, dataloader_state):
@@ -601,7 +638,7 @@ def _load_rank_rng(checkpoint_path, ctx) -> Optional[dict]:
     f = os.path.join(checkpoint_path, "rng", f"rng_rank{ctx.rank}.pt")
     if not os.path.exists(f):
         return None
-    return torch.load(f, map_location="cpu", weights_only=False)
+    return torch.load(f, map_location="cpu", weights_only=True)
 
 
 def _load_rank_dataloader(checkpoint_path, ctx) -> dict:
@@ -705,7 +742,7 @@ def _save_state_dict_safetensors(state_dict: dict, filepath: str):
 
 def _resolve_file(checkpoint_path: str) -> str:
     if os.path.isdir(checkpoint_path):
-        for name in ("model.safetensors", "pytorch_model.pt"):
+        for name in (_SAFETENSORS_FILE, _PT_FILE):
             f = os.path.join(checkpoint_path, name)
             if os.path.exists(f):
                 return f
@@ -721,4 +758,4 @@ def _load_sd(path: str) -> dict:
         from safetensors.torch import load_file
 
         return load_file(path)
-    return torch.load(path, map_location="cpu")
+    return torch.load(path, map_location="cpu", weights_only=True)

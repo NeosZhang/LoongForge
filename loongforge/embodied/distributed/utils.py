@@ -1,19 +1,19 @@
 """Distributed model inspection and argument helpers."""
 
 import inspect
+import os
 
 import torch
 import torch.nn as nn
 
 
-def resolve_dtype(dtype_str: str) -> torch.dtype:
-    """Convert string dtype to torch.dtype."""
-    mapping = {
-        "bfloat16": torch.bfloat16,
-        "float16": torch.float16,
-        "float32": torch.float32,
-    }
-    return mapping.get(dtype_str, torch.bfloat16)
+def is_rank_zero() -> bool:
+    """Rank 0 check covering single-process, torchrun, and dist-initialized cases."""
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_rank() == 0
+    # Fallback to env (torchrun sets RANK before init); single process defaults to 0.
+    return int(os.environ.get("RANK", "0")) == 0
+
 
 
 def parse_optional_int_list(value) -> list[int] | None:

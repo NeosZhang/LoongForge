@@ -13,10 +13,15 @@ Usage:
 """
 
 import importlib
+import logging
 import pkgutil
 from typing import Dict, Type
 
 import torch.nn as nn
+
+from loongforge.embodied.distributed.utils import is_rank_zero
+
+logger = logging.getLogger(__name__)
 
 MODEL_REGISTRY: Dict[str, Type[nn.Module]] = {}
 
@@ -38,12 +43,24 @@ def _auto_import_model_modules():
     for _, pkg_name, is_pkg in pkgutil.iter_modules([model_dir]):
         if is_pkg and pkg_name not in ("compose", "modules", "__pycache__"):
             try:
-                sub_pkg = importlib.import_module(f"loongforge.embodied.model.{pkg_name}")
                 # import modeling_<pkg_name>.py to trigger registration
                 modeling_mod = f"loongforge.embodied.model.{pkg_name}.modeling_{pkg_name}"
                 importlib.import_module(modeling_mod)
-            except ModuleNotFoundError:
-                pass
+            except ImportError as exc:
+                if is_rank_zero():   
+                    logger.warning(
+                        "Skipping optional model package during auto-registration:\n"
+                        "  - package: %s\n"
+                        "  - module: %s\n"
+                        "  - error: %s\n"
+                        "If this run is not training the '%s' model, this warning "
+                        "can be ignored. If you intend to train it, fix the missing "
+                        "or incompatible dependency.",
+                        pkg_name,
+                        modeling_mod,
+                        exc,
+                        pkg_name,
+                    )
 
 
 def build_model(model_cfg) -> nn.Module:

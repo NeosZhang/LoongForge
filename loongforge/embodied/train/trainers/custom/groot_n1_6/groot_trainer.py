@@ -114,8 +114,7 @@ class GrootN1d6Trainer(FinetuneTrainer):
         Under per-microbatch CUDA graph capture/replay the parameter ``.grad``
         tensors are static buffers tied to the captured graphs. Mutating them
         outside the graph (e.g. via :func:`torch.nan_to_num`) would violate the
-        static-buffer invariant. :mod:`validators` already disables
-        ``--check-for-nan-in-loss-and-grad`` whenever CUDA graph mode is
+        static-buffer invariant. :mod:`validators` warns when CUDA graph mode is
         enabled, so this override matches that contract by no-oping while the
         runner is installed and otherwise delegating to the base implementation.
         """

@@ -11,6 +11,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 from torch.distributed.optim import ZeroRedundancyOptimizer
+from loongforge.embodied.distributed.utils import is_rank_zero
 from loongforge.embodied.optimizer.lr import build_param_groups
 
 try:
@@ -144,7 +145,7 @@ def build_optimizer(model: nn.Module, training_args) -> torch.optim.Optimizer:
                 stats["tensors"] += 1
                 stats["elements"] += p.numel()
     param_dtypes = set(dtype_stats)
-    if _is_rank_zero():
+    if is_rank_zero():
         summary = ", ".join(
             f"{dtype}: {stats['tensors']} tensors/{stats['elements']} elems"
             for dtype, stats in sorted(dtype_stats.items(), key=lambda item: str(item[0]))
@@ -190,13 +191,6 @@ def build_optimizer(model: nn.Module, training_args) -> torch.optim.Optimizer:
 
     optimizer = optimizer_cls(groups, **kwargs)
     return optimizer
-
-
-def _is_rank_zero() -> bool:
-    """Return True on rank 0 without requiring distributed initialization."""
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        return torch.distributed.get_rank() == 0
-    return True
 
 
 def _split_param_groups_by_dtype(groups: list[dict]) -> dict[torch.dtype, list[dict]]:

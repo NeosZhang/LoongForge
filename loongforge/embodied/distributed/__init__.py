@@ -5,10 +5,11 @@
 
 from .context import DistributedContext
 from .parallel import wrap_model
-from .utils import unwrap_model
+from .utils import is_rank_zero, unwrap_model
 
 __all__ = [
     "DistributedContext",
+    "is_rank_zero",
     "wrap_model",
     "unwrap_model",
 ]

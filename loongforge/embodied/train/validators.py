@@ -45,6 +45,11 @@ def validate(training_args, model_cfg, data_cfg):
 
     # ── CUDA graph ──
     if training_args.cuda_graph_impl == "local":
+        logger.warning(
+            "Host-side loss/grad NaN checks are disabled because CUDA graph mode "
+            "is enabled."
+        )
+
         if training_args.cuda_graph_pad_length is None:
             raise ValueError(
                 "--cuda-graph-pad-length must be set when --cuda-graph-impl=local."
@@ -57,12 +62,6 @@ def validate(training_args, model_cfg, data_cfg):
             raise ValueError(
                 f"Unsupported --cuda-graph-scope={training_args.cuda_graph_scope!r} in embodied trainer."
             )
-        if training_args.check_for_nan_in_loss_and_grad:
-            logger.warning(
-                "Disabling host-side loss/grad NaN checks because CUDA graph mode is enabled. "
-                "This matches the required --no-check-for-nan-in-loss-and-grad behavior."
-            )
-            training_args.check_for_nan_in_loss_and_grad = False
 
     # ── Tokenizer ──
     if training_args.tokenizer_path is None and not os.environ.get("TOKENIZER_PATH"):
