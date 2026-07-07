@@ -66,9 +66,9 @@ def validate(training_args, model_cfg, data_cfg):
 
     # ── Tokenizer ──
     if training_args.tokenizer_path is None and not os.environ.get("TOKENIZER_PATH"):
-        raise ValueError(
+        logger.warning(
             "Neither --tokenizer-path nor TOKENIZER_PATH env var is set. "
-            "A tokenizer is required for model initialization."
+            "Model initialization may fail if a tokenizer is required."
         )
 
     # ── ZeRO optimizer options ──

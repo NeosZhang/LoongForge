@@ -21,15 +21,82 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 
 import torch
+import transformers
 from transformers import AutoConfig, AutoModel
 from transformers.feature_extraction_utils import BatchFeature
-from transformers.modeling_utils import no_init_weights
+from transformers.modeling_utils import PreTrainedModel
+
+try:
+    from transformers.modeling_utils import no_init_weights as _hf_no_init_weights
+except ImportError:
+    _hf_no_init_weights = None
 
 from .configuration_eagle3_vl import Eagle3VLConfig, build_eagle_load_kwargs, resolve_eagle_local_path
 from .modeling_eagle3_vl import load_eagle_model
+
+
+_GROOT_EAGLE_TORCH_INIT_FUNCTIONS = (
+    "uniform_",
+    "normal_",
+    "trunc_normal_",
+    "constant_",
+    "xavier_uniform_",
+    "xavier_normal_",
+    "kaiming_uniform_",
+    "kaiming_normal_",
+    "uniform",
+    "normal",
+    "xavier_uniform",
+    "xavier_normal",
+    "kaiming_uniform",
+    "kaiming_normal",
+)
+
+
+def _get_transformers_major_version() -> int | None:
+    try:
+        return int(transformers.__version__.split(".", maxsplit=1)[0])
+    except (AttributeError, ValueError):
+        return None
+
+
+_TRANSFORMERS_MAJOR_VERSION = _get_transformers_major_version()
+
+
+@contextlib.contextmanager
+def _groot_eagle_no_init_weights():
+    """Match the Transformers 4 Eagle no-init side effects across HF versions."""
+    # Transformers 4 is the base environment and exposes no_init_weights from
+    # modeling_utils. Keep that exact path there; Transformers 5 moved no-init
+    # to a broader implementation that changes the CPU RNG stream.
+    if (
+        _hf_no_init_weights is not None
+        and (_TRANSFORMERS_MAJOR_VERSION is None or _TRANSFORMERS_MAJOR_VERSION < 5)
+    ):
+        with _hf_no_init_weights():
+            yield
+        return
+
+    def _skip_init(*args, **kwargs):
+        pass
+
+    originals = {}
+    original_init_weights = PreTrainedModel.init_weights
+    try:
+        for name in _GROOT_EAGLE_TORCH_INIT_FUNCTIONS:
+            if hasattr(torch.nn.init, name):
+                originals[name] = getattr(torch.nn.init, name)
+                setattr(torch.nn.init, name, _skip_init)
+        PreTrainedModel.init_weights = _skip_init
+        yield
+    finally:
+        for name, init_func in originals.items():
+            setattr(torch.nn.init, name, init_func)
+        PreTrainedModel.init_weights = original_init_weights
 
 
 def _use_graph_safe_eagle() -> bool:
@@ -81,7 +148,7 @@ def _load_lerobot_eager_eagle(
 
     # LeRobot builds this backbone inside HF from_pretrained's no-init context.
     # Match that construction path here; weights are loaded by the outer GR00T loader.
-    with no_init_weights():
+    with _groot_eagle_no_init_weights():
         model = AutoModel.from_config(config, trust_remote_code=True)
     print(f"Created Eagle model via LeRobot eager AutoModel path: {local_model_path}")
     return model

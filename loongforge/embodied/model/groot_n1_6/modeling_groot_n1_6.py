@@ -1051,6 +1051,22 @@ def _restore_trainable_params_fp32(module: nn.Module) -> None:
             parameter.data = parameter.data.to(torch.float32)
 
 
+def _resolve_rope_init_fn(submodule: nn.Module):
+    rope_init_fn = getattr(submodule, "rope_init_fn", None)
+    if callable(rope_init_fn):
+        return rope_init_fn
+
+    rope_type = getattr(submodule, "rope_type", "default")
+    if rope_type == "default" and callable(getattr(submodule, "compute_default_rope_parameters", None)):
+        return submodule.compute_default_rope_parameters
+
+    try:
+        from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+    except ImportError:
+        return None
+    return ROPE_INIT_FUNCTIONS.get(rope_type)
+
+
 def _restore_rotary_buffers_fp32(module: nn.Module) -> None:
     """Keep Qwen RoPE frequency buffers in the same fp32 form as LeRobot.
 
@@ -1060,16 +1076,18 @@ def _restore_rotary_buffers_fp32(module: nn.Module) -> None:
     for submodule in module.modules():
         if type(submodule).__name__ not in {"Qwen2RotaryEmbedding", "Qwen3RotaryEmbedding"}:
             continue
-        if not all(hasattr(submodule, attr) for attr in ("inv_freq", "rope_init_fn", "config")):
+        if not all(hasattr(submodule, attr) for attr in ("inv_freq", "config")):
             continue
         inv_freq = submodule.inv_freq
-        rope_init_fn = submodule.rope_init_fn
         config = submodule.config
+        rope_init_fn = _resolve_rope_init_fn(submodule)
         if inv_freq is None or inv_freq.device.type == "meta" or not callable(rope_init_fn) or config is None:
             continue
 
         new_inv_freq, attention_scaling = rope_init_fn(config, device=inv_freq.device)
         new_inv_freq = new_inv_freq.to(device=inv_freq.device, dtype=torch.float32)
         submodule.register_buffer("inv_freq", new_inv_freq, persistent=False)
-        submodule.original_inv_freq = new_inv_freq
+        if hasattr(submodule, "original_inv_freq"):
+            delattr(submodule, "original_inv_freq")
+        submodule.register_buffer("original_inv_freq", new_inv_freq.clone(), persistent=False)
         submodule.attention_scaling = attention_scaling
