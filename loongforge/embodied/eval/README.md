@@ -8,7 +8,8 @@ This directory contains the LoongForge-VLA offline evaluation module. It runs be
 - `loongforge.embodied.eval.transport`: WebSocket RPC client/server utilities.
 - `loongforge.embodied.eval.adapters`: benchmark-side adapters.
 - `loongforge.embodied.eval.servers.loongforge_server`: LoongForge policy server entrypoint.
-- `loongforge.embodied.eval.servers.loongforge_policy`: LoongForge pi05 adapter.
+- `loongforge.embodied.eval.servers.loongforge_policy`: generic `predict_action` eval policy and LoongForge pi05 factory.
+- `loongforge.embodied.eval.servers.predict_action_interface`: shared model interface checks and action shape normalization.
 - `loongforge.embodied.eval.servers.mock_policy`: lightweight protocol mock for tests.
 
 LoongForge source code under `../loongforge` is not patched by this eval module. Model-specific compatibility lives in `eval/servers`.
@@ -51,6 +52,28 @@ The pi05 configs use:
 
 For protocol/debug smoke testing, copy an existing YAML and set `model.backend: mock`; mock backend configs are not shipped as pi05 examples because they are not model-specific.
 
+## Model Interface
+
+LoongForge model servers now prefer a shared `predict_action` interface instead of a separate full policy adapter for every model. A reusable `GenericPredictActionPolicy` handles eval RPC behavior: canonical image view selection, `predict_action` invocation, action shape validation, action-dim truncation, chunk caching, latency reporting, metadata, dataset statistics loading, and eval-side q99 action unnormalization.
+
+Model-specific logic should be kept in a thin factory/loader. The current pi05 path is:
+
+```text
+loongforge_server.py
+  -> PI05ModelFactory.build(...)
+  -> GenericPredictActionPolicy(...)
+  -> PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)
+```
+
+A new model can reuse the generic policy when it exposes:
+
+```python
+def predict_action(images, instructions, state=None, dataset_stats=None):
+    ...
+```
+
+The model factory is responsible for importing model code, registering model-specific configs, loading checkpoints, moving the model to the target device/dtype, and returning metadata. Benchmark-native structured state stays on the adapter side; runners forward only `model_state` to the model server, so models do not need to know each benchmark's observation dict shape.
+
 ## Outputs
 
 A benchmark run writes:
@@ -62,12 +85,6 @@ A benchmark run writes:
 - `artifacts/.../trace_*.json` or `artifacts/.../trace.json`: optional per-step action trace
 - `artifacts/.../videos/*.mp4`: optional RoboTwin official evaluator videos when video logging is enabled
 - `policy_server.log`: model server stdout/stderr
-
-## Verified Runs
-
-The current pi05 integration has been verified end-to-end with internal pi05 checkpoints. Public configs replace checkpoint, tokenizer, dataset statistics, and local driver paths with `/path/to/...` placeholders. Internal launch scripts use matching `_internal.yaml` files so they can run directly in the internal environment.
-
-LIBERO executes 300 environment steps and produces replay/trace artifacts with internal pi05 checkpoints. LeRobot mean/std compatibility is currently a LIBERO weight-adaptation path. CALVIN runs 7D Franka long-horizon sequences and writes `success_count` plus Task 1-5 success rates in `summary.csv`; the internal debug dataset has passed a 30-step smoke with reset, policy RPC, env step, trace, and summary output. Current CALVIN smoke uses q99 unnormalization plus CALVIN adapter scaling with a LIBERO-domain pi05 checkpoint, so it is not a credible long-horizon score. SimplerEnv Bridge runner, Vulkan/SAPIEN headless runtime, reset/step loop, trace output, and replay GIF output have been verified; a fixed small-action sanity rollout confirms the WidowX controller moves. Current internal SimplerEnv pi05 configs use LIBERO-domain weights or no Bridge/WidowX `dataset_statistics_path`, so they are chain smoke/debug runs rather than credible SimplerEnv benchmark scores. For real SimplerEnv evaluation, use a Bridge/WidowX/SimplerEnv-trained pi05 checkpoint and matching dataset statistics. RoboTwin official tasks are bimanual 14D; `random_init_5step.yaml` verifies the official evaluator path with a random-initialized 14D LoongForge pi05 model, writes `artifacts/robotwin/.../trace.json`, collects RoboTwin official `*.mp4` videos when generated, and records 0/1 success as expected for random weights. For real RoboTwin evaluation, use a 14D RoboTwin-trained pi05 checkpoint and matching dataset statistics. ManiSkill now has a generic Gym/Gymnasium runner and 7D PickCube smoke config; it is intended first for single-arm SAPIEN tasks with `pd_ee_delta_pose`-style actions. The isolated `/workspace/miniconda3/envs/maniskill` runtime imports `torch`, `mani_skill`, `gymnasium`, and `sapien`, and the current host passes state-only PickCube smoke with Mesa lavapipe. The RGBD visual mock smoke now passes with the NVIDIA Vulkan ICD at `/ssd1/opt/nvidia_lib/10_nvidia.json`, covering orchestrator startup, WebSocket action RPC, ManiSkill 5-step rollout, trace, summary output, and replay GIF output. Current ManiSkill configs are integration smoke/debug until a ManiSkill-compatible checkpoint and matching dataset statistics are available.
 
 ## Development Notes
 

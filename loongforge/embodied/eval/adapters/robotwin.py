@@ -79,6 +79,7 @@ class RoboTwinAdapter(BaseBenchmarkAdapter):
                 "frame": "base",
                 "units": {"joint": "normalized"},
             },
+            "model_state": None,
             "meta": {
                 "benchmark": "robotwin",
                 "robot_setup": self.robot_setup,

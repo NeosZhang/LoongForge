@@ -124,6 +124,7 @@ class ManiSkillAdapter(BaseBenchmarkAdapter):
                 "head": None,
             },
             "state": state,
+            "model_state": None,
             "meta": {
                 "benchmark": "maniskill",
                 "robot_setup": self.robot_uid,

@@ -133,7 +133,7 @@ def _canonical_to_policy_payload(canonical_obs: Dict[str, Any], unnorm_key: Opti
         "instruction": canonical_obs["instruction"],
         "episode_id": canonical_obs["meta"]["episode_id"],
         "episode_step": canonical_obs["meta"]["episode_step"],
-        "state": canonical_obs["state"],
+        "state": canonical_obs.get("model_state"),
         **INFERENCE_CONFIG,
     }
     if unnorm_key is not None:

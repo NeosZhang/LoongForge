@@ -46,6 +46,7 @@ CONFIG_MAPPING = {
     "model.max_action_dim": "max_action_dim",
     "model.max_state_dim": "max_state_dim",
     "model.tokenizer_name": "tokenizer_name",
+    "model.tokenizer_path": "tokenizer_path",
     "model.dataset_statistics_path": "dataset_statistics_path",
     "model.compile_model": "compile_model",
     "model.compile_mode": "compile_mode",

@@ -29,6 +29,7 @@ def _canonical_to_legacy_payload(canonical_obs: Dict[str, Any], args: argparse.N
         "instruction": canonical_obs["instruction"],
         "episode_id": canonical_obs["meta"]["episode_id"],
         "episode_step": canonical_obs["meta"]["episode_step"],
+        "state": canonical_obs.get("model_state"),
         "disable_action_cache": args.disable_action_cache,
         "return_action_chunk": False,
         "cfg_scale": args.cfg_scale,

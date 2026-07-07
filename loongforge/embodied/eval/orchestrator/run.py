@@ -75,17 +75,11 @@ def _server_args(config: Dict[str, Any], config_path: str = "") -> argparse.Name
     return args
 
 
-def _libero_args(config: Dict[str, Any], config_path: str = "") -> argparse.Namespace:
-    """Run _libero_args."""
+def _run_libero_once(config: Dict[str, Any], config_path: str = "") -> Dict[str, Any]:
+    """Run _run_libero_once."""
     args = libero_runner.build_argparser().parse_args([])
     args = apply_config(args, config)
     args.config = config_path
-    return args
-
-
-def _run_libero_once(config: Dict[str, Any], config_path: str = "") -> Dict[str, Any]:
-    """Run _run_libero_once."""
-    args = _libero_args(config, config_path)
     server_args = _server_args(config, config_path)
     ensure_libero_config(server_args)
     original = {
