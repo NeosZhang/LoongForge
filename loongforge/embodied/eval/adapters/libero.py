@@ -100,6 +100,7 @@ class LiberoAdapter(BaseBenchmarkAdapter):
                 "frame": "base",
                 "units": {"pos": "m", "rot": "rad"},
             },
+            "model_state": None,
             "meta": {
                 "benchmark": "libero",
                 "robot_setup": self.robot_setup,

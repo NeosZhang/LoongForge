@@ -138,7 +138,7 @@ reports/pi05/robotwin/<timestamp>_random_init_5step/
 
 ## 6. pi05 评测示例
 
-当前 pi05 已按统一结构接入 LIBERO、CALVIN、SimplerEnv 和 RoboTwin 四类 benchmark 入口；其中 SimplerEnv 当前只作为链路 smoke/debug，正式成绩依赖 Bridge/WidowX 对应 checkpoint 和 dataset statistics。
+当前 pi05 已按统一结构接入 LIBERO、CALVIN、SimplerEnv、RoboTwin 和 ManiSkill 五类 benchmark 入口；其中 CALVIN、SimplerEnv、RoboTwin 和 ManiSkill 的当前结果主要作为链路 smoke/debug，正式成绩依赖对应 benchmark/domain 的 checkpoint 和 dataset statistics。
 
 ### LIBERO
 
@@ -157,10 +157,9 @@ reports/pi05/libero/<timestamp>_smoke_steps10/
 结果：
 
 - 评测链路跑通，exit code 0。
-- 执行 300 steps。
-- 当前 checkpoint 未完成任务，`success_rate: 0.0`。
-- 失败原因为 `not_successful_within_max_steps`。
-- 产物包括 `results.jsonl`、`summary.csv`、`suite_summary.csv`、replay GIF 和 trace。
+- `libero10_smoke_internal.yaml` 在统一 `predict_action()` 重构后完成 task 0，2026-07-07 全量 smoke 中使用真实 PI05 权重，结果为 `success: 1`、`success_rate: 1.0`、`steps: 267`。
+- 第一次重构 smoke 暴露了 benchmark-native dict state 不能直接传给 pi05 的问题；现在由 adapter/payload 层只向模型转发 `model_state`，最新复测未再出现 `must be real number, not dict`。
+- 完整 replay/trace 产物在历史成功 smoke 中验证过；2026-07-07 全量 smoke 为节省空间关闭了 `save_replay` 和 `save_trace`，读完结果后已删除临时产物。
 
 ### CALVIN
 
@@ -175,7 +174,7 @@ examples/embodied/pi05/eval/configs/calvin/smoke.yaml
 - runner、adapter、YAML 入口和启动脚本已接入。
 - CALVIN 是 7D Franka 长程 sequence 评测，一条 sequence 连续执行 5 个 subtask。
 - 评测需要原始 CALVIN 格式数据和配置资产，包括 `validation/.hydra/merged_config.yaml`、`calvin_models/conf` 和 `eval_sequences.json`。
-- 内部 debug dataset 已完成 30-step smoke：env reset、policy RPC、action chunk、env step、trace 和 summary 输出均已打通；当前使用 q99 反归一化加 CALVIN adapter scale，LIBERO 域 checkpoint 未完成首个 subtask，结果仅作链路验证。
+- 内部 debug dataset 已完成 30-step smoke：env reset、policy RPC、action chunk、env step 和 summary 输出均已打通。2026-07-07 全量 smoke 使用 random-init PI05 重跑，server metadata 确认为 `random_init: true`、`ckpt_path: random_init://pi05`，结果 exit code 0、`avg_length: 0.0`，仅作链路验证。
 
 ### SimplerEnv
 
@@ -195,7 +194,7 @@ reports/pi05/simplerenv/<timestamp>_eggplant_300step/
 
 - Bridge runner、Vulkan/SAPIEN headless runtime、reset/step loop、trace 和 GIF 输出已打通。
 - 已配置任务包括 `widowx_put_eggplant_in_basket`、`widowx_carrot_on_plate`、`widowx_stack_cube` 和 `widowx_spoon_on_towel`。
-- `widowx_carrot_on_plate` 60-step smoke 已完成，输出 `results.jsonl`、`summary.csv`、replay GIF 和 action trace。
+- `widowx_carrot_on_plate` 60-step smoke 已完成。2026-07-07 全量 smoke 使用 random-init PI05 重跑，exit code 0、`success: 0`，符合随机初始化链路验证预期；为节省空间关闭 replay 和 trace，读完结果后已删除临时产物。
 - 固定小尺度 action sanity 已验证 WidowX controller 能移动；大尺度动作会导致 IK 失败回退，表现为机械臂不动。
 - 当前内部 pi05 SimplerEnv 配置使用 LIBERO 域 checkpoint 或空 `dataset_statistics_path`，只能作为链路 smoke/debug，不作为可信 benchmark score。
 - 正式 SimplerEnv 评测需要 Bridge/WidowX/SimplerEnv 对应 pi05 checkpoint 和匹配的 `dataset_statistics.json`。
@@ -218,11 +217,24 @@ reports/pi05/robotwin/<timestamp>_random_init_5step/
 
 - official runner 链路跑通，exit code 0。
 - 使用 random-init 14D pi05，不加载真实 checkpoint。
-- 执行 5-step official episode。
-- 结果为 `0/1 success`，符合随机初始化预期。
-- official log、deploy config、`_result.txt`、bridge `trace.json` 和可用 `mp4` 视频已统一归档到 `artifacts/robotwin/...`。
+- 2026-07-07 全量 smoke 执行 5-step official episode，return code 0，`success: 0`，符合随机初始化预期。
+- official log 中可能出现 SAPIEN/Vulkan warning 或 `Render Error` 文本；本轮进程返回 0，并产出 `results.jsonl`、`summary.csv`、`suite_summary.csv` 和 official log。为节省空间，读完结果后已删除临时产物。
 
-说明：当前真实 pi05 checkpoint 是 7D action，适用于 LIBERO 和 SimplerEnv 链路验证；但 SimplerEnv/WidowX 的 action interface 与 LIBERO/Franka 不同，正式成功率评测需要 Bridge/WidowX 对应 checkpoint 和匹配的 dataset statistics。RoboTwin official 任务是双臂 14D action，正式成功率评测需要 14D RoboTwin pi05 checkpoint 和匹配的 dataset statistics。
+说明：当前真实 pi05 checkpoint 是 7D action，适用于 LIBERO 链路验证；但 CALVIN、SimplerEnv/WidowX、ManiSkill 的 action/interface/domain 与 LIBERO 不同，正式成功率评测需要对应 benchmark/domain 的 checkpoint 和匹配 dataset statistics。RoboTwin official 任务是双臂 14D action，正式成功率评测需要 14D RoboTwin pi05 checkpoint 和匹配 dataset statistics。
+
+### ManiSkill
+
+配置：
+
+```text
+examples/embodied/pi05/eval/configs/maniskill/pick_cube_20step_internal.yaml
+```
+
+结果：
+
+- 2026-07-07 全量 smoke 使用 random-init PI05 跑 `PickCube-v1`。
+- 完成 5-step rollout，exit code 0，`success: 0`，符合随机初始化链路验证预期。
+- 运行中可能出现 SAPIEN/Vulkan ICD warning；本轮进程返回 0，并产出 `results.jsonl` 和 `summary.csv`。为节省空间，读完结果后已删除临时产物。
 
 ## 7. 验证范围
 
@@ -233,6 +245,7 @@ reports/pi05/robotwin/<timestamp>_random_init_5step/
 - `calvin_runner.py`：CALVIN 7D long-horizon runner、独立 conda env 和 30-step debug smoke 已通过；正式长程分数仍需匹配 CALVIN checkpoint/stats。
 - `simplerenv_runner.py`：SimplerEnv Bridge runtime smoke、60-step carrot rollout 和固定小动作 sanity 已通过；模型分数仍为 debug/smoke。
 - `robotwin_runner.py`：pi05 RoboTwin random-init 14D 5-step official runner。
+- `maniskill_runner.py`：ManiSkill `PickCube-v1` random-init 5-step runner。
 - `generate_report.py`、`compare_repro.py`、`archive_traces.py`：已用真实 LIBERO `results.jsonl` 做轻量 CLI 验证。
 
 TODO：后续如果需要多任务、多 endpoint 调度，再单独引入并验证 `orchestrator/scheduler.py` 和 `orchestrator/work_queue.py`。它们不属于当前 pi05 主链路，本次同步不作为已交付功能。
@@ -243,7 +256,7 @@ TODO：后续如果需要多任务、多 endpoint 调度，再单独引入并验
 
 - 不侵入 LoongForge 主框架源码。
 - YAML 统一入口可用。
-- LIBERO、CALVIN、SimplerEnv、RoboTwin 四类入口已接入；其中 CALVIN 与 SimplerEnv 当前是链路 smoke/debug 状态，正式成绩依赖匹配 checkpoint 和 dataset statistics。
+- LIBERO、CALVIN、SimplerEnv、RoboTwin 和 ManiSkill 五类入口已接入；其中 CALVIN、SimplerEnv、RoboTwin 和 ManiSkill 当前是链路 smoke/debug 状态，正式成绩依赖匹配 checkpoint 和 dataset statistics。
 - 配置和报告已按 `model/benchmark/run_name` 统一组织。
 - pi05 的 q99 action 反归一化已按 LoongForge 逻辑实现。
 - 当前验证重点是评测链路可用；模型任务成功率依赖后续更合适的 checkpoint。

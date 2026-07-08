@@ -65,6 +65,7 @@ class CalvinAdapter(BaseBenchmarkAdapter):
                 "frame": "base",
                 "units": {"pos": "m", "rot": "rad"},
             },
+            "model_state": None,
             "meta": {
                 "benchmark": "calvin",
                 "robot_setup": self.robot_setup,

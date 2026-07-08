@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from loongforge.embodied.eval.orchestrator.config import load_config
-from loongforge.embodied.eval.servers.loongforge_policy import LoongForgePI05Policy
+from loongforge.embodied.eval.servers.loongforge_policy import GenericPredictActionPolicy, PI05ModelFactory
 from loongforge.embodied.eval.transport.rpc_server import PolicyServer
 
 
@@ -70,7 +70,7 @@ def _apply_config(args: argparse.Namespace) -> argparse.Namespace:
     args.dataset_statistics_path = (
         model.get("dataset_statistics_path") or env.get("dataset_statistics_path") or args.dataset_statistics_path
     )
-    args.tokenizer_path = model.get("tokenizer_path") or args.tokenizer_path
+    args.tokenizer_path = model.get("tokenizer_path") or model.get("tokenizer_name") or args.tokenizer_path
     args.action_dim = int(model.get("action_dim", args.action_dim))
     args.state_dim = int(model.get("state_dim", args.state_dim))
     args.action_horizon = int(model.get("action_horizon", model.get("action_chunk_size", args.action_horizon)))
@@ -124,7 +124,7 @@ def main() -> None:
         raise SystemExit("checkpoint must be set by model.ckpt_path in YAML unless model.random_init is true")
 
     logging.basicConfig(level=logging.INFO, force=True)
-    policy = LoongForgePI05Policy(
+    model_spec = PI05ModelFactory.build(
         ckpt_path=str(Path(args.ckpt_path)),
         loongforge_root=args.loongforge_root,
         device=args.device,
@@ -139,6 +139,13 @@ def main() -> None:
         compile_model=args.compile_model,
         compile_mode=args.compile_mode,
         random_init=args.random_init,
+    )
+    policy = GenericPredictActionPolicy(
+        model=model_spec.model,
+        metadata=model_spec.metadata,
+        dataset_statistics_path=args.dataset_statistics_path,
+        action_dim=args.action_dim,
+        request_id_prefix=f"loongforge-{args.model_type}",
     )
     start_health_server(args.health_port, args.ckpt_path)
     PolicyServer(policy=policy, port=args.port, metadata=policy.metadata).serve_forever()

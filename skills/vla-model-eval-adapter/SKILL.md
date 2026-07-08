@@ -1,92 +1,145 @@
 ---
 name: vla-model-eval-adapter
-description: Use this skill when adapting a new VLA/model backend into the LoongForge embodied eval system after benchmark runners already exist. Trigger on requests to add a new model to eval, create model policy adapters, write eval YAML, wire model.backend/server routing, validate action normalization or dataset_statistics, or reproduce pi05-style model integration. By default, generate demo YAMLs and smoke-test plans for every already-supported benchmark, such as LIBERO, CALVIN, SimplerEnv, RoboTwin, and ManiSkill, not just one benchmark. This skill should be used even when the user only mentions YAML and adapter work, because the model-side policy is the architecture adapter.
+description: Use this skill when adapting a VLA/model backend into the LoongForge embodied eval system after benchmark runners already exist. Trigger on requests to add or refactor model eval integration, implement or validate a model predict_action interface, create model factory/loader code, wire model.backend/server routing, write eval YAML, handle action normalization or dataset_statistics, or reproduce pi05-style integration. Prefer the shared predict_action contract plus GenericPredictActionPolicy before creating a bespoke policy adapter. By default, generate demo YAMLs and smoke-test plans for every already-supported benchmark, such as LIBERO, CALVIN, SimplerEnv, RoboTwin, and ManiSkill, unless the user narrows scope.
 ---
 
 # VLA Model Eval Adapter
 
-Use this skill to connect a new model backend to the existing LoongForge embodied evaluation stack. The benchmark runners and benchmark adapters are assumed to already exist. Your job is to add or adapt the model side so the model can be launched by YAML, receive the unified policy RPC payload, return benchmark-compatible actions, and produce smoke-test evidence.
+Use this skill to connect a model backend to the existing LoongForge embodied evaluation stack. The benchmark runners and benchmark adapters are assumed to already exist. The preferred model-side architecture is now:
+
+```text
+model factory/loader
+  -> model instance exposing predict_action(images, instructions, state=None, dataset_stats=None)
+  -> GenericPredictActionPolicy
+  -> PolicyServer RPC
+```
+
+Create a bespoke policy adapter only when the model cannot reasonably expose the shared `predict_action` interface or needs custom RPC behavior that `GenericPredictActionPolicy` cannot cover.
 
 ## Mental model
 
-Keep the two adapter layers separate:
+Keep three boundaries separate:
 
 ```text
 benchmark adapter:
   benchmark obs/action <-> canonical eval schema
-  examples: adapters/maniskill.py, adapters/simplerenv.py
+  owns benchmark-native state, action conversion, and debug/trace metadata
+  examples: adapters/libero.py, adapters/maniskill.py, adapters/simplerenv.py
 
-model policy adapter:
-  canonical eval payload <-> concrete model inference API
-  examples: servers/loongforge_policy.py, servers/<model>_policy.py
+model factory/loader:
+  model config/import/checkpoint/tokenizer/device/dtype/random-init/metadata
+  returns a model object implementing predict_action(...)
+  example: PI05ModelFactory in servers/loongforge_policy.py
+
+generic eval policy:
+  RPC payload handling, image view selection, predict_action invocation,
+  action chunk cache, action shape validation, action dim truncation,
+  dataset statistics loading, q99 unnormalization, latency, metadata
+  example: GenericPredictActionPolicy in servers/loongforge_policy.py
 ```
 
-In this architecture, `xxxxx_policy.py` is the model-side adapter even if the class is named `Policy`. It translates the unified eval RPC payload into the model's real inference API and translates model outputs back into the unified `actions` response.
+The adapter state boundary matters. Benchmark-native structured state stays in `canonical_obs["state"]` for eval/debug/trace. Only model-ready state goes into `canonical_obs["model_state"]`, which runners forward as RPC payload `state`, and which eventually reaches `predict_action(state=...)`.
+
+```text
+adapter.model_state -> RPC payload.state -> predict_action(state=...)
+```
+
+Do not clean, drop, or reinterpret benchmark-native dict state inside a model factory. That belongs in the benchmark adapter or payload boundary.
 
 ## Expected deliverables
 
 Produce concrete files whenever implementation is requested. A complete model integration usually includes:
 
-- `loongforge/embodied/eval/servers/<model>_policy.py` or an extension of an existing policy adapter.
-- `loongforge/embodied/eval/servers/<model>_server.py` if the model cannot reuse an existing server entrypoint.
-- `loongforge/embodied/eval/orchestrator/server_manager.py` routing so `model.backend: <model>` starts the right server.
-- Demo YAML configs for every already-supported benchmark under `examples/embodied/<model>/eval/configs/<benchmark>/`, unless the user explicitly narrows scope.
+- A model factory/loader that returns a model instance and metadata, preferably via `PredictActionModelSpec` or an equivalent local pattern.
+- A model object exposing `predict_action(images, instructions, state=None, dataset_stats=None)`.
+- Interface validation using `validate_predict_action_model()` and `call_predict_action()` from `loongforge/embodied/eval/servers/predict_action_interface.py`.
+- Reuse of `GenericPredictActionPolicy` when the shared interface is sufficient.
+- A bespoke `servers/<model>_policy.py` only if shared `predict_action` is not a good fit.
+- `loongforge/embodied/eval/servers/<model>_server.py` or existing server entrypoint reuse if applicable.
+- `loongforge/embodied/eval/orchestrator/server_manager.py` routing only when adding a new `model.backend` that cannot reuse existing LoongForge routing.
+- Demo YAML configs for every already-supported benchmark under `examples/embodied/<model>/eval/configs/<benchmark>/`, unless the user narrows scope.
 - Optional run scripts under `examples/embodied/<model>/eval/` if this project already has scripts for that model/benchmark pattern.
 - A smoke-test matrix covering every generated benchmark demo, with one command and expected artifact path per benchmark.
 - Executed smoke tests for every generated benchmark demo that can run in the current environment; do not stop at generating YAML/matrix files.
-- Smoke outputs under `loongforge/embodied/eval/reports/<model>/<benchmark>/...` for every benchmark that can be executed in the current environment.
-- Documentation updates in `loongforge/embodied/eval/benchmark_envs.md`, `user_guide.md`, or `README.md`.
+- Documentation updates in the relevant eval docs, especially `README.md`, `user_guide.md`, `benchmark_envs.md`, `loongforge_eval_summary.md`, or `predict_action_interface.md`.
 
-If the user asks for a dry-run or generation test, write generated artifacts to a temp directory and do not overwrite repo files.
+If the user asks for a dry-run, generation test, or re-application test, write generated artifacts to a temp directory such as `/tmp/<model>_eval_adapter_*` and do not overwrite repo files except the skill itself when explicitly requested.
 
 ## Workflow
 
 1. Inspect the target model and benchmark context.
-   - Find existing model configs, server entries, and policy adapters.
-   - Identify whether this is a new backend or a variant of an existing backend.
+   - Find existing model configs, server entries, policy adapters, and model inference APIs.
+   - Identify whether this is a new backend, a variant of an existing backend, or a refactor of an existing integration.
    - Confirm target benchmarks are already wired in the orchestrator.
+   - Discover the already-supported benchmark set from runner/config directories rather than assuming only one benchmark.
 
-2. Define the model policy adapter boundary.
-   - Accept the unified RPC fields used by runners: `images`, `instruction`, `episode_id`, `episode_step`, `disable_action_cache`, `return_action_chunk`, `cfg_scale`, and optional state fields.
-   - Convert image/state/instruction inputs to the model's processor/tokenizer/inference format.
-   - Return a dict containing at least `actions`; include latency/metadata if local patterns do.
-   - Keep benchmark-specific obs/action conversion out of the model policy.
+2. Decide whether the shared `predict_action` path applies.
+   - Prefer adding or reusing a model method with this shape:
 
-3. Handle action shape and normalization explicitly.
+     ```python
+     def predict_action(images, instructions, state=None, dataset_stats=None):
+         ...
+     ```
+
+   - Use `PredictActionModel`, `validate_predict_action_model()`, and `call_predict_action()` to define and test the contract.
+   - Accept these output shapes from the model and normalize to `[H, action_dim]`: `[D]`, `[H, D]`, or `[B, H, D]`.
+   - Make the model factory handle model-private setup: imports, config registration, checkpoint loading, tokenizer paths, device/dtype, compile flags, random-init, and metadata.
+   - Let `GenericPredictActionPolicy` handle eval-private behavior: RPC payloads, image view selection, chunk caching, action shape validation, q99 unnormalization, latency, request IDs, and response format.
+
+3. Define state and action semantics explicitly.
+   - Keep benchmark-native `canonical_obs["state"]` out of the model server unless it is already model-ready.
+   - Add or preserve `canonical_obs["model_state"]`; runners should forward `canonical_obs.get("model_state")` as RPC payload `state`.
+   - If a model consumes state, verify that `model_state` ordering, units, frame, shape, and `dataset_stats["observation.state"]` match training.
    - Record `action_dim`, `state_dim`, `action_horizon`, `max_action_dim`, and `max_state_dim` in YAML.
    - Check whether the model emits raw actions or normalized actions.
-   - If normalized, require a matching `dataset_statistics_path` and implement the correct inverse transform.
+   - If normalized actions require q01/q99 inverse transform, require matching `dataset_statistics_path` and confirm `action.q01` and `action.q99` exist.
    - Do not reuse pi05 q01/q99 unnormalization for another model unless the model uses that exact convention.
-   - Validate action chunks can reshape to the benchmark action dimension, such as 7D single-arm or 14D bimanual.
 
 4. Write YAML configs for all supported benchmarks.
-   - Discover the already-supported benchmark set from existing runner/config directories before generating examples.
-   - By default, generate one short demo/smoke YAML for each supported benchmark, such as LIBERO, CALVIN, SimplerEnv, RoboTwin, and ManiSkill. Do not use one benchmark as a substitute for all-benchmark coverage unless the user explicitly narrows scope.
-   - Keep demo YAMLs bounded for smoke validation: prefer one task, one episode, and low max steps where the runner supports those knobs. Do not copy a full multi-task or long-horizon evaluation template and call it a smoke test.
-   - When deriving a smoke YAML from an existing eval YAML, actively reduce it to smoke size instead of copying the source unchanged. Use local runner knobs where available: LIBERO `max_tasks: 1` and `episodes_per_task: 1`; CALVIN one sequence and a low `max_steps` such as 30; SimplerEnv one task/episode with bounded max steps; RoboTwin one generated episode or one task with bounded max steps; ManiSkill one episode with a low `max_steps` such as 5.
-   - Include `model.backend`, `model.model_type`, `model.name`, `model.ckpt_path`, `model.dataset_statistics_path`, action/state dimensions, and runtime knobs.
+   - By default, generate one short demo/smoke YAML for each supported benchmark, such as LIBERO, CALVIN, SimplerEnv, RoboTwin, and ManiSkill.
+   - Keep demo YAMLs bounded: prefer one task, one episode, and low max steps where runner knobs allow it.
+   - Use local runner knobs where available: LIBERO `max_tasks: 1` and `episodes_per_task: 1`; CALVIN one sequence and low max steps; SimplerEnv one task/episode with bounded max steps; RoboTwin one generated episode or one task with bounded max steps; ManiSkill one episode with low `max_steps`.
+   - Include `model.backend`, `model.model_type`, `model.name`, `model.ckpt_path`, `model.dataset_statistics_path`, tokenizer path/name, action/state dimensions, random-init or real-checkpoint mode, and runtime knobs.
    - Include `server.python`, `server.host`, `server.port`, `server.health_port`, `server.start_timeout_sec`, and `server.log`.
    - Use unique ports per smoke config to avoid health-port collisions during repeated runs.
-   - Include `run.output_dir`, `run.seed`, `run.episode_idx`, `run.save_trace`, and replay flags when supported.
+   - Include `run.output_dir`, `run.seed`, `run.save_trace`, and replay flags when supported.
    - For internal configs, use `_internal.yaml` and keep local absolute paths there rather than in public templates.
 
-5. Wire server startup.
-   - Add server-manager routing for the new `model.backend`.
-   - Ensure health readiness means the policy object has finished construction and action RPC can start.
+5. Wire server startup only as needed.
+   - Reuse existing LoongForge server routing for pi05-style integrations when possible.
+   - Add server-manager routing for a new `model.backend` only when an existing server entrypoint cannot serve it.
+   - Ensure health readiness means the model factory has completed and action RPC can start.
    - Use reusable health server binding for short repeated smoke runs when local patterns support it.
-   - Before running the smoke matrix, check for leftover orchestrator/policy-server processes and occupied server ports. After any timeout or failed run, verify no policy server remains before continuing to the next benchmark.
-   - Keep benchmark client Python env and model server Python env explicit. Run `python -m loongforge.embodied.eval.orchestrator.run` with the benchmark/simulator conda environment, while `server.python` in YAML starts the model server environment. Do not use the model server env as the benchmark runner env unless that benchmark actually runs there.
+   - Before running the smoke matrix, check for leftover orchestrator/policy-server processes and occupied server ports.
+   - Keep benchmark client Python env and model server Python env explicit. Run the top-level orchestrator with the benchmark/simulator conda environment, while YAML `server.python` starts the model server environment.
 
 6. Check runtime-specific traps.
-   - For SAPIEN-based benchmarks such as SimplerEnv, RoboTwin, and ManiSkill, verify NVIDIA Vulkan with `vulkaninfo`, not just `nvidia-smi`.
+   - For SAPIEN-based benchmarks such as SimplerEnv, RoboTwin, and ManiSkill, verify NVIDIA Vulkan with `vulkaninfo`, not just `nvidia-smi`, when visual rollout correctness matters.
    - Expected Vulkan signal is `deviceName = NVIDIA ...` and `driverName = NVIDIA`; `llvmpipe`/`lavapipe` means visual rollout is not trustworthy.
-   - SAPIEN runners must set `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, and `XDG_RUNTIME_DIR` before importing SAPIEN/svulkan2/ManiSkill; re-exec if needed.
+   - SAPIEN runners may need `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, and `XDG_RUNTIME_DIR` set before importing SAPIEN/svulkan2/ManiSkill.
    - For MuJoCo/LIBERO/CALVIN, preserve existing `MUJOCO_GL`, `PYOPENGL_PLATFORM`, and benchmark config-path patterns.
 
-7. Validate in layers by running the generated smoke matrix.
-   - Execute every generated benchmark demo that can run in the current environment. The integration is not verified by YAML generation alone.
-   - Use the benchmark client's conda environment for the top-level orchestrator command: LIBERO with the LIBERO env, CALVIN with the CALVIN env, SimplerEnv with the SimplerEnv env, RoboTwin with the RoboTwin env, ManiSkill with the ManiSkill env. Let YAML `server.python` start the model server env separately.
-   - Mark a benchmark `passed` only when the command exits successfully and the expected artifacts are present. At minimum, check that `policy_server.log` exists, `results.jsonl` exists and contains at least one record, `summary.csv` exists when the runner supports it, and trace/replay artifacts exist when the YAML requested `save_trace` or `save_replay`.
+7. Validate in layers.
+   - First run local interface validation without a benchmark when possible:
+
+     ```bash
+     PYTHONPATH=/workspace/LoongForge-VLA python - <<'PY'
+     import numpy as np
+     from loongforge.embodied.eval.servers.predict_action_interface import call_predict_action, validate_predict_action_model
+
+     class MyModel:
+         def predict_action(self, images, instructions, state=None, dataset_stats=None):
+             return np.zeros((len(instructions), 4, 7), dtype=np.float32)
+
+     model = MyModel()
+     validate_predict_action_model(model)
+     print(call_predict_action(model, images=[[]], instructions=["task"], state=None, dataset_stats=None, action_dim=7).shape)
+     PY
+     ```
+
+   - Then execute every generated benchmark demo that can run in the current environment.
+   - Use the benchmark client's conda environment for the top-level orchestrator command: LIBERO with the LIBERO env, CALVIN with the CALVIN env, SimplerEnv with the SimplerEnv env, RoboTwin with the RoboTwin env, ManiSkill with the ManiSkill env.
+   - Mark a benchmark `passed` only when the command exits successfully and the expected outputs prove at least one policy call or official runner completion.
    - Mark a benchmark `blocked` when required runtime, simulator assets, checkpoint, stats, or environment support is missing; include the concrete error or missing path.
    - Mark a benchmark `skipped` only when the user explicitly narrows scope or asks not to run it.
    - Protocol or mock smoke proves runner/server/RPC/action shape.
@@ -96,29 +149,36 @@ If the user asks for a dry-run or generation test, write generated artifacts to 
 
 8. Update docs with precise status.
    - Separate `mock`, `random-init`, `real checkpoint`, and `credible score` statuses.
+   - Put user-facing usage in README/user guide; avoid filling README with internal validation logs.
+   - Put detailed interface contract and local interface-validation examples in `predict_action_interface.md`.
    - Mention missing assets directly, especially checkpoint and `dataset_statistics.json`.
-   - Record any runtime requirements that future users must set before import.
+   - Record runtime requirements that future users must set before import.
 
 ## Pi05 reference mapping
 
-Use pi05 as the canonical example of this structure, while remembering it predates the cleaner naming:
+Use pi05 as the canonical example of the shared `predict_action` architecture:
 
-- Model policy adapter: `loongforge/embodied/eval/servers/loongforge_policy.py` with `LoongForgePI05Policy`.
-- Server entrypoint: `loongforge/embodied/eval/servers/loongforge_server.py`.
+- Model interface: `PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)` in the model package.
+- Interface helpers: `loongforge/embodied/eval/servers/predict_action_interface.py`.
+- Generic eval policy: `GenericPredictActionPolicy` in `loongforge/embodied/eval/servers/loongforge_policy.py`.
+- Model factory: `PI05ModelFactory` in `loongforge/embodied/eval/servers/loongforge_policy.py`.
+- Backward-compatible wrapper: `LoongForgePI05Policy`, which should not be the preferred pattern for new integrations.
+- Server entrypoint: `loongforge/embodied/eval/servers/loongforge_server.py` builds the factory output and wraps it in `GenericPredictActionPolicy`.
 - Routing: `loongforge/embodied/eval/orchestrator/server_manager.py` maps `loongforge`, `pi05`, and `loongforge_pi05` to the LoongForge server.
+- Adapter state boundary: benchmark adapters provide `canonical_obs["state"]` for native structured state and `canonical_obs["model_state"]` for model-ready state; runners forward only `model_state` as RPC payload `state`.
 - YAML configs: `examples/embodied/pi05/eval/configs/<benchmark>/*.yaml`.
-- Reports: `loongforge/embodied/eval/reports/pi05/<benchmark>/...`.
 
-For new models, prefer explicit names such as `<model>_policy.py`, `<model>_server.py`, `model.backend: <model>`, and `examples/embodied/<model>/...` so backend, architecture, and product names do not collapse into one concept.
+For new models, prefer explicit factory names such as `<Model>ModelFactory`, explicit `model.backend` values, and reuse of `GenericPredictActionPolicy` so backend, architecture, and benchmark-specific adapter logic do not collapse into one concept.
 
 ## Required final response
 
 When finished, report:
 
 - Files created or modified.
-- The discovered supported benchmark set and whether each benchmark received a demo YAML.
+- Whether the integration used the shared `predict_action` path or a bespoke policy adapter, and why.
+- The discovered supported benchmark set and whether each benchmark received a demo YAML, unless the user narrowed scope.
 - A per-benchmark smoke matrix with status: passed, skipped, or blocked.
-- Which smoke layer passed for each benchmark: mock, random-init, real checkpoint, or credible score.
+- Which smoke layer passed for each benchmark: local interface validation, mock, random-init, real checkpoint, or credible score.
 - Exact command used for each validation that ran.
-- Output artifact path such as `results.jsonl` or `policy_server.log` for each completed smoke.
+- Output artifact path such as `results.jsonl` or `policy_server.log` for each completed smoke, or note if temp artifacts were deleted after validation.
 - Any remaining blocker, especially missing checkpoint, missing `dataset_statistics.json`, action mismatch, runtime driver issue, missing simulator env, or user-narrowed scope.

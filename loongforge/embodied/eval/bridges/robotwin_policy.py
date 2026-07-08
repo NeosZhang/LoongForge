@@ -95,7 +95,7 @@ class ModelClient:
             instruction=canonical_obs["instruction"],
             episode_id=canonical_obs["meta"]["episode_id"],
             episode_step=canonical_obs["meta"]["episode_step"],
-            state=canonical_obs["state"],
+            state=canonical_obs.get("model_state"),
             meta=canonical_obs["meta"],
             unnorm_key=self.unnorm_key,
             disable_action_cache=self.disable_action_cache,

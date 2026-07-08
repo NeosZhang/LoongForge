@@ -124,6 +124,7 @@ class SimplerEnvAdapter(BaseBenchmarkAdapter):
                 "head": None,
             },
             "state": state,
+            "model_state": None,
             "meta": {
                 "benchmark": "simplerenv",
                 "robot_setup": self.robot_setup,
