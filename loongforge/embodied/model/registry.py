@@ -19,8 +19,6 @@ from typing import Dict, Type
 
 import torch.nn as nn
 
-from loongforge.embodied.distributed.utils import is_rank_zero
-
 logger = logging.getLogger(__name__)
 
 MODEL_REGISTRY: Dict[str, Type[nn.Module]] = {}
@@ -47,6 +45,9 @@ def _auto_import_model_modules():
                 modeling_mod = f"loongforge.embodied.model.{pkg_name}.modeling_{pkg_name}"
                 importlib.import_module(modeling_mod)
             except ImportError as exc:
+                # Lazy import: keeps the module-level ``register_model``
+                # decorator path free of the training-side distributed stack.
+                from loongforge.embodied.distributed.utils import is_rank_zero
                 if is_rank_zero():   
                     logger.warning(
                         "Skipping optional model package during auto-registration:\n"

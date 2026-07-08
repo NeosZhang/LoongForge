@@ -29,6 +29,7 @@ from .modeling_florence2 import Florence2ForConditionalGeneration
 from .transformer import SoftPromptedTransformer
 from .action_hub import build_action_space
 from .model_configuration_xvla import XVLAConfig
+from loongforge.embodied.model.registry import register_model
 
 
 class XVLA(PreTrainedModel):
@@ -111,17 +112,11 @@ class XVLA(PreTrainedModel):
         flat_mask = image_mask.view(-1).to(torch.bool)         # [B*V]
         flat_images = pixel_values.flatten(0, 1)                # [B*V, C, H, W]
 
-        num_valid = int(flat_mask.sum().item())
-        if num_valid == 0:
-            raise ValueError("At least one image view must be valid per batch.")
-
-        valid_images = flat_images[flat_mask]                   # [#valid, C, H, W]
-        valid_feats = self.vlm._encode_image(valid_images)      # [#valid, N, D]
-        N, D = valid_feats.shape[1:]
-
-        image_features = valid_feats.new_zeros((B * V, N, D))
-        image_features[flat_mask] = valid_feats
-        image_features = image_features.view(B, V, N, D)        # [B, V, N, D]
+        all_feats = self.vlm._encode_image(flat_images)         # [B*V, N, D]
+        N, D = all_feats.shape[1:]
+        image_features = torch.where(
+            flat_mask.view(-1, 1, 1), all_feats, all_feats.new_zeros(())
+        ).view(B, V, N, D)                                       # [B, V, N, D]
 
         inputs_embeds = self.vlm.get_input_embeddings()(input_ids)  # [B, L, D]
 
@@ -214,9 +209,6 @@ class XVLA(PreTrainedModel):
 # XVLAPolicy — LoongForge trainer entry point
 # ═══════════════════════════════════════════════════════════════
 
-from loongforge.embodied.model.registry import register_model
-
-
 
 @register_model("xvla")
 class XVLAPolicy(torch.nn.Module):
@@ -232,6 +224,13 @@ class XVLAPolicy(torch.nn.Module):
         super().__init__()
         self.config = config
         self.model = XVLA(config)
+        # Processor (tokenizer + image_processor) path used by the eval-facing
+        # ``predict_action`` entry. Populated by ``load_pretrained`` and falls
+        # back to the ``TOKENIZER_PATH`` / ``PROCESSOR_PATH`` env vars.
+        self._processor_path = ""
+        self._num_image_views = int(getattr(config, "num_image_views", 3) or 3)
+        self._tokenize_transform = None
+        self._image_transform = None
 
     def _prepare_inputs(self, batch) -> Dict[str, torch.Tensor]:
         """Map an XVLAProcessor-style batch dict into XVLA model forward arguments.
@@ -308,7 +307,7 @@ class XVLAPolicy(torch.nn.Module):
         return total, loss_dict
 
     @torch.no_grad()
-    def predict_action(
+    def predict_action_chunk(
         self,
         input_ids: torch.Tensor,
         image_input: torch.Tensor,
@@ -317,7 +316,11 @@ class XVLAPolicy(torch.nn.Module):
         proprio: torch.Tensor,
         steps: int = 10,
     ) -> np.ndarray:
-        """Inference: iterative denoising, returns ndarray (B, num_actions, dim_action)."""
+        """Predict an action chunk from a preprocessed XVLA batch.
+
+        Low-level entry point for callers that already have model-ready tensors
+        (matching :meth:`XVLA.generate_actions`).
+        """
         self.eval()
         actions = self.model.generate_actions(
             input_ids=input_ids,
@@ -329,8 +332,142 @@ class XVLAPolicy(torch.nn.Module):
         )
         return actions.float().cpu().numpy()
 
+    def _get_tokenize_transform(self):
+        """Lazily build (and cache) the Florence2 tokenize core.
+
+        Uses :class:`XVLATokenizerCore` from the model package rather than the
+        ``BaseTransform`` wrapper in ``loongforge.embodied.data``, so
+        ``predict_action`` does not pull in the training-side DataLoader /
+        DistributedContext import chain.
+        """
+        cached = getattr(self, "_tokenize_transform", None)
+        if cached is None:
+            import os as _os
+            from loongforge.embodied.model.xvla.xvla_processor import (
+                XVLATokenizerCore,
+            )
+            path = (
+                self._processor_path
+                or _os.environ.get("TOKENIZER_PATH", "")
+                or _os.environ.get("PROCESSOR_PATH", "")
+            )
+            cached = XVLATokenizerCore(tokenizer_path=path)
+            self._tokenize_transform = cached
+        return cached
+
+    def _get_image_transform(self):
+        """Lazily build (and cache) the Florence2 image encode core.
+
+        Uses :class:`XVLAImageProcessorCore` from the model package rather than
+        the ``BaseTransform`` wrapper in ``loongforge.embodied.data``, so
+        ``predict_action`` does not pull in the training-side DataLoader /
+        DistributedContext import chain.
+        """
+        cached = getattr(self, "_image_transform", None)
+        if cached is None:
+            import os as _os
+            from loongforge.embodied.model.xvla.xvla_processor import (
+                XVLAImageProcessorCore,
+            )
+            path = (
+                self._processor_path
+                or _os.environ.get("PROCESSOR_PATH", "")
+                or _os.environ.get("TOKENIZER_PATH", "")
+            )
+            cached = XVLAImageProcessorCore(
+                tokenizer_path=path,
+                num_views=self._num_image_views,
+            )
+            self._image_transform = cached
+        return cached
+
+    @torch.no_grad()
+    def predict_action(
+        self,
+        images,
+        instructions,
+        state=None,
+        dataset_stats=None,
+    ) -> np.ndarray:
+        """Eval-facing entry point matching the shared ``predict_action`` interface.
+
+        Args:
+            images: Batched images. Either a list of length ``B`` of per-sample
+                    view lists (each view a CHW tensor / HWC ndarray / PIL
+                    image), or a flat list of length ``B`` of single-view
+                    images (auto-wrapped into ``[[img]] * B``).
+            instructions: List[str] of language instructions (length ``B``).
+            state: Optional proprio state. Accepts ``None``, a 1-D vector, or a
+                    ``[B, D_state]`` tensor / ndarray / list. When ``None`` a
+                    zero proprio of the action-space's expected dim is used.
+            dataset_stats: Unused for XVLA (its action space handles
+                    normalization internally). Kept for interface compatibility.
+
+        Returns:
+            ndarray of shape ``[B, num_actions, dim_action]``.
+        """
+        # XVLA does not consume dataset_stats because action normalization is handled by action_space.
+        del dataset_stats
+        self.eval()
+        device = next(self.parameters()).device
+
+        if not isinstance(images, (list, tuple)) or len(images) == 0:
+            raise ValueError("predict_action: images must be a non-empty list.")
+        if not isinstance(images[0], (list, tuple)):
+            images = [[img] for img in images]
+        B = len(images)
+
+        if not isinstance(instructions, (list, tuple)):
+            instructions = [instructions]
+        if len(instructions) != B:
+            raise ValueError(
+                f"predict_action: got {B} image samples but {len(instructions)} instructions."
+            )
+
+        image_tf = self._get_image_transform()
+        pil_batch = [[image_tf._to_pil(im) for im in views] for views in images]
+        encoded = image_tf.encode_image_batch(pil_batch)
+        image_input = encoded["image_input"].to(device)
+        image_mask = encoded["image_mask"].to(device)
+
+        tok = self._get_tokenize_transform().encode_language_batch(
+            [str(t) for t in instructions]
+        )
+        input_ids = tok["input_ids"].to(device)
+
+        dim_proprio = int(self.model.action_space.dim_proprio)
+        if state is None:
+            proprio = torch.zeros(B, dim_proprio, dtype=torch.float32, device=device)
+        else:
+            if not isinstance(state, torch.Tensor):
+                state = torch.as_tensor(state, dtype=torch.float32)
+            state = state.to(dtype=torch.float32)
+            if state.dim() == 1:
+                state = state.unsqueeze(0)
+            if state.shape[0] != B:
+                raise ValueError(
+                    f"predict_action: state batch {state.shape[0]} != images batch {B}."
+                )
+            cur = state.shape[-1]
+            if cur < dim_proprio:
+                state = torch.nn.functional.pad(state, (0, dim_proprio - cur))
+            elif cur > dim_proprio:
+                state = state[..., :dim_proprio]
+            proprio = state.to(device)
+
+        domain_id = torch.zeros(B, dtype=torch.long, device=device)
+
+        actions = self.model.generate_actions(
+            input_ids=input_ids,
+            image_input=image_input,
+            image_mask=image_mask,
+            domain_id=domain_id,
+            proprio=proprio,
+        )
+        return actions.float().cpu().numpy()
+
     @classmethod
-    def from_pretrained(cls, config_or_path) -> "XVLAPolicy":
+    def from_pretrained(cls, config_or_path, processor_path=None) -> "XVLAPolicy":
         """Create XVLAPolicy from XVLAConfig, a pretrained path string, or a config dict."""
         import os
         if isinstance(config_or_path, XVLAConfig):
@@ -367,6 +504,9 @@ class XVLAPolicy(torch.nn.Module):
         from safetensors.torch import load_file
 
         path = Path(pretrained_path)
+        # Remember the checkpoint directory so lazily-built processors
+        # (tokenizer / image_processor) can be loaded from it later.
+        self._processor_path = str(path.parent if path.is_file() else path)
         safetensors_file = path / "model.safetensors" if path.is_dir() else path
         load_kwargs = {"device": str(device)} if device is not None else {}
         state_dict = load_file(str(safetensors_file), **load_kwargs)
