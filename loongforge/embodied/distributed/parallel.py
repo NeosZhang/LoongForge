@@ -7,7 +7,6 @@ import logging
 
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
@@ -15,7 +14,7 @@ from torch.distributed.device_mesh import init_device_mesh
 
 from .context import DistributedContext
 from .utils import (
-    resolve_dtype,
+    is_rank_zero,
     filter_supported_kwargs,
     get_module_names_by_dtype,
     is_container_module,
@@ -25,6 +24,7 @@ from .utils import (
     module_params,
     parse_optional_int_list,
 )
+from loongforge.embodied.train.utils.utils import resolve_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ def _build_fsdp_device_mesh(training_args, ctx: DistributedContext):
             "to FSDP over the HSDP shard group."
         )
 
-    if dist.get_rank() == 0:
+    if is_rank_zero():
         logger.info(
             "Using HSDP 2D device mesh: replica=%d, shard=%d.",
             replica_size,
@@ -666,16 +666,13 @@ class _FSDPWrapPlanner:
         return [module_or_modules] if isinstance(module_or_modules, nn.Module) else list(module_or_modules)
 
     def _module_group_params(self, modules: list[nn.Module]) -> list[nn.Parameter]:
-        params = []
-        seen = set()
-        for module in modules:
-            for param in module_params(module, excluded_param_ids=self.wrapped_param_ids):
-                param_id = id(param)
-                if param_id in seen:
-                    continue
-                params.append(param)
-                seen.add(param_id)
-        return params
+        all_params = [
+            p
+            for module in modules
+            for p in module_params(module, excluded_param_ids=self.wrapped_param_ids)
+        ]
+        # Deduplicate across modules while preserving order.
+        return list({id(p): p for p in all_params}.values())
 
     def _module_group_label(self, modules: list[nn.Module]) -> str:
         if len(modules) == 1:

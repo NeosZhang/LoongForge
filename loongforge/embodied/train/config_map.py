@@ -14,12 +14,8 @@ from typing import Type
 
 from loongforge.embodied.model.pi05.model_configuration_pi05 import Pi05ModelConfig
 from loongforge.embodied.data.transforms.pi05.data_configuration_pi05 import Pi05DataConfig
-from loongforge.embodied.model.groot_n1_6.model_configuration_groot_n1_6 import (
-    GrootN1d6ModelConfig,
-)
-from loongforge.embodied.data.transforms.groot_n1_6.data_configuration_groot_n1_6 import (
-    GrootN1d6DataConfig,
-)
+from loongforge.embodied.model.groot_n1_6.model_configuration_groot_n1_6 import GrootN1d6ModelConfig
+from loongforge.embodied.data.transforms.groot_n1_6.data_configuration_groot_n1_6 import GrootN1d6DataConfig
 
 _CONFIGS_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent

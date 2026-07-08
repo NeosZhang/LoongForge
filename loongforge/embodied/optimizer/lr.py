@@ -7,9 +7,8 @@ import logging
 from typing import Dict, List
 
 import torch.nn as nn
-import torch.distributed as dist
 
-from loongforge.embodied.distributed.utils import unwrap_model
+from loongforge.embodied.distributed.utils import is_rank_zero, unwrap_model
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +21,7 @@ def _log_model_lr(model: nn.Module, max_depth: int = 3, groups: List[Dict] = Non
     Only logs on rank 0 (or when distributed is not initialized).
     """
 
-    if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+    if not is_rank_zero():
         return
 
     # Build param_id → lr mapping when groups are available
@@ -112,31 +111,29 @@ def build_param_groups(model: nn.Module, training_args) -> List[Dict]:
 
     _log_model_lr(raw)
 
-    lr_mappings: list[tuple[float, list[str]]] = []
+    lr_mappings: list[tuple[str, float]] = []
     lr_group_str = training_args.lr_group
+
     if lr_group_str:
-        for path, lr_val in _parse_lr_group(lr_group_str):
-            lr_mappings.append((lr_val, [path]))
+        lr_mappings = _parse_lr_group(lr_group_str)
 
-    for lr_val, candidate_paths in lr_mappings:
-        for path in candidate_paths:
-            module = raw
-            try:
-                for attr in path.split("."):
-                    module = getattr(module, attr)
-            except AttributeError:
-                continue
+    for path, lr_val in lr_mappings:
+        module = raw
+        try:
+            for attr in path.split("."):
+                module = getattr(module, attr)
+        except AttributeError:
+            continue
 
-            params = [
-                p for p in module.parameters()
-                if p.requires_grad and id(p) not in frozen_ids and id(p) not in used_ids
-            ]
-            if params:
-                groups.append({"params": params, "lr": lr_val, "name": path})
-                used_ids.update(id(p) for p in params)
-                if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"LR group '{path}': lr={lr_val}, params={len(params)}")
-                break  # Only use first matching path
+        params = [
+            p for p in module.parameters()
+            if p.requires_grad and id(p) not in frozen_ids and id(p) not in used_ids
+        ]
+        if params:
+            groups.append({"params": params, "lr": lr_val, "name": path})
+            used_ids.update(id(p) for p in params)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"LR group '{path}': lr={lr_val}, params={len(params)}")
 
     # Base group: everything else
     other = [

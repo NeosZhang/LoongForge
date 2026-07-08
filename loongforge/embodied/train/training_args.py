@@ -30,9 +30,9 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional, get_args, get_origin, Union
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 # Custom CLI value parsers (referenced by field metadata below)
-# ═══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 
 
 def parse_reshard_after_forward(value: str):
@@ -87,9 +87,9 @@ def parse_positive_int(value: str) -> int:
     return int_value
 
 
-# ═══════════════════════════════════════════════════════════════════
-# TrainingArgs — single source of truth for generic training params
-# ═══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# TrainingArgs - single source of truth for generic training params
+# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -99,83 +99,167 @@ class TrainingArgs:
     # ── Model routing (which YAML / trainer / tokenizer) ──
     model_name: Optional[str] = field(
         default=None,
-        metadata={"help": "Model identifier (e.g. 'pi05', 'groot_n1_6'). Selects the "
-                          "ModelConfig/DataConfig classes and default YAML via MODEL_SCHEMA. Required."})
+        metadata={
+            "help": "Model identifier (e.g. 'pi05', 'groot_n1_6'). Selects the "
+                    "ModelConfig/DataConfig classes and default YAML via "
+                    "MODEL_SCHEMA. Required."
+        },
+    )
     config_file: Optional[str] = field(
         default=None,
-        metadata={"help": "Explicit path to a model YAML config. Overrides the default YAML "
-                          "resolved from --model-name; --model-name is still required to pick the config classes."})
+        metadata={
+            "help": "Explicit path to a model YAML config. Overrides the default "
+                    "YAML resolved from --model-name; --model-name is still "
+                    "required to pick the config classes."
+        },
+    )
     tokenizer_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Directory or HF repo id of the tokenizer. Exported to the TOKENIZER_PATH "
-                          "env var so the model/data tokenizer loaders can pick it up."})
+        metadata={
+            "help": "Directory or HF repo id of the tokenizer. Exported to the "
+                    "TOKENIZER_PATH env var so the model/data tokenizer loaders "
+                    "can pick it up."
+        },
+    )
     trainer_type: str = field(
         default="FinetuneTrainer",
-        metadata={"help": "Trainer class to instantiate (e.g. FinetuneTrainer, PretrainTrainer); "
-                          "resolved by the trainer builder registry."})
+        metadata={
+            "help": "Trainer class to instantiate (e.g. FinetuneTrainer, "
+                    "GrootN1d6Trainer); resolved by the trainer builder registry."
+        },
+    )
 
     # ── Basic Training ──
     train_iters: int = field(
         default=150000,
-        metadata={"help": "Total number of optimizer update steps to run before stopping."})
+        metadata={
+            "help": "Total number of optimizer update steps to run before stopping."
+        },
+    )
     save_interval: int = field(
         default=10000,
-        metadata={"help": "Write a checkpoint every N iterations."})
+        metadata={"help": "Write a checkpoint every N iterations."},
+    )
     seed: int = field(
         default=3047,
-        metadata={"help": "Global RNG seed for Python/NumPy/PyTorch and data shuffling (reproducibility)."})
+        metadata={
+            "help": "Global RNG seed for Python/NumPy/PyTorch and data shuffling "
+                    "(reproducibility)."
+        },
+    )
     deterministic_mode: bool = field(
         default=False,
-        metadata={"help": "Force cuDNN deterministic algorithms. Improves reproducibility at some "
-                          "throughput cost; requires CUBLAS_WORKSPACE_CONFIG to be set."})
+        metadata={
+            "help": "Force cuDNN deterministic algorithms. Improves "
+                    "reproducibility at some throughput cost; requires "
+                    "CUBLAS_WORKSPACE_CONFIG to be set."
+        },
+    )
     output_dir: str = field(
         default="outputs/default",
-        metadata={"help": "Root directory for checkpoints, logs, and other run artifacts."})
+        metadata={
+            "help": "Root directory for checkpoints, logs, and other run artifacts."
+        },
+    )
     gradient_accumulation_steps: int = field(
         default=1,
-        metadata={"help": "Number of micro-batches accumulated before each optimizer step; "
-                          "effective batch = per_device_batch_size * world_size * this value."})
+        metadata={
+            "help": "Number of micro-batches accumulated before each optimizer "
+                    "step; effective batch = per_device_batch_size * world_size "
+                    "* this value."
+        },
+    )
     loss_spike_threshold: float = field(
         default=100.0,
-        metadata={"help": "If loss exceeds this value the step is treated as a spike (guard / skip)."})
+        metadata={
+            "help": "Loss spike guard threshold. The scaled backward loss "
+                    "(loss / gradient_accumulation_steps) is checked each "
+                    "micro-batch; if it is NaN/Inf or greater than this value, "
+                    "that loss contribution is zeroed before backward and the "
+                    "optimizer iteration is counted as spiked/skipped."
+        },
+    )
 
     # ── Learning Rate ──
     lr_base: float = field(
         default=2.5e-5,
-        metadata={"help": "Base learning rate applied to all parameters not matched by --lr-group."})
+        metadata={
+            "help": "Base learning rate applied to all parameters not matched by "
+                    "--lr-group."
+        },
+    )
     lr_group: Optional[str] = field(
         default=None,
-        metadata={"help": "Per-module LR overrides as 'module.path=lr,module2.path=lr2'. "
-                          "Matched modules use the given LR instead of --lr-base."})
+        metadata={
+            "help": "Per-module LR overrides in 'module.path=lr' format, "
+                    "comma-separated. Order matters: parameters are assigned to "
+                    "the first matching entry and excluded from all later entries. "
+                    "Child module paths must appear before their parent paths, "
+                    "otherwise the child rule is silently ignored because its "
+                    "parameters have already been consumed by the parent. "
+                    "Example: 'model.paligemma_with_expert.gemma_expert=1e-4,"
+                    "model.paligemma_with_expert=1e-5'. The final catch-all "
+                    "group uses --lr-base."
+        },
+    )
     lr_decay_style: str = field(
         default="cosine_with_min_lr",
-        metadata={"help": "LR schedule shape (e.g. constant, linear, cosine, cosine_with_min_lr)."})
+        metadata={
+            "help": "LR schedule shape (e.g. constant, linear, cosine, "
+                    "cosine_with_min_lr)."
+        },
+    )
     lr_warmup_iters: int = field(
         default=2000,
-        metadata={"help": "Number of iterations to linearly warm up the LR from 0 to its peak."})
+        metadata={
+            "help": "Number of iterations to linearly warm up the LR from 0 to "
+                    "its peak."
+        },
+    )
     min_lr: float = field(
         default=1e-6,
-        metadata={"help": "Lower bound the LR schedule decays to (floor)."})
+        metadata={"help": "Lower bound the LR schedule decays to (floor)."},
+    )
 
     # ── Optimizer ──
     optimizer: str = field(
         default="AdamW",
-        metadata={"help": "Optimizer name (e.g. AdamW, SGD)."})
+        metadata={
+            "help": "Optimizer name. Supported: AdamW, TorchFusedAdamW, "
+                    "TEFusedAdamW, ApexFusedAdamW, Adam, SGD. TEFusedAdamW "
+                    "requires TransformerEngine; ApexFusedAdamW requires Apex."
+        },
+    )
     clip_grad: float = field(
         default=1.0,
-        metadata={"help": "Max global gradient norm for clipping; <=0 disables clipping."})
+        metadata={
+            "help": "Max global gradient norm for clipping; <=0 disables clipping."
+        },
+    )
     weight_decay: float = field(
         default=0.01,
-        metadata={"help": "Decoupled weight decay coefficient (AdamW)."})
+        metadata={"help": "Decoupled weight decay coefficient (AdamW)."},
+    )
     adam_beta1: float = field(
         default=0.9,
-        metadata={"help": "Adam beta1 — exponential decay rate for the first moment (mean)."})
+        metadata={
+            "help": "Adam beta1 — exponential decay rate for the first moment "
+                    "(mean)."
+        },
+    )
     adam_beta2: float = field(
         default=0.95,
-        metadata={"help": "Adam beta2 — exponential decay rate for the second moment (variance)."})
+        metadata={
+            "help": "Adam beta2 — exponential decay rate for the second moment "
+                    "(variance)."
+        },
+    )
     adam_eps: float = field(
         default=1e-8,
-        metadata={"help": "Adam epsilon added to the denominator for numerical stability."})
+        metadata={
+            "help": "Adam epsilon added to the denominator for numerical stability."
+        },
+    )
 
     # ── Data loading control (cross-model; per-model processing lives in DataConfig) ──
     dataset_format: str = field(
@@ -184,40 +268,66 @@ class TrainingArgs:
                           "(e.g. lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets)."})
     dataset_path: Optional[str] = field(
         default=None,
-        metadata={"help": "Filesystem path or repo id of the dataset to train on."})
+        metadata={"help": "Filesystem path or repo id of the dataset to train on."},
+    )
     dataset_name: Optional[str] = field(
         default="bridge_v2",
-        metadata={"help": "RLDS dataset name / Open-X-Embodiment key (RLDS loader only)."})
+        metadata={
+            "help": "RLDS dataset name / Open-X-Embodiment key (RLDS loader only)."
+        },
+    )
     split: str = field(
         default="train",
-        metadata={"help": "Dataset split to load (RLDS), e.g. 'train' or 'train[:95%]'."})
+        metadata={
+            "help": "Dataset split to load (RLDS), e.g. 'train' or 'train[:95%]'."
+        },
+    )
     lerobotdataset_version: str = field(
         default="v3.0",
-        metadata={"choices": ["v2.0", "v2.1", "v3.0"],
-                  "help": "On-disk LeRobot dataset format version to parse."})
+        metadata={
+            "choices": ["v2.0", "v2.1", "v3.0"],
+            "help": "On-disk LeRobot dataset format version to parse.",
+        },
+    )
     video_backend: str = field(
         default="torchcodec",
-        metadata={"choices": ["torchcodec", "decord", "opencv", "pyav", "torchvision_av"],
-                  "help": "Backend used to decode episode videos into frames."})
+        metadata={
+            "choices": ["torchcodec", "decord", "opencv", "pyav", "torchvision_av"],
+            "help": "Backend used to decode episode videos into frames.",
+        },
+    )
     streaming: bool = field(
         default=False,
-        metadata={"help": "Use a streaming/iterable dataset instead of map-style random access "
-                          "(lower memory, no global shuffle)."})
-    dataset_mix: Optional[str] = field(
-        default=None,
-        metadata={"help": "Name of a registered dataset mixture (weighted multi-dataset sampling)."})
+        metadata={
+            "help": "Use a streaming/iterable dataset instead of map-style random "
+                    "access (lower memory, no global shuffle)."
+        },
+    )
     data_root_dir: Optional[str] = field(
         default=None,
-        metadata={"help": "Root directory containing the datasets referenced by --dataset-mix."})
+        metadata={
+            "help": "Root directory containing the datasets referenced by "
+                    "--dataset-mix."
+        },
+    )
     robot_type: Optional[str] = field(
         default=None,
-        metadata={"help": "Robot embodiment type (e.g. libero_franka); selects action/state layout."})
+        metadata={
+            "help": "Robot embodiment type (e.g. libero_franka); selects "
+                    "action/state layout."
+        },
+    )
     task_name: str = field(
         default="perform the task",
-        metadata={"help": "Language instruction used as the prompt when the dataset has none (HDF5)."})
+        metadata={
+            "help": "Language instruction used as the prompt when the dataset has "
+                    "none (HDF5)."
+        },
+    )
     per_device_batch_size: int = field(
         default=4,
-        metadata={"help": "Micro-batch size processed per GPU per forward pass."})
+        metadata={"help": "Micro-batch size processed per GPU per forward pass."},
+    )
     num_workers: int = field(
         default=4,
         metadata={"help": "Number of DataLoader worker processes per rank."})
@@ -227,206 +337,381 @@ class TrainingArgs:
                           "Default leaves both unset for baseline precision comparison."})
     dataloader_multiprocessing_context: Optional[str] = field(
         default=None,
-        metadata={"choices": ["fork", "spawn", "forkserver"],
-                  "help": "Multiprocessing start method for DataLoader workers."})
+        metadata={
+            "choices": ["fork", "spawn", "forkserver"],
+            "help": "Multiprocessing start method for DataLoader workers.",
+        },
+    )
     distributed_sampler_mode: str = field(
         default="cyclic",
-        metadata={"choices": ["cyclic", "block"],
-                  "help": "How the distributed sampler partitions indices across ranks: "
-                          "'cyclic' (round-robin) or 'block' (contiguous shards)."})
-    discrete_state_input: bool = field(
-        default=False,
-        metadata={"help": "Discretize the robot state and inject it into the text prompt (PI0.5 style)."})
+        metadata={
+            "choices": ["cyclic", "block"],
+            "help": "How the distributed sampler partitions indices across ranks: "
+                    "'cyclic' (round-robin) or 'block' (contiguous shards).",
+        },
+    )
     num_samples: int = field(
         default=100,
-        metadata={"help": "Number of synthetic samples to generate for the dummy dataset."})
+        metadata={
+            "help": "Number of synthetic samples to generate. Only effective "
+                    "when --dataset-format=dummy_datasets."
+        },
+    )
 
     # ── Checkpoint ──
     pretrained_checkpoint: Optional[str] = field(
         default=None,
-        metadata={"help": "Path to pretrained weights to initialize the model from (fine-tuning)."})
+        metadata={
+            "help": "Path to pretrained weights to initialize the model from "
+                    "(fine-tuning)."
+        },
+    )
     resume: bool = field(
         default=False,
-        metadata={"help": "Resume training (weights + optimizer/scheduler/RNG state) from the "
-                          "latest checkpoint in --output-dir."})
+        metadata={
+            "help": "Resume training (weights + optimizer/scheduler/RNG state) "
+                    "from the latest checkpoint in --output-dir."
+        },
+    )
     save_format: str = field(
         default="safetensors",
-        metadata={"choices": ["safetensors", "pt", "dcp"],
-                  "help": "On-disk checkpoint format: safetensors, raw torch .pt, or distributed "
-                          "checkpoint (dcp)."})
+        metadata={
+            "choices": ["safetensors", "pt", "dcp"],
+            "help": "On-disk checkpoint format: safetensors, raw torch .pt, or "
+                    "distributed checkpoint (dcp).",
+        },
+    )
     save_training_state: bool = field(
         default=True,
-        metadata={"help": "Also save optimizer, LR scheduler, and RNG state (needed to resume)."})
+        metadata={
+            "help": "Also save optimizer, LR scheduler, and RNG state (needed to "
+                    "resume)."
+        },
+    )
     async_save: bool = field(
         default=False,
-        metadata={"help": "Save checkpoints asynchronously in the background (dcp format only)."})
+        metadata={
+            "help": "Save checkpoints asynchronously in the background (dcp "
+                    "format only)."
+        },
+    )
 
     # ── Freeze ──
     freeze_modules: str = field(
         default="",
-        metadata={"help": "Comma-separated module path prefixes whose parameters are frozen "
-                          "(requires_grad=False)."})
+        metadata={
+            "help": "Comma-separated module path prefixes whose parameters are "
+                    "frozen (requires_grad=False)."
+        },
+    )
 
     # ── Logging ──
     log_interval: int = field(
         default=1,
-        metadata={"help": "Log scalar metrics (loss, LR, throughput) every N iterations."})
+        metadata={
+            "help": "Log scalar metrics (loss, LR, throughput) every N iterations."
+        },
+    )
     detail_log_interval: int = field(
         default=20,
-        metadata={"help": "Log detailed per-stage timing breakdown every N iterations."})
+        metadata={
+            "help": "Log detailed per-stage timing breakdown every N iterations."
+        },
+    )
     timing_log_level: int = field(
         default=0,
-        metadata={"choices": [0, 1],
-                  "help": "Verbosity of per-stage timing logs: 0 = summary, 1 = detailed."})
+        metadata={
+            "choices": [0, 1],
+            "help": "Verbosity of per-stage timing logs: 0 = summary, "
+                    "1 = detailed.",
+        },
+    )
     loss_log_rank: List[int] = field(
         default_factory=lambda: [-1],
-        metadata={"help": "Ranks whose loss is logged; -1 logs the all-reduced mean across ranks."})
+        metadata={
+            "help": "Ranks whose loss is logged; -1 logs the all-reduced mean "
+                    "across ranks."
+        },
+    )
     wandb_project: str = field(
         default="loongforge-vla",
-        metadata={"help": "Weights & Biases project name."})
+        metadata={"help": "Weights & Biases project name."},
+    )
     wandb_mode: str = field(
         default="disabled",
-        metadata={"choices": ["online", "offline", "disabled"],
-                  "help": "W&B logging mode: stream online, buffer offline, or disable."})
+        metadata={
+            "choices": ["online", "offline", "disabled"],
+            "help": "W&B logging mode: stream online, buffer offline, or disable.",
+        },
+    )
     tensorboard_dir: Optional[str] = field(
         default=None,
-        metadata={"help": "Directory for TensorBoard event files; unset disables TensorBoard."})
+        metadata={
+            "help": "Directory for TensorBoard event files; unset disables "
+                    "TensorBoard."
+        },
+    )
     tensorboard_queue_size: int = field(
         default=1000,
-        metadata={"help": "Max pending events buffered before the async TensorBoard writer flushes."})
+        metadata={
+            "help": "Max pending events buffered before the async TensorBoard "
+                    "writer flushes."
+        },
+    )
 
     # ── Profiler ──
     use_pytorch_profiler: bool = field(
         default=False,
-        metadata={"help": "Enable torch.profiler to capture CPU/GPU op traces."})
+        metadata={"help": "Enable torch.profiler to capture CPU/GPU op traces."},
+    )
     use_nsys_profiler: bool = field(
         default=False,
-        metadata={"help": "Enable NVIDIA Nsight Systems (nsys) profiling range markers."})
+        metadata={
+            "help": "Enable NVIDIA Nsight Systems (nsys) profiling range markers."
+        },
+    )
     profile_step_start: int = field(
         default=10,
-        metadata={"help": "Iteration at which profiling capture starts."})
+        metadata={"help": "Iteration at which profiling capture starts."},
+    )
     profile_step_end: int = field(
         default=12,
-        metadata={"help": "Iteration at which profiling capture stops."})
+        metadata={"help": "Iteration at which profiling capture stops."},
+    )
     profile_ranks: List[int] = field(
         default_factory=lambda: [0],
-        metadata={"help": "Ranks on which the profiler is active."})
+        metadata={"help": "Ranks on which the profiler is active."},
+    )
     profile_output_dir: Optional[str] = field(
         default=None,
-        metadata={"help": "Directory to write profiler traces to."})
+        metadata={"help": "Directory to write profiler traces to."},
+    )
 
     # ── CUDA Graph ──
     cuda_graph_impl: str = field(
         default="none",
-        metadata={"choices": ["none", "local"],
-                  "help": "CUDA graph capture backend: 'none' disables, 'local' captures the "
-                          "training step to cut per-step launch overhead."})
+        metadata={
+            "choices": ["none", "local"],
+            "help": "CUDA graph capture backend: 'none' disables, 'local' "
+                    "captures the training step to cut per-step launch overhead.",
+        },
+    )
     cuda_graph_scope: str = field(
         default="full_iteration",
-        metadata={"choices": ["full_iteration", "per_microbatch"],
-                  "help": "What to capture into the graph: the whole iteration or each micro-batch."})
+        metadata={
+            "choices": ["full_iteration", "per_microbatch"],
+            "help": "What to capture into the graph: the whole iteration or "
+                    "each micro-batch.",
+        },
+    )
     cuda_graph_warmup_steps: int = field(
         default=3,
-        metadata={"help": "Number of eager (uncaptured) warmup iterations before graph capture."})
+        metadata={
+            "help": "Number of eager (uncaptured) warmup iterations before "
+                    "graph capture."
+        },
+    )
     cuda_graph_pad_length: Optional[int] = field(
         default=None,
-        metadata={"help": "Fixed token sequence length to pad to; required so captured shapes "
-                          "stay static across steps."})
+        metadata={
+            "help": "Fixed token sequence length to pad to; required so "
+                    "captured shapes stay static across steps."
+        },
+    )
     cuda_graph_ddp_sync_in_graph: bool = field(
         default=False,
-        metadata={"help": "Capture DDP gradient all-reduce inside the graph instead of running it eagerly."})
+        metadata={
+            "help": "Capture DDP gradient all-reduce inside the graph instead "
+                    "of running it eagerly."
+        },
+    )
     cuda_graph_grad_sync_bucket_mb: float = field(
         default=200.0,
-        metadata={"help": "Bucket size (MiB) for the manual gradient all-reduce used with CUDA graphs."})
+        metadata={
+            "help": "Bucket size (MiB) for the manual gradient all-reduce used "
+                    "with CUDA graphs."
+        },
+    )
     cuda_graph_grad_sync_impl: str = field(
         default="coalesced",
-        metadata={"choices": ["flat", "coalesced"],
-                  "help": "Manual gradient all-reduce implementation: single flat buffer or coalesced buckets."})
+        metadata={
+            "choices": ["flat", "coalesced"],
+            "help": "Manual gradient all-reduce implementation: single flat "
+                    "buffer or coalesced buckets.",
+        },
+    )
     cuda_graph_grad_sync_dtype: str = field(
         default="fp32",
-        metadata={"choices": ["fp32", "bf16"],
-                  "help": "Communication dtype for the manual gradient all-reduce (bf16 halves comm volume)."})
-    check_for_nan_in_loss_and_grad: bool = field(
-        default=True,
-        metadata={"help": "Run host-side NaN/Inf checks on loss and gradients each step (small overhead)."})
+        metadata={
+            "choices": ["fp32", "bf16"],
+            "help": "Communication dtype for the manual gradient all-reduce "
+                    "(bf16 halves comm volume).",
+        },
+    )
 
     # ── Distributed ──
     distributed_strategy: str = field(
         default="fsdp",
-        metadata={"choices": ["ddp", "fsdp"],
-                  "help": "Parallelism strategy: DDP (replicate) or FSDP2 (fully sharded)."})
+        metadata={
+            "choices": ["ddp", "fsdp"],
+            "help": "Parallelism strategy: DDP (replicate) or FSDP2 "
+                    "(fully sharded).",
+        },
+    )
     hsdp_shard_size: Optional[int] = field(
         default=None,
-        metadata={"cli_type": parse_positive_int,
-                  "help": "HSDP sharding group size (second mesh dim); enables hybrid shard/replicate."})
+        metadata={
+            "cli_type": parse_positive_int,
+            "help": "Enable HSDP and set the second 2D mesh dimension size. "
+                    "The first mesh dimension replicates parameters across "
+                    "groups, and this dimension shards parameters within "
+                    "each group. Must divide the distributed world size. "
+                    "Unset uses regular 1D FSDP.",
+        },
+    )
     fsdp_reshard_default: Any = field(
         default=None,
-        metadata={"cli_type": parse_reshard_after_forward,
-                  "help": "Default FSDP2 reshard_after_forward policy: true|false|none|int>1. "
-                          "Controls whether params are re-sharded after forward to save memory."})
+        metadata={
+            "cli_type": parse_reshard_after_forward,
+            "help": "Default FSDP2 reshard_after_forward policy: "
+                    "true|false|none|int>1. Controls whether params are "
+                    "re-sharded after forward to save memory.",
+        },
+    )
     fsdp_reshard_root: Any = field(
         default=False,
-        metadata={"cli_type": parse_reshard_after_forward,
-                  "help": "reshard_after_forward policy for the root FSDP group specifically."})
+        metadata={
+            "cli_type": parse_reshard_after_forward,
+            "help": "reshard_after_forward policy for the root FSDP group "
+                    "specifically.",
+        },
+    )
     fsdp_reshard_module_overrides: Any = field(
         default=None,
-        metadata={"cli_type": parse_reshard_after_forward_map,
-                  "help": "Per-module reshard overrides as 'ClassName=value,...'."})
+        metadata={
+            "cli_type": parse_reshard_after_forward_map,
+            "help": "Comma-separated ClassName=value overrides for FSDP "
+                    "reshard_after_forward, e.g. GemmaMLP=false,Linear=true.",
+        },
+    )
     fsdp_wrap_modules: Optional[str] = field(
         default=None,
-        metadata={"help": "Comma-separated module class names to wrap as individual FSDP units."})
+        metadata={
+            "help": "Comma-separated module class names to wrap as individual "
+                    "FSDP units."
+        },
+    )
     fsdp_no_wrap_modules: Optional[str] = field(
         default=None,
-        metadata={"help": "Comma-separated module class names to exclude from FSDP wrapping."})
+        metadata={
+            "help": "Comma-separated module class names to exclude from FSDP "
+                    "wrapping."
+        },
+    )
     fsdp_min_num_params: int = field(
         default=1_000_000,
-        metadata={"help": "Minimum parameter count for auto-wrapping repeated transformer layers."})
+        metadata={
+            "help": "Minimum parameter count for auto-wrapping repeated "
+                    "transformer layers."
+        },
+    )
     fsdp_leftover_min_num_params: int = field(
         default=1_000_000,
-        metadata={"help": "Minimum parameter count for auto-wrapping remaining (leftover) modules."})
+        metadata={
+            "help": "Minimum parameter count for auto-wrapping remaining "
+                    "(leftover) modules."
+        },
+    )
     ddp_broadcast_buffers: bool = field(
         default=True,
-        metadata={"help": "Broadcast module buffers (e.g. BN stats) from rank 0 each forward."})
+        metadata={
+            "help": "Broadcast module buffers (e.g. BN stats) from rank 0 each "
+                    "forward."
+        },
+    )
     ddp_init_sync: bool = field(
         default=True,
-        metadata={"help": "Synchronize parameters and buffers across ranks at initialization."})
+        metadata={
+            "help": "Synchronize parameters and buffers across ranks at "
+                    "initialization."
+        },
+    )
     ddp_bucket_cap_mb: Optional[int] = field(
         default=None,
-        metadata={"help": "Gradient all-reduce bucket size (MiB) for DDP."})
+        metadata={"help": "Gradient all-reduce bucket size (MiB) for DDP."},
+    )
     ddp_find_unused_parameters: bool = field(
         default=True,
-        metadata={"help": "Detect parameters unused in the forward graph (needed for conditional "
-                          "branches; adds overhead)."})
+        metadata={
+            "help": "Detect parameters unused in the forward graph (needed for "
+                    "conditional branches; adds overhead)."
+        },
+    )
     ddp_gradient_as_bucket_view: bool = field(
         default=False,
-        metadata={"help": "Expose gradients as views into DDP communication buckets to save memory."})
+        metadata={
+            "help": "Expose gradients as views into DDP communication buckets to "
+                    "save memory."
+        },
+    )
     ddp_static_graph: bool = field(
         default=False,
-        metadata={"help": "Assume a static graph across iterations to enable DDP optimizations."})
+        metadata={
+            "help": "Assume a static graph across iterations to enable DDP "
+                    "optimizations."
+        },
+    )
     ddp_skip_all_reduce_unused_params: bool = field(
         default=False,
-        metadata={"help": "Skip the gradient all-reduce for parameters detected as unused."})
+        metadata={
+            "help": "Skip the gradient all-reduce for parameters detected as "
+                    "unused."
+        },
+    )
     ddp_bucket_cap_mb_list: Optional[str] = field(
         default=None,
-        metadata={"help": "Comma-separated per-bucket sizes (MiB) for fine-grained DDP bucketing."})
+        metadata={
+            "help": "Comma-separated per-bucket sizes (MiB) for fine-grained DDP "
+                    "bucketing."
+        },
+    )
     ddp_batched_grad_copy: bool = field(
         default=False,
-        metadata={"help": "Batch gradient copies into buckets to reduce kernel launches."})
+        metadata={
+            "help": "Batch gradient copies into buckets to reduce kernel launches."
+        },
+    )
     dtype: str = field(
         default="bfloat16",
-        metadata={"choices": ["bfloat16", "float16", "float32"],
-                  "help": "Compute/parameter dtype for training."})
+        metadata={
+            "choices": ["bfloat16", "float16", "float32"],
+            "help": "Target training dtype. Uniform-dtype models are cast to "
+                    "this dtype; mixed-original-dtype models may preserve some "
+                    "parameter dtypes for dtype-sensitive modules."
+        },
+    )
     zero_optimizer: bool = field(
         default=False,
-        metadata={"help": "Shard optimizer state across ranks (ZeRO-1); DDP strategy only."})
+        metadata={
+            "help": "Wrap optimizer with ZeroRedundancyOptimizer (ZeRO Stage-1). "
+                    "Shards optimizer states across ranks. Only effective with DDP."
+        },
+    )
     zero_parameters_as_bucket_view: bool = field(
         default=False,
-        metadata={"help": "ZeRO parameters_as_bucket_view — alias gradients to bucket memory to save RAM."})
+        metadata={
+            "help": "Pass parameters_as_bucket_view=True to "
+                    "ZeroRedundancyOptimizer. Reduces peak memory by reusing "
+                    "gradient buffers as parameter storage, but may conflict "
+                    "with torch.compile + DDP reducer assumptions. Only "
+                    "effective when --zero-optimizer is set."
+        },
+    )
 
 
-# ═══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 # CLI generation — reflect TrainingArgs into an argparse parser
-# ═══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
 
 
 def _base_type(field_type):

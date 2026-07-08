@@ -150,8 +150,11 @@ class BaseTrainer(ABC):
         # 5. Build model (from YAML model_cfg)
         with log_stage(
             "model",
-            start_msg=f"building: model_type={self.model_cfg.model_type}",
-            end_msg="built in {elapsed}",
+            start_msg=(
+                f"start building model: model_type={self.model_cfg.model_type}, "
+                f"class={self.model_cfg.__class__.__name__}"
+            ),
+            end_msg="model built in {elapsed}",
         ):
             self.model = self._build_model()
 

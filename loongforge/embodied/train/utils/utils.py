@@ -13,18 +13,24 @@ from typing import Optional
 
 import numpy as np
 import torch
-import torch.distributed as dist
+
+
+from loongforge.embodied.distributed.utils import is_rank_zero 
+
+
+def resolve_dtype(dtype_str: str) -> torch.dtype:
+    """Convert string dtype to torch.dtype.
+    """
+    mapping = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+
+    return mapping[dtype_str]
 
 
 logger = logging.getLogger(__name__)
-
-
-def is_rank_zero() -> bool:
-    """Rank 0 check covering single-process, torchrun, and dist-initialized cases."""
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        return torch.distributed.get_rank() == 0
-    # Fallback to env (torchrun sets RANK before init); single process defaults to 0.
-    return int(os.environ.get("RANK", "0")) == 0
 
 
 def set_seed(seed: int):
@@ -92,10 +98,7 @@ def log_stage(
     ...     model = build_model()
     """
     out = log or logger
-    try:
-        is_main = (not dist.is_available()) or (not dist.is_initialized()) or dist.get_rank() == 0
-    except Exception:
-        is_main = True
+    is_main = is_rank_zero()
 
     if is_main and start_msg:
         out.info(f"[{tag}] {start_msg}")
