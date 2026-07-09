@@ -4,6 +4,7 @@
 """Per-module LR groups + scheduler factory."""
 
 import logging
+from collections.abc import Iterable
 from typing import Dict, List
 
 import torch.nn as nn
@@ -14,6 +15,126 @@ from loongforge.embodied.optimizer.custom_lr_scheduler import LambdaLinearSchedu
 from transformers import get_scheduler
 
 logger = logging.getLogger(__name__)
+
+
+_NORM_CLASSES = (
+    nn.LayerNorm,
+    nn.GroupNorm,
+    nn.InstanceNorm1d,
+    nn.InstanceNorm2d,
+    nn.InstanceNorm3d,
+    nn.LocalResponseNorm,
+    nn.BatchNorm1d,
+    nn.BatchNorm2d,
+    nn.BatchNorm3d,
+    nn.SyncBatchNorm,
+)
+
+
+def _iter_no_weight_decay_names(module: nn.Module) -> Iterable[str]:
+    hook = getattr(module, "no_weight_decay", None)
+    if hook is None or not callable(hook):
+        return ()
+    names = hook()
+    if names is None:
+        return ()
+    if isinstance(names, str):
+        return (names,)
+    return names
+
+
+def _module_is_norm(module: nn.Module) -> bool:
+    if isinstance(module, _NORM_CLASSES):
+        return True
+    return "norm" in module.__class__.__name__.lower()
+
+
+def _bias_norm_no_weight_decay(model: nn.Module):
+    """Return a generic bias/norm no-decay predicate."""
+    norm_param_ids: set[int] = set()
+    explicit_param_names: set[str] = set()
+    for module_name, module in model.named_modules():
+        if _module_is_norm(module):
+            for param in module.parameters(recurse=False):
+                norm_param_ids.add(id(param))
+        for name in _iter_no_weight_decay_names(module):
+            name = str(name).strip()
+            if not name:
+                continue
+            if module_name and not name.startswith(f"{module_name}."):
+                name = f"{module_name}.{name}"
+            explicit_param_names.add(name)
+
+    def no_decay(name: str, param) -> bool:
+        return (
+            name == "bias"
+            or name.endswith(".bias")
+            or id(param) in norm_param_ids
+            or name in explicit_param_names
+        )
+
+    logger.info(
+        "Bias/norm weight-decay grouping enabled: "
+        "norm_param_tensors=%d explicit_param_names=%d",
+        len(norm_param_ids),
+        len(explicit_param_names),
+    )
+    return no_decay
+
+
+def _weight_decay_grouping_predicate(model: nn.Module, training_args):
+    grouping = training_args.weight_decay_grouping
+    if grouping in (None, "", "all"):
+        return None
+    if grouping == "bias_norm":
+        return _bias_norm_no_weight_decay(model)
+    raise ValueError(
+        f"Unknown weight decay grouping '{grouping}'. Supported values: all, bias_norm."
+    )
+
+
+def _append_param_group(
+    groups: List[Dict],
+    named_params: list[tuple[str, nn.Parameter]],
+    *,
+    lr: float,
+    name: str,
+    no_decay,
+    weight_decay: float,
+) -> None:
+    if not named_params:
+        return
+    if no_decay is None:
+        groups.append(
+            {"params": [param for _, param in named_params], "lr": lr, "name": name}
+        )
+        return
+
+    decay_params = []
+    no_decay_params = []
+    for param_name, param in named_params:
+        if no_decay(param_name, param):
+            no_decay_params.append(param)
+        else:
+            decay_params.append(param)
+    if decay_params:
+        groups.append(
+            {
+                "params": decay_params,
+                "lr": lr,
+                "weight_decay": weight_decay,
+                "name": f"{name}.decay",
+            }
+        )
+    if no_decay_params:
+        groups.append(
+            {
+                "params": no_decay_params,
+                "lr": lr,
+                "weight_decay": 0.0,
+                "name": f"{name}.no_decay",
+            }
+        )
 
 
 def _log_model_lr(model: nn.Module, max_depth: int = 3, groups: List[Dict] = None) -> None:
@@ -106,9 +227,11 @@ def build_param_groups(model: nn.Module, training_args) -> List[Dict]:
     group it is excluded from all subsequent groups.
     """
     raw = unwrap_model(model)
+    name_by_id = {id(param): name for name, param in raw.named_parameters()}
     frozen_ids = {id(p) for p in raw.parameters() if not p.requires_grad}
     used_ids = set()
     groups = []
+    no_decay = _weight_decay_grouping_predicate(raw, training_args)
 
     base_lr = training_args.lr_base
 
@@ -129,23 +252,45 @@ def build_param_groups(model: nn.Module, training_args) -> List[Dict]:
             continue
 
         parameters = module.parameters() if isinstance(module, nn.Module) else [module]
-        params = [
-            p for p in parameters
-            if p.requires_grad and id(p) not in frozen_ids and id(p) not in used_ids
+        named_params = [
+            (name_by_id[id(param)], param)
+            for param in parameters
+            if param.requires_grad
+            and id(param) not in frozen_ids
+            and id(param) not in used_ids
         ]
-        if params:
-            groups.append({"params": params, "lr": lr_val, "name": path})
-            used_ids.update(id(p) for p in params)
+        if named_params:
+            _append_param_group(
+                groups,
+                named_params,
+                lr=lr_val,
+                name=path,
+                no_decay=no_decay,
+                weight_decay=training_args.weight_decay,
+            )
+            used_ids.update(id(param) for _, param in named_params)
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"LR group '{path}': lr={lr_val}, params={len(params)}")
+                logger.debug(
+                    f"LR group '{path}': lr={lr_val}, params={len(named_params)}"
+                )
 
     # Base group: everything else
     other = [
-        p for p in raw.parameters()
-        if p.requires_grad and id(p) not in used_ids and id(p) not in frozen_ids
+        (name_by_id.get(id(param), f"param_{index}"), param)
+        for index, param in enumerate(raw.parameters())
+        if param.requires_grad
+        and id(param) not in used_ids
+        and id(param) not in frozen_ids
     ]
     if other:
-        groups.append({"params": other, "lr": base_lr, "name": "base"})
+        _append_param_group(
+            groups,
+            other,
+            lr=base_lr,
+            name="base",
+            no_decay=no_decay,
+            weight_decay=training_args.weight_decay,
+        )
 
     _log_model_lr(raw, 3, groups=groups)
 
@@ -184,10 +329,13 @@ def build_scheduler(optimizer, training_args):
         elif style == "cosine_with_restarts":
             kwargs["num_cycles"] = training_args.num_cycles
 
+        num_training_steps = int(
+            training_args.lr_decay_iters or training_args.train_iters
+        )
         return get_scheduler(
             name=style,
             optimizer=optimizer,
             num_warmup_steps=training_args.lr_warmup_iters,
-            num_training_steps=training_args.train_iters,
+            num_training_steps=num_training_steps,
             scheduler_specific_kwargs=kwargs,
         )

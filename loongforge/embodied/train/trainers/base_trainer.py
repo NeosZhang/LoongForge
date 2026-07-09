@@ -3,6 +3,7 @@
 
 """BaseTrainer — pure native PyTorch distributed training skeleton."""
 
+import gc
 import logging
 import os
 import time
@@ -133,10 +134,12 @@ class BaseTrainer(ABC):
             os.makedirs(self.checkpoint_dir, exist_ok=True)
         self.ctx.barrier()
         setup_logging(self.output_dir, self.ctx.rank)
+        self._configure_backend_precision()
 
         # Dump fully-resolved CLI training_args + model config now that the file
         # handler is attached, so the effective config also lands in the log.
         log_effective_config(training_args, self.model_cfg, self.data_cfg)
+        self._configure_manual_gc()
 
         # 4. TrainingLogger (initialize early for logging during setup)
         self.logger = TrainingLogger(
@@ -278,11 +281,11 @@ class BaseTrainer(ABC):
         # epoch semantics consistent — see _init_data_iterator).
         for name in self.dataloaders:
             self._init_data_iterator(name)
+        self._on_after_data_iterators_initialized()
 
         while self.completed_steps < self.train_iters:
 
             prof.step(self.completed_steps)
-
             # Detailed per-stage timing is enabled only on the step that will be
             # logged, so the cuda.synchronize() inside the timers does not slow
             # down steady-state training.
@@ -336,6 +339,7 @@ class BaseTrainer(ABC):
 
             # ── Step-end hook (optional; default pass) ──
             self._on_step_end(metrics)
+            self._maybe_collect_manual_gc()
 
             # ── Profiler stop ──
             if prof.should_stop(self.completed_steps):
@@ -357,7 +361,7 @@ class BaseTrainer(ABC):
                 self._stage_timers.reset()
 
             # ── Checkpoint ──
-            if self.completed_steps % save_interval == 0:
+            if save_interval and self.completed_steps % save_interval == 0:
                 self._save_checkpoint()
 
         # Final cleanup if loop exited before profile_step_end was reached.
@@ -416,8 +420,9 @@ class BaseTrainer(ABC):
             self.skipped_iterations += 1
 
         # ── NaN gradient cleanup ──
-        with st("nan-grad-cleanup"):
-            self._clean_nan_gradients()
+        if self.training_args.check_for_nan_in_loss_and_grad:
+            with st("nan-grad-cleanup"):
+                self._clean_nan_gradients()
 
         # ── Gradient clipping (returns pre-clip global grad norm) ──
         with st("grad-clip"):
@@ -467,8 +472,7 @@ class BaseTrainer(ABC):
         """Single forward pass. Returns (loss, log_loss_dict).
 
         loss is the single scalar tensor that needs backward (raw, un-scaled).
-        log_loss_dict carries values for printing/reporting only; action_loss need
-        not be present (the loop derives it from the backward loss).
+        log_loss_dict carries model-specific component metrics for reporting.
         """
         ...
 
@@ -476,8 +480,8 @@ class BaseTrainer(ABC):
     def _forward_backward(self) -> dict:
         """Run one optimizer step's gradient-accumulation loop.
 
-        Returns log_dict — a per-step accumulator that already contains the main
-        backward loss (key ``action_loss``) plus any print-only losses. May call
+        Returns log_dict — a per-step accumulator of model-provided reporting
+        losses. May call
         shared helpers: _fetch_batch_timed / _should_sync_grads / _backward_loss /
         self._stage_timers, to reuse unified timing stages.
         """
@@ -502,8 +506,8 @@ class BaseTrainer(ABC):
           - All-reduce EXACTLY ONCE per optimizer step: only the last accumulation
             step (sync is True) may sync gradients; otherwise skip sync via
             no_sync (DDP) / set_requires_gradient_sync(False) (FSDP2).
-          - Accumulate the backward loss into log_dict["action_loss"] and the
-            log_loss_dict scalars under their own keys (summed across micro-steps).
+          - Accumulate log_loss_dict scalars under their own keys, summed across
+            micro-steps.
         """
         ...
 
@@ -597,6 +601,14 @@ class BaseTrainer(ABC):
             self.optimizer.zero_grad()
         return self._forward_backward()
 
+    def _configure_backend_precision(self):
+        """Hook for model-specific backend precision controls."""
+        pass
+
+    def _on_after_data_iterators_initialized(self):
+        """Hook after dataloader iterators are initialized."""
+        pass
+
     def _on_train_begin(self):
         """Hook before training loop starts."""
         pass
@@ -652,16 +664,64 @@ class BaseTrainer(ABC):
                 )
         return states
 
+    def _configure_manual_gc(self) -> None:
+        """Configure optional explicit Python GC cadence."""
+        if not self.training_args.manual_gc:
+            return
+        interval = int(self.training_args.manual_gc_interval)
+        if interval < 0:
+            raise ValueError("--manual-gc-interval must be >= 0")
+        gc.disable()
+        gc.collect()
+        if self.ctx.is_main:
+            cadence = "startup only" if interval == 0 else f"every {interval} steps"
+            logger.info("Manual Python GC enabled (%s)", cadence)
+
+    def _maybe_collect_manual_gc(self) -> None:
+        if not self.training_args.manual_gc:
+            return
+        interval = int(self.training_args.manual_gc_interval)
+        if interval > 0 and self.completed_steps % interval == 0:
+            with self._stage_timers("manual-gc"):
+                gc.collect()
+
+    def _shutdown_dataloaders(self) -> None:
+        """Explicitly stop persistent DataLoader workers before process teardown."""
+        seen: set[int] = set()
+
+        def shutdown_iterator(name: str, iterator: Any) -> None:
+            if iterator is None:
+                return
+            iterator_id = id(iterator)
+            if iterator_id in seen:
+                return
+            seen.add(iterator_id)
+            shutdown = getattr(iterator, "_shutdown_workers", None)
+            if callable(shutdown):
+                try:
+                    shutdown()
+                except Exception as exc:  # pragma: no cover - best-effort cleanup
+                    logger.warning("DataLoader iterator shutdown failed for %s: %s", name, exc)
+
+        for name, iterator in list(self._data_iters.items()):
+            shutdown_iterator(name, iterator)
+        self._data_iters.clear()
+
+        for name, dataloader in list(self.dataloaders.items()):
+            iterator = getattr(dataloader, "_iterator", None)
+            shutdown_iterator(name, iterator)
+            if hasattr(dataloader, "_iterator"):
+                dataloader._iterator = None
 
     # ═══════════════════════════════════════════════
     # Finalize
     # ═══════════════════════════════════════════════
     def _finalize(self):
         """End of training: save final model, close W&B."""
-        # Final checkpoint — skip when the last loop iteration already saved
-        # at this exact step (train_iters % save_interval == 0), otherwise
-        # we'd overwrite the same steps_{N} dir twice and waste I/O.
-        if self.completed_steps % self.training_args.save_interval != 0:
+        # Final checkpoint — skip when checkpoint saves are disabled or when
+        # the last loop iteration already saved at this exact step.
+        save_interval = self.training_args.save_interval
+        if save_interval and self.completed_steps % save_interval != 0:
             self._save_checkpoint()
 
         # Wait for any in-flight async DCP save before tearing down the
@@ -671,6 +731,11 @@ class BaseTrainer(ABC):
 
         # Close W&B / TensorBoard
         self.logger.finish()
+
+        self._shutdown_dataloaders()
+
+        if self.training_args.manual_gc:
+            gc.enable()
 
         self.ctx.barrier()
         self.ctx.destroy()

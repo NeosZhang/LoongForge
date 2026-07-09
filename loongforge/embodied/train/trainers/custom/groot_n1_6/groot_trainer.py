@@ -23,7 +23,8 @@ import logging
 import torch
 import torch.distributed as dist
 
-from loongforge.embodied.distributed.parallel import resolve_dtype, wrap_model
+from loongforge.embodied.distributed.parallel import wrap_model
+from loongforge.embodied.train.utils.utils import resolve_dtype
 from loongforge.embodied.train.trainers.supervised.finetune_trainer import FinetuneTrainer
 from loongforge.embodied.train.trainers.custom.groot_n1_6.per_microbatch_cuda_graph import (
     GrootN1d6PerMicrobatchCudaGraphRunner,

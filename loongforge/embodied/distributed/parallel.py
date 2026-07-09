@@ -7,33 +7,60 @@ import logging
 
 import torch
 import torch.nn as nn
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
-from torch.distributed.device_mesh import init_device_mesh
-
+from .activation_checkpointing import apply_activation_checkpointing
 from .context import DistributedContext
 from .utils import (
-    is_rank_zero,
     filter_supported_kwargs,
     get_module_names_by_dtype,
     is_container_module,
-    module_depth,
+    is_rank_zero,
     module_param_dtypes,
     module_param_numel,
     module_params,
     parse_optional_int_list,
 )
-from loongforge.embodied.train.utils.utils import resolve_dtype
 
 logger = logging.getLogger(__name__)
 
 
+def _unwrap_checkpoint_module(module: nn.Module) -> nn.Module:
+    """Return the original module registered by a checkpoint wrapper."""
+    return getattr(module, "_checkpoint_wrapped_module", module)
+
+
+def _is_fsdp_boundary(module: nn.Module) -> bool:
+    """Return whether a module can serve as an FSDP hook boundary.
+
+    FSDP installs communication hooks on ``module.forward``, so a boundary
+    must implement ``forward`` and cannot be a traversal-only container.
+    """
+    return (
+        not is_container_module(module)
+        and module.__class__.forward is not nn.Module.forward
+    )
+
+
 def wrap_model(model: nn.Module, training_args, ctx: DistributedContext) -> nn.Module:
     """Wrap model with DDP or FSDP based on CLI training_args; mixed precision included."""
+    # Lazy import: loongforge.embodied.train imports back into
+    # loongforge.embodied.distributed.parallel (trainer_builder -> groot_trainer ->
+    # wrap_model), so a module-level import here creates a circular import.
+    from loongforge.embodied.train.utils.utils import resolve_dtype
+
     dtype = resolve_dtype(training_args.dtype)
+    apply_activation_checkpointing(
+        model,
+        training_args.activation_checkpoint_module_patterns,
+        training_args.activation_checkpoint_skip_modules,
+    )
 
     if not ctx.is_distributed:
+        if len(get_module_names_by_dtype(model, trainable_only=False)) > 1:
+            return model.to(device=ctx.device)
         return model.to(dtype=dtype, device=ctx.device)
 
     strategy = training_args.distributed_strategy
@@ -66,7 +93,12 @@ def _wrap_ddp(model: nn.Module, training_args, ctx: DistributedContext, dtype: t
     return DDP(model, **filter_supported_kwargs(DDP, ddp_kwargs))
 
 
-def _wrap_fsdp(model: nn.Module, training_args, ctx, dtype: torch.dtype) -> nn.Module:
+def _wrap_fsdp(
+    model: nn.Module,
+    training_args,
+    ctx: DistributedContext,
+    dtype: torch.dtype,
+) -> nn.Module:
     """Apply FSDP2 with dtype-safe, bottom-up wrapping.
 
     Wrapping has two important constraints:
@@ -76,31 +108,96 @@ def _wrap_fsdp(model: nn.Module, training_args, ctx, dtype: torch.dtype) -> nn.M
     2. ``fully_shard`` installs all-gather/reshard hooks on the wrapped
        module's ``forward``. Some registered modules are only structural
        containers or helper parameter owners and are never called directly by
-       ``model.forward``; those modules are unsafe hook boundaries unless the
-       user explicitly identifies them as valid wrap targets.
+       ``model.forward``; those modules are unsafe hook boundaries, so the
+       planner must descend to callable children instead.
 
-    The planner wraps from inner modules to outer modules so parent groups can
-    ignore parameters that already belong to child groups. The stages are:
-    1. Wrap user-specified classes from ``--fsdp-wrap-modules`` first, deepest
-       match first, because these are explicit execution boundaries.
-    2. Auto-wrap repeated, parameter-heavy non-container modules as likely
+    Without configured module classes, the generic planner wraps from inner
+    modules to outer modules so later grouping decisions can exclude parameters
+    already assigned to child groups. Its stages are:
+    1. Auto-wrap repeated, parameter-heavy callable modules as likely
        layer/block boundaries.
-    3. Wrap remaining large leaf parameter owners by dtype, avoiding tiny leaves
-       that would create excessive FSDP groups.
-    4. Wrap the root last as the catch-all group for any remaining parameters
+    2. Wrap remaining large, forward-executed leaf modules by dtype, avoiding
+       parameter holders whose FSDP hooks would never run.
+    3. Wrap the root last as the catch-all group for any remaining parameters
        and to expose a top-level FSDPModule to trainer/checkpoint code.
 
-    For every candidate, already wrapped inner parameters are excluded, child
-    modules are recursively wrapped or descended into until the candidate's
-    remaining parameters are dtype-uniform, then ``fully_shard`` is called with
-    those inner parameters as ``ignored_params``. This keeps each parameter in
-    exactly one FSDP communication group.
+    For every candidate, child modules are recursively wrapped or descended
+    into until the candidate's remaining parameters are dtype-uniform.
+    Composable FSDP excludes already sharded child groups automatically; the
+    planner tracks parameter ids only for its own grouping decisions.
     """
-    modules_by_dtype = get_module_names_by_dtype(model, trainable_only=False)
-    mixed_original_dtype = len(modules_by_dtype) > 1
+    from loongforge.embodied.train.training_args import resolve_fsdp_dtype
 
-    if not mixed_original_dtype:
-        model.to(dtype=dtype)
+    if ctx.device.type == "cuda":
+        torch.cuda.set_device(ctx.device)
+
+    module_class_names = {
+        name.strip()
+        for name in (training_args.fsdp_wrap_modules or "").split(",")
+        if name.strip()
+    }
+    configured_units = (
+        _resolve_fsdp_units(model, module_class_names)
+        if module_class_names
+        else []
+    )
+    modules_by_dtype = get_module_names_by_dtype(model, trainable_only=False)
+    authored_mixed_dtype = len(modules_by_dtype) > 1
+    if training_args.fsdp_original_param_dtype is None:
+        original_param_dtype = None if authored_mixed_dtype else dtype
+    else:
+        original_param_dtype = resolve_fsdp_dtype(
+            training_args.fsdp_original_param_dtype
+        )
+    if training_args.fsdp_unsharded_param_dtype is None:
+        unsharded_param_dtype = None if original_param_dtype is None else dtype
+    else:
+        unsharded_param_dtype = resolve_fsdp_dtype(
+            training_args.fsdp_unsharded_param_dtype
+        )
+    reduce_dtype = resolve_fsdp_dtype(training_args.fsdp_reduce_dtype)
+    if original_param_dtype is not None:
+        model.to(dtype=original_param_dtype)
+
+    scalar_params = [
+        (name, param)
+        for name, param in model.named_parameters()
+        if param.ndim == 0
+    ]
+    trainable_scalar_names = [
+        name for name, param in scalar_params if param.requires_grad
+    ]
+    if trainable_scalar_names:
+        raise ValueError(
+            "FSDP2 cannot ignore trainable scalar parameters because their "
+            "gradients would not be reduced: "
+            + ", ".join(trainable_scalar_names[:8])
+        )
+    ignored_params = {param for _, param in scalar_params}
+    if ignored_params:
+        with torch.no_grad():
+            for param in ignored_params:
+                if param.device != ctx.device:
+                    param.data = param.to(device=ctx.device)
+        logger.info(
+            "FSDP2 ignores %d frozen scalar params unsupported by fully_shard: %s",
+            len(ignored_params),
+            ", ".join(name for name, _ in scalar_params[:8]),
+        )
+    mp_policy = MixedPrecisionPolicy(
+        param_dtype=unsharded_param_dtype,
+        reduce_dtype=reduce_dtype,
+        cast_forward_inputs=training_args.fsdp_cast_forward_inputs,
+    )
+    logger.info(
+        "FSDP2 runtime: training_dtype=%s original_param_dtype=%s "
+        "unsharded_param_dtype=%s reduce_dtype=%s cast_forward_inputs=%s",
+        dtype,
+        original_param_dtype,
+        unsharded_param_dtype,
+        reduce_dtype,
+        training_args.fsdp_cast_forward_inputs,
+    )
 
     dp_mesh = _build_fsdp_device_mesh(training_args, ctx)
 
@@ -109,33 +206,226 @@ def _wrap_fsdp(model: nn.Module, training_args, ctx, dtype: torch.dtype) -> nn.M
     }
 
     # The planner mutates ``model`` in-place by calling ``fully_shard`` on each
-    # selected module. It also tracks already wrapped parameters so parent/root
-    # groups do not manage those parameters a second time.
+    # selected module. It tracks wrapped parameter ids so later planner stages
+    # only inspect parameters not already assigned to an inner group.
     planner = _FSDPWrapPlanner(
         model=model,
         training_args=training_args,
         fsdp_kwargs=fsdp_kwargs,
-        dtype=dtype,
-        mixed_original_dtype=mixed_original_dtype,
+        mp_policy=mp_policy,
+        ignored_params=ignored_params,
     )
 
+    # Configured classes supply exact inner FSDP units; empty configuration
+    # continues through the generic planner.
+    if configured_units:
+        prefetch_module_runs = _resolve_ordered_prefetch_module_runs(
+            model,
+            configured_units,
+        )
+        wrapped_unit_count = sum(
+            planner._safe_fully_shard(module, name=module_name)
+            for module_name, module in configured_units
+        )
+        root_group_created = planner._safe_fully_shard(model, name="<root>")
+        for prefetch_modules in prefetch_module_runs:
+            _configure_fsdp_prefetch(
+                prefetch_modules,
+                training_args.fsdp_forward_prefetch_distance,
+                training_args.fsdp_backward_prefetch_distance,
+            )
+        prefetch_unit_count = sum(len(run) for run in prefetch_module_runs)
+        logger.info(
+            "FSDP wrapped %d module groups "
+            "(configured_units=%d, prefetch_units=%d, root=%s).",
+            planner.num_wrapped_groups,
+            wrapped_unit_count,
+            prefetch_unit_count,
+            root_group_created,
+        )
+        return model
+
     # Order matters: inner groups must be created before parent/root groups so
-    # later outer wraps can ignore parameters already assigned to inner groups.
-    explicit_group_count = planner.wrap_user_specified_modules()
+    # later planner stages only consider residual parameters.
     repeated_group_count = planner.wrap_repeated_layer_modules()
     leftover_group_count = planner.wrap_leftover_leaf_modules_by_dtype()
     root_group_created = planner.wrap_root()
     logger.info(
         "FSDP wrapped %d module groups "
-        "(explicit=%d, repeated=%d, leftover=%d, root=%s).",
+        "(repeated=%d, leftover=%d, root=%s).",
         planner.num_wrapped_groups,
-        explicit_group_count,
         repeated_group_count,
         leftover_group_count,
         root_group_created,
     )
 
     return model
+
+
+def _resolve_fsdp_units(
+    model: nn.Module,
+    class_names: set[str],
+) -> list[tuple[str, nn.Module]]:
+    """Resolve explicit class-name units, including checkpoint wrappers."""
+    # CheckpointWrapper registers the original module as a child. Match its
+    # class on the outer wrapper so FSDP hooks surround the checkpointed call.
+    checkpoint_wrapped_module_ids = {
+        id(original_module)
+        for module in model.modules()
+        if (original_module := _unwrap_checkpoint_module(module)) is not module
+    }
+    selected_units = {}
+    matched_class_names = set()
+    for module_key, module in model.named_modules():
+        if not module_key or id(module) in checkpoint_wrapped_module_ids:
+            continue
+        original_module = _unwrap_checkpoint_module(module)
+        class_name = original_module.__class__.__name__
+        if class_name not in class_names:
+            continue
+        if not _is_fsdp_boundary(module):
+            raise ValueError(
+                f"FSDP unit {module_key!r} is not a callable module boundary"
+            )
+        if next(module.parameters(recurse=True), None) is None:
+            raise ValueError(f"FSDP unit {module_key!r} has no parameters")
+        selected_units[module_key] = module
+        matched_class_names.add(class_name)
+
+    unmatched_class_names = class_names.difference(matched_class_names)
+    if unmatched_class_names:
+        raise ValueError(
+            "FSDP wrap module classes matched no callable boundaries: "
+            + ", ".join(sorted(unmatched_class_names))
+        )
+    return sorted(
+        selected_units.items(),
+        key=lambda item: item[0].count("."),
+        reverse=True,
+    )
+
+
+def _resolve_ordered_prefetch_module_runs(
+    model: nn.Module,
+    units: list[tuple[str, nn.Module]],
+) -> list[list[nn.Module]]:
+    """Find fully selected same-class children under ordered containers.
+
+    This supports straight-line execution only: each child must run once in
+    registration order, without reordering, skipping, repetition, or branches.
+    """
+    selected_modules = dict(units)
+    prefetch_runs = []
+    for parent_name, parent_module in model.named_modules():
+        if not isinstance(parent_module, (nn.ModuleList, nn.Sequential)):
+            continue
+        child_modules = [
+            selected_modules.get(
+                f"{parent_name}.{child_name}" if parent_name else child_name
+            )
+            for child_name, _ in parent_module.named_children()
+        ]
+        if len(child_modules) <= 1 or any(module is None for module in child_modules):
+            continue
+        module_classes = {
+            _unwrap_checkpoint_module(module).__class__
+            for module in child_modules
+        }
+        if len(module_classes) == 1:
+            prefetch_runs.append(child_modules)
+
+    logger.info(
+        "FSDP2 inferred %d registration-ordered prefetch runs",
+        len(prefetch_runs),
+    )
+    return prefetch_runs
+
+
+def _configure_fsdp_prefetch(
+    fsdp_modules: list[nn.Module],
+    forward_distance: int,
+    backward_distance: int,
+) -> None:
+    """Configure FSDP2 prefetch edges from an ordered module sequence."""
+    if forward_distance <= 0 and backward_distance <= 0:
+        return
+
+    fsdp_modules = [
+        module
+        for module in fsdp_modules
+        if isinstance(module, FSDPModule)
+    ]
+    if len(fsdp_modules) <= 1:
+        logger.info(
+            "FSDP2 prefetch requested but only %d FSDP modules found",
+            len(fsdp_modules),
+        )
+        return
+
+    forward_prefetch_supported = hasattr(
+        fsdp_modules[0], "set_modules_to_forward_prefetch"
+    )
+    backward_prefetch_supported = hasattr(
+        fsdp_modules[0], "set_modules_to_backward_prefetch"
+    )
+    unsupported_directions = []
+    if forward_distance > 0 and not forward_prefetch_supported:
+        unsupported_directions.append("forward")
+    if backward_distance > 0 and not backward_prefetch_supported:
+        unsupported_directions.append("backward")
+    if unsupported_directions:
+        logger.warning(
+            "FSDP %s prefetch requested but this PyTorch FSDP2 version has no "
+            "corresponding prefetch API",
+            "/".join(unsupported_directions),
+        )
+
+    forward_edges = _set_fsdp_prefetch_edges(
+        fsdp_modules,
+        forward_distance if forward_prefetch_supported else 0,
+        forward=True,
+    )
+    backward_edges = _set_fsdp_prefetch_edges(
+        fsdp_modules,
+        backward_distance if backward_prefetch_supported else 0,
+        forward=False,
+    )
+
+    logger.info(
+        "FSDP2 prefetch configured: modules=%d forward_distance=%d "
+        "backward_distance=%d forward_edges=%d backward_edges=%d",
+        len(fsdp_modules),
+        forward_distance,
+        backward_distance,
+        forward_edges,
+        backward_edges,
+    )
+
+
+def _set_fsdp_prefetch_edges(
+    fsdp_modules: list[nn.Module],
+    distance: int,
+    *,
+    forward: bool,
+) -> int:
+    """Configure one direction of FSDP2 prefetch and return its edge count."""
+    if distance <= 0:
+        return 0
+
+    edge_count = 0
+    for index, current_module in enumerate(fsdp_modules):
+        if forward:
+            targets = fsdp_modules[index + 1 : index + 1 + distance]
+            setter = current_module.set_modules_to_forward_prefetch
+        else:
+            start = max(0, index - distance)
+            targets = list(reversed(fsdp_modules[start:index]))
+            setter = current_module.set_modules_to_backward_prefetch
+        if not targets:
+            continue
+        setter(targets)
+        edge_count += len(targets)
+    return edge_count
 
 
 def _build_fsdp_device_mesh(training_args, ctx: DistributedContext):
@@ -185,8 +475,8 @@ def _build_fsdp_device_mesh(training_args, ctx: DistributedContext):
 class _FSDPWrapPlanner:
     """Build and apply dtype-valid FSDP2 groups for a module tree.
 
-    The planner is deliberately generic: model-specific knowledge should enter
-    through CLI class-name lists instead of hard-coded Python constants.
+    The planner is deliberately generic: model-specific exclusions enter
+    through CLI values instead of hard-coded Python constants.
     """
 
     def __init__(
@@ -194,23 +484,15 @@ class _FSDPWrapPlanner:
         model: nn.Module,
         training_args,
         fsdp_kwargs: dict,
-        dtype: torch.dtype,
-        mixed_original_dtype: bool,
+        mp_policy: MixedPrecisionPolicy,
+        ignored_params: set[nn.Parameter] | None = None,
     ):
+        """Initialize planner state, precision policies, and wrap thresholds."""
         self.model = model
-        self.training_args = training_args
         self.fsdp_kwargs = fsdp_kwargs
-        self.mixed_original_dtype = mixed_original_dtype
+        self.mp_policy = mp_policy
 
-        # Mixed precision policy is selected per FSDP group. For a uniform-dtype
-        # model, all groups follow the requested training dtype. For a model
-        # that already has mixed original dtypes, non-fp32 groups preserve their
-        # authored dtype to avoid silently changing precision-sensitive modules.
-        self.mp_default = MixedPrecisionPolicy(param_dtype=dtype, reduce_dtype=torch.float32)
-        self.mp_preserve = MixedPrecisionPolicy(param_dtype=None, reduce_dtype=torch.float32)
-        self.mp_fp32 = MixedPrecisionPolicy(param_dtype=torch.float32, reduce_dtype=torch.float32)
-
-        # Stage 2 and stage 3 use separate thresholds:
+        # The repeated-layer and leftover stages use separate thresholds:
         # - repeated_min_num_params controls layer/block auto wrapping;
         # - leftover_min_num_params controls large leaf cleanup wrapping.
         # Keeping the leftover threshold configurable avoids wrapping every tiny
@@ -218,16 +500,11 @@ class _FSDPWrapPlanner:
         self.repeated_min_num_params = int(training_args.fsdp_min_num_params)
         self.leftover_min_num_params = int(training_args.fsdp_leftover_min_num_params)
 
-        # reshard_after_forward is chosen per group:
-        # module class override > root setting > default non-root setting.
-        # This lets callers keep selected hot modules unsharded after forward
-        # while still using memory-saving resharding elsewhere.
         self.fsdp_reshard_default = training_args.fsdp_reshard_default
         self.fsdp_reshard_root = training_args.fsdp_reshard_root
         self.fsdp_reshard_module_overrides = (
             training_args.fsdp_reshard_module_overrides or {}
         )
-
         # Classes listed here are not wrapped as a single boundary. The planner
         # descends into their children instead. This is useful for modules whose
         # parameters are read by custom code outside that module's forward hooks.
@@ -236,44 +513,17 @@ class _FSDPWrapPlanner:
             name.strip() for name in extra_no_wrap.split(",") if name.strip()
         } if extra_no_wrap else set()
 
-        # Track wrapped parameters separately from wrapped modules. Parent/root
-        # FSDP groups pass these as ignored_params so each parameter is managed
-        # by exactly one communication group.
+        # FSDP2 excludes earlier child groups automatically. Parameter ids are
+        # tracked only for planner decisions; explicit ignores are frozen scalars.
+        self.ignored_params = set(ignored_params or set())
         self.wrapped_module_ids = set()
-        self.wrapped_param_ids = set()
-        self.wrapped_params = set()
+        self.wrapped_param_ids = {id(param) for param in self.ignored_params}
         self.wrapped_group_count = 0
 
     @property
     def num_wrapped_groups(self) -> int:
         """Number of FSDP groups created by fully_shard."""
         return self.wrapped_group_count
-
-    def wrap_user_specified_modules(self) -> int:
-        """Wrap explicit class-name FSDP boundaries from --fsdp-wrap-modules.
-
-        This is the highest-priority stage. If the user knows a class is a good
-        FSDP boundary, wrap it before heuristic stages see its parameters.
-        """
-        wrap_modules = self.training_args.fsdp_wrap_modules
-        if not wrap_modules:
-            return 0
-        class_names = {name.strip() for name in wrap_modules.split(",") if name.strip()}
-        candidates = [
-            (name, module)
-            for name, module in self._named_modules()
-            if name and not is_container_module(module) and module.__class__.__name__ in class_names
-        ]
-
-        # Deepest-first keeps child groups independent. If both a parent and one
-        # of its children match the explicit list, the child is sharded first and
-        # then excluded from the parent's parameter set.
-        candidates.sort(key=lambda item: module_depth(item[0]), reverse=True)
-        explicit_group_count = 0
-        for _, module in candidates:
-            if self._wrap_candidate(module):
-                explicit_group_count += 1
-        return explicit_group_count
 
     def wrap_repeated_layer_modules(self) -> int:
         """Wrap repeated modules as likely layer boundaries.
@@ -308,7 +558,7 @@ class _FSDPWrapPlanner:
             if (
                 name
                 and id(module) not in self.wrapped_module_ids
-                and not is_container_module(module)
+                and _is_fsdp_boundary(module)
                 and not self._is_no_wrap_module(module)
                 and any(True for _ in module.children())
                 and module_occurrences.get(id(module), 0) == 1
@@ -449,7 +699,7 @@ class _FSDPWrapPlanner:
                 # generic candidate wrapper so it can continue recursive dtype
                 # splitting for this difficult module.
                 created_group_count += self._wrap_same_dtype_module_group(
-                    same_dtype_group, same_dtype
+                    same_dtype_group
                 )
                 same_dtype_group = []
                 same_dtype = None
@@ -460,32 +710,32 @@ class _FSDPWrapPlanner:
             if same_dtype_group and dtype != same_dtype:
                 # A dtype change starts a new FSDP communication group.
                 created_group_count += self._wrap_same_dtype_module_group(
-                    same_dtype_group, same_dtype
+                    same_dtype_group
                 )
                 same_dtype_group = []
             same_dtype_group.append(module)
             same_dtype = dtype
 
-        created_group_count += self._wrap_same_dtype_module_group(same_dtype_group, same_dtype)
+        created_group_count += self._wrap_same_dtype_module_group(same_dtype_group)
         return created_group_count
 
     def _wrap_same_dtype_module_group(
         self,
         modules: list[nn.Module],
-        dtype: torch.dtype | None,
     ) -> int:
-        if not modules or dtype is None:
+        """Wrap one non-empty same-dtype module run as an FSDP group."""
+        if not modules:
             return 0
         target = modules[0] if len(modules) == 1 else modules
-        return int(self._safe_fully_shard(target, self._policy_for({dtype})))
+        return int(self._safe_fully_shard(target))
 
     def wrap_leftover_leaf_modules_by_dtype(self) -> int:
         """Wrap remaining leaf parameter owners that exceed the leftover threshold.
 
-        This cleanup stage handles large direct parameter owners missed by the
-        explicit and repeated-layer stages. It intentionally ignores modules
-        with children because those are better handled as execution boundaries
-        or by the recursive dtype splitter.
+        This cleanup stage handles large callable leaves missed by the explicit
+        and repeated-layer stages. It ignores structural parameter holders and
+        modules with children because those need a parent/root execution boundary
+        or the recursive dtype splitter.
         """
         leftover_group_count = 0
         for name, module in self._named_modules():
@@ -493,7 +743,7 @@ class _FSDPWrapPlanner:
                 continue
             if id(module) in self.wrapped_module_ids:
                 continue
-            if is_container_module(module):
+            if not _is_fsdp_boundary(module):
                 continue
             if any(True for _ in module.children()):
                 continue
@@ -507,12 +757,16 @@ class _FSDPWrapPlanner:
         """Wrap the root module last.
 
         Root wrapping is a catch-all for residual parameters not assigned to
-        inner groups. ``ignored_params`` prevents already wrapped inner params
-        from being managed twice.
+        inner groups and exposes a top-level FSDPModule to trainer/checkpoint
+        code. Composable FSDP excludes previously sharded child groups.
         """
         return self._wrap_candidate(self.model, force=True)
 
-    def _wrap_candidate(self, module: nn.Module, force: bool = False) -> bool:
+    def _wrap_candidate(
+        self,
+        module: nn.Module,
+        force: bool = False,
+    ) -> bool:
         """Wrap module after first making its remaining parameters dtype-uniform.
 
         FSDP2 requires each flattened group to have a single original parameter
@@ -520,12 +774,12 @@ class _FSDPWrapPlanner:
         already wrapped inner groups, the planner recursively wraps children
         until the candidate's remaining parameters are dtype-uniform.
         """
-        # Containers are traversal structure, not execution boundaries. Shard
-        # real modules whose forward hooks can trigger FSDP all-gather.
+        # Structural parameter holders are traversal nodes, not execution
+        # boundaries. Their children may still be valid FSDP units.
         if id(module) in self.wrapped_module_ids:
             return False
-        if is_container_module(module) and module is not self.model:
-            return False
+        if module is not self.model and not _is_fsdp_boundary(module):
+            return self._wrap_child_boundaries(module)
 
         # A no-wrap class is not a dead end. It means "do not use this module as
         # the FSDP hook boundary"; its children may still be valid boundaries.
@@ -536,47 +790,30 @@ class _FSDPWrapPlanner:
         dtypes = module_param_dtypes(module, excluded_param_ids=self.wrapped_param_ids)
         if not dtypes:
             if force:
-                return self._safe_fully_shard(module, self.mp_preserve)
+                return self._safe_fully_shard(module)
             return False
         if len(dtypes) > 1:
             raise ValueError(
                 f"Unable to derive a uniform-dtype FSDP group for "
                 f"{module.__class__.__name__}: {dtypes}."
             )
-        return self._safe_fully_shard(module, self._policy_for(dtypes))
+        return self._safe_fully_shard(module)
 
     def _named_modules(self) -> list[tuple[str, nn.Module]]:
+        """Return deduplicated modules in traversal order."""
         return list(self.model.named_modules(remove_duplicate=True))
 
     def _is_no_wrap_module(self, module: nn.Module) -> bool:
+        """Return whether ``module`` is excluded as an FSDP boundary."""
         return module is not self.model and module.__class__.__name__ in self.no_wrap_module_classes
-
-    def _policy_for(self, dtypes: set[torch.dtype]) -> MixedPrecisionPolicy:
-        # Uniform-dtype models follow the requested training dtype. Mixed-dtype
-        # models preserve non-fp32 groups so model-authored precision choices
-        # are not silently overwritten.
-        if not self.mixed_original_dtype:
-            return self.mp_default
-        if dtypes == {torch.float32}:
-            return self.mp_fp32
-        return self.mp_preserve
-
-    def _reshard_after_forward_for(self, module: nn.Module) -> bool | int | None:
-        """Resolve the per-group reshard_after_forward setting."""
-        class_name = module.__class__.__name__
-        if class_name in self.fsdp_reshard_module_overrides:
-            return self.fsdp_reshard_module_overrides[class_name]
-        if module is self.model:
-            return self.fsdp_reshard_root
-        return self.fsdp_reshard_default
 
     def _make_candidate_params_uniform(self, module: nn.Module) -> None:
         """Recursively isolate minority dtype children before wrapping module.
 
         The dominant dtype, measured by parameter numel, stays in the current
         candidate. Children that only contain other dtypes are wrapped or
-        descended into first. After those child groups are marked ignored, the
-        current candidate should expose at most one remaining dtype.
+        descended into first. After those child groups are recorded as wrapped,
+        the current candidate should expose at most one remaining dtype.
         """
         dtypes = module_param_dtypes(module, excluded_param_ids=self.wrapped_param_ids)
         if len(dtypes) <= 1:
@@ -615,8 +852,8 @@ class _FSDPWrapPlanner:
                 self._wrap_valid_boundary_or_children(child)
 
     def _wrap_valid_boundary_or_children(self, module: nn.Module) -> bool:
-        """Wrap a valid FSDP boundary, or keep looking below a container."""
-        if is_container_module(module):
+        """Wrap a valid FSDP boundary, or keep looking below a structural module."""
+        if not _is_fsdp_boundary(module):
             return self._wrap_child_boundaries(module)
         return self._wrap_candidate(module)
 
@@ -630,9 +867,10 @@ class _FSDPWrapPlanner:
     def _safe_fully_shard(
         self,
         module_or_modules: nn.Module | list[nn.Module],
-        mp_policy: MixedPrecisionPolicy,
+        *,
+        name: str | None = None,
     ) -> bool:
-        """Shard one module or one module list as a single FSDP group."""
+        """Shard one dtype-safe module group and record its parameter ownership."""
         modules = self._as_module_group(module_or_modules)
         if not modules or any(id(module) in self.wrapped_module_ids for module in modules):
             return False
@@ -640,14 +878,12 @@ class _FSDPWrapPlanner:
         params_before = self._module_group_params(modules)
         dtypes = {param.dtype for param in params_before}
         if len(dtypes) > 1:
+            group_label = name or self._module_group_label(modules)
             raise ValueError(
                 f"FSDP cannot wrap mixed original dtypes {dtypes} in "
-                f"{self._module_group_label(modules)}."
+                f"{group_label}."
             )
 
-        # ``ignored_params`` is what makes nested wrapping safe here. All params
-        # already owned by inner groups are excluded from this new group's flat
-        # parameter, avoiding duplicate sharding/all-reduce ownership.
         fully_shard_kwargs = dict(self.fsdp_kwargs)
         reshard_after_forward = self._reshard_after_forward_for_group(modules)
         if reshard_after_forward is not None:
@@ -655,17 +891,19 @@ class _FSDPWrapPlanner:
 
         fully_shard(
             module_or_modules,
-            mp_policy=mp_policy,
-            ignored_params=self.wrapped_params,
+            mp_policy=self.mp_policy,
+            ignored_params=self.ignored_params,
             **fully_shard_kwargs,
         )
         self._mark_wrapped(modules, params_before)
         return True
 
     def _as_module_group(self, module_or_modules: nn.Module | list[nn.Module]) -> list[nn.Module]:
+        """Normalize one module or a module list into a list."""
         return [module_or_modules] if isinstance(module_or_modules, nn.Module) else list(module_or_modules)
 
     def _module_group_params(self, modules: list[nn.Module]) -> list[nn.Parameter]:
+        """Return deduplicated unwrapped parameters owned by ``modules``."""
         all_params = [
             p
             for module in modules
@@ -675,6 +913,7 @@ class _FSDPWrapPlanner:
         return list({id(p): p for p in all_params}.values())
 
     def _module_group_label(self, modules: list[nn.Module]) -> str:
+        """Build a descriptive module-group label for logs and errors."""
         if len(modules) == 1:
             return modules[0].__class__.__name__
         class_names = {module.__class__.__name__ for module in modules}
@@ -682,6 +921,7 @@ class _FSDPWrapPlanner:
         return f"{len(modules)} modules ({class_label})"
 
     def _reshard_after_forward_for_group(self, modules: list[nn.Module]) -> bool | int | None:
+        """Resolve one shared reshard policy for a module group."""
         values = [self._reshard_after_forward_for(module) for module in modules]
         first_value = values[0]
         if any(value != first_value for value in values):
@@ -691,19 +931,30 @@ class _FSDPWrapPlanner:
             )
         return first_value
 
-    def _mark_wrapped(self, modules: list[nn.Module], params_before: list[nn.Parameter]) -> None:
+    def _reshard_after_forward_for(self, module: nn.Module) -> bool | int | None:
+        """Resolve the configured reshard policy for one module."""
+        original_module = _unwrap_checkpoint_module(module)
+        class_name = original_module.__class__.__name__
+        if class_name in self.fsdp_reshard_module_overrides:
+            return self.fsdp_reshard_module_overrides[class_name]
+        if module is self.model:
+            return self.fsdp_reshard_root
+        return self.fsdp_reshard_default
+
+    def _mark_wrapped(
+        self,
+        modules: list[nn.Module],
+        params_before: list[nn.Parameter],
+    ) -> None:
         """Record module and parameter ownership after a successful fully_shard."""
         self.wrapped_group_count += 1
+
         for module in modules:
             self.wrapped_module_ids.add(id(module))
         for param in params_before:
             self.wrapped_param_ids.add(id(param))
-            self.wrapped_params.add(param)
 
-        # FSDP may replace/register parameter objects during wrapping. Record
-        # the module's current recursive parameters as well so later parent
-        # groups ignore both original and current parameter objects.
+        # FSDP replaces parameters during wrapping, so record current ids too.
         for module in modules:
             for param in module.parameters(recurse=True):
                 self.wrapped_param_ids.add(id(param))
-                self.wrapped_params.add(param)

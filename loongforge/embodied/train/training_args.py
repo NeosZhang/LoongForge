@@ -19,15 +19,26 @@ Usage rules (must follow)
    summary are all generated from this dataclass by reflection.
 
 Boundary: model-structure switches (freeze_vision_encoder, train_expert_only,
-gradient_checkpointing, compile_model, ...) live in the per-model ModelConfig
-(YAML model:); data-processing params (image_size, normalization_mode, ...) live
-in the per-model DataConfig (YAML data:). They are intentionally NOT here.
+compile_model, ...) live in the per-model ModelConfig (YAML model:). Generic
+runtime behavior, including framework-managed activation checkpoint selection,
+lives here. Data-processing params (image_size, normalization_mode, ...) live in
+the per-model DataConfig (YAML data:).
 """
 
 import argparse
 import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, get_args, get_origin, Union
+
+import torch
+
+
+_FSDP_CONCRETE_DTYPE_CHOICES = ("fp32", "bf16", "fp16")
+_FSDP_DTYPE_BY_NAME = {
+    "fp32": torch.float32,
+    "bf16": torch.bfloat16,
+    "fp16": torch.float16,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +98,29 @@ def parse_positive_int(value: str) -> int:
     return int_value
 
 
+def parse_module_key_patterns(
+    value: str | None,
+    *,
+    option_name: str,
+) -> list[str]:
+    """Parse comma-separated qualified module-key patterns."""
+    normalized_patterns = (value or "").strip()
+    if not normalized_patterns:
+        return []
+
+    patterns = [
+        pattern.strip()
+        for pattern in normalized_patterns.split(",")
+        if pattern.strip()
+    ]
+    if any(
+        any(not segment for segment in pattern.split("."))
+        for pattern in patterns
+    ):
+        raise ValueError(f"{option_name} cannot contain empty segments")
+    return patterns
+
+
 # ---------------------------------------------------------------------------
 # TrainingArgs - single source of truth for generic training params
 # ---------------------------------------------------------------------------
@@ -138,7 +172,7 @@ class TrainingArgs:
     )
     save_interval: int = field(
         default=10000,
-        metadata={"help": "Write a checkpoint every N iterations."},
+        metadata={"help": "Write a checkpoint every N iterations; 0 disables saving."},
     )
     seed: int = field(
         default=3047,
@@ -371,6 +405,12 @@ class TrainingArgs:
                     "its peak."
         },
     )
+    lr_decay_iters: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "Number of scheduler decay steps. Defaults to --train-iters when unset."
+        },
+    )
     min_lr: float = field(
         default=1e-6,
         metadata={"help": "Lower bound the LR schedule decays to (floor)."},
@@ -454,6 +494,14 @@ class TrainingArgs:
         default=0.01,
         metadata={"help": "Decoupled weight decay coefficient (AdamW)."},
     )
+    weight_decay_grouping: str = field(
+        default="all",
+        metadata={
+            "choices": ["all", "bias_norm"],
+            "help": "How weight decay is applied: 'all' applies --weight-decay to every "
+                    "trainable parameter; 'bias_norm' excludes bias and norm parameters.",
+        },
+    )
     adam_beta1: float = field(
         default=0.9,
         metadata={
@@ -476,11 +524,13 @@ class TrainingArgs:
     )
 
     # ── Data loading control (cross-model; per-model processing lives in DataConfig) ──
-    # ── Data loading control (cross-model; per-model processing lives in DataConfig) ──
     dataset_format: str = field(
         default="lerobot_datasets",
-        metadata={"help": "Dataset backend to use "
-                          "(e.g. lerobot_datasets, hdf5_datasets, dummy_datasets)."})
+        metadata={
+            "help": "Dataset backend to use "
+                    "(e.g. lerobot_datasets, hdf5_datasets, dummy_datasets)."
+        },
+    )
     dataset_path: Optional[str] = field(
         default=None,
         metadata={"help": "Filesystem path or repo id of the dataset to train on."},
@@ -489,15 +539,15 @@ class TrainingArgs:
         default="default",
         metadata={
             "help": "Under --dataset-format lerobot_datasets: the model-specific "
-                    "dataset build strategy ('default' stock lerobot, or 'motus' / "
-                    "'fastwam' multi-frame geometry via behaviour hooks); any "
-                    "unrecognised value falls back to 'default'."
+                    "dataset build strategy ('default', 'fastwam', "
+                    "'cosmos3_droid', or 'dreamzero'); unknown values fall back "
+                    "to 'default'."
         },
     )
     split: str = field(
         default="train",
         metadata={
-            "help": "Dataset split to load (RLDS), e.g. 'train' or 'train[:95%]'."
+            "help": "Dataset split to load (RLDS), e.g. 'train' or 'train[:95%%]'."
         },
     )
     lerobotdataset_version: str = field(
@@ -651,6 +701,19 @@ class TrainingArgs:
                     "across ranks."
         },
     )
+    manual_gc: bool = field(
+        default=False,
+        metadata={
+            "help": "Disable automatic Python GC and collect explicitly after optimizer steps."
+        },
+    )
+    manual_gc_interval: int = field(
+        default=0,
+        metadata={
+            "help": "Manual GC cadence in steps when --manual-gc is enabled; "
+                    "0 disables periodic collection."
+        },
+    )
     wandb_project: str = field(
         default="loongforge-vla",
         metadata={"help": "Weights & Biases project name."},
@@ -766,6 +829,27 @@ class TrainingArgs:
                     "(bf16 halves comm volume).",
         },
     )
+    check_for_nan_in_loss_and_grad: bool = field(
+        default=True,
+        metadata={
+            "help": "Run host-side NaN/Inf checks on loss and gradients each step."
+        },
+    )
+    activation_checkpoint_module_patterns: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Comma-separated qualified module-key patterns to wrap "
+                    "with activation checkpointing. '*' matches one module-key "
+                    "segment."
+        },
+    )
+    activation_checkpoint_skip_modules: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Optional comma-separated qualified module keys to exclude "
+                    "from --activation-checkpoint-module-patterns."
+        },
+    )
 
     # ── Distributed ──
     distributed_strategy: str = field(
@@ -815,8 +899,10 @@ class TrainingArgs:
     fsdp_wrap_modules: Optional[str] = field(
         default=None,
         metadata={
-            "help": "Comma-separated module class names to wrap as individual "
-                    "FSDP units."
+            "help": "Comma-separated module class names that define exact FSDP "
+                    "units. Activation-checkpoint wrappers are matched by their "
+                    "wrapped module class. When set, automatic unit selection "
+                    "is disabled."
         },
     )
     fsdp_no_wrap_modules: Optional[str] = field(
@@ -838,6 +924,53 @@ class TrainingArgs:
         metadata={
             "help": "Minimum parameter count for auto-wrapping remaining "
                     "(leftover) modules."
+        },
+    )
+    fsdp_original_param_dtype: Optional[str] = field(
+        default=None,
+        metadata={
+            "choices": _FSDP_CONCRETE_DTYPE_CHOICES,
+            "help": "Optional model parameter dtype before FSDP sharding. "
+                    "Unset preserves authored mixed dtypes and otherwise follows "
+                    "--dtype."
+        },
+    )
+    fsdp_unsharded_param_dtype: Optional[str] = field(
+        default=None,
+        metadata={
+            "choices": _FSDP_CONCRETE_DTYPE_CHOICES,
+            "help": "Optional dtype of all-gathered FSDP parameters used for "
+                    "forward/backward. Unset preserves authored mixed dtypes when "
+                    "the original dtype is also unset; otherwise follows --dtype."
+        },
+    )
+    fsdp_reduce_dtype: str = field(
+        default="fp32",
+        metadata={
+            "choices": _FSDP_CONCRETE_DTYPE_CHOICES,
+            "help": "FSDP gradient reduction dtype."
+        },
+    )
+    fsdp_cast_forward_inputs: bool = field(
+        default=True,
+        metadata={
+            "help": "Cast FSDP unit forward inputs to its parameter dtype."
+        },
+    )
+    fsdp_forward_prefetch_distance: int = field(
+        default=0,
+        metadata={
+            "help": "Number of subsequent configured FSDP units to prefetch "
+                    "during forward. Supports only containers that execute each "
+                    "child once in registration order."
+        },
+    )
+    fsdp_backward_prefetch_distance: int = field(
+        default=0,
+        metadata={
+            "help": "Number of preceding configured FSDP units to prefetch "
+                    "during backward. Supports only containers that execute each "
+                    "child once in registration order."
         },
     )
     ddp_broadcast_buffers: bool = field(
@@ -925,6 +1058,27 @@ class TrainingArgs:
                     "effective when --zero-optimizer is set."
         },
     )
+    zero_master_param_dtype: str = field(
+        default="none",
+        metadata={
+            "choices": ["none", "fp32"],
+            "help": "Optional DDP ZeRO-1 master parameter dtype. 'fp32' keeps rank-local fp32 "
+                    "master parameters and broadcasts updated model shards after each step.",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# FSDP dtype resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_fsdp_dtype(value: str) -> torch.dtype:
+    """Map a canonical FSDP CLI dtype name to ``torch.dtype``."""
+    try:
+        return _FSDP_DTYPE_BY_NAME[value]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported FSDP dtype {value!r}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -998,7 +1152,9 @@ __all__ = [
     "TrainingArgs",
     "add_args_from_dataclass",
     "build_arg_parser",
+    "parse_module_key_patterns",
     "parse_reshard_after_forward",
     "parse_reshard_after_forward_map",
     "parse_positive_int",
+    "resolve_fsdp_dtype",
 ]

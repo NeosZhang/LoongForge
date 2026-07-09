@@ -106,6 +106,7 @@ class StageTimers:
         "optimizer-inner-step",
         "optimizer-scheduler-step",
         "optimizer-zero-grad",
+        "manual-gc",
     ]
 
     def __init__(self):

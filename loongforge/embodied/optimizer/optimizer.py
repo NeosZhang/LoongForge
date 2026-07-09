@@ -4,9 +4,7 @@
 """Optimizer construction."""
 
 import logging
-from collections import defaultdict
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import MutableMapping
 
 import torch
 import torch.nn as nn
@@ -76,6 +74,7 @@ class _MultiDtypeZeroOptimizer(torch.optim.Optimizer):
             opt.zero_grad(set_to_none=set_to_none)
 
     def step(self, closure=None):
+        """Copy model gradients to FP32 masters, step, then sync updated weights back."""
         if closure is not None:
             raise NotImplementedError(
                 "_MultiDtypeZeroOptimizer does not support closure-based optimizers."
@@ -102,6 +101,134 @@ class _MultiDtypeZeroOptimizer(torch.optim.Optimizer):
         """Consolidate each child ZeRO optimizer state dict."""
         for opt in self._optimizers:
             opt.consolidate_state_dict(to=to)
+
+
+class _FP32MasterStateProxy(MutableMapping):
+    """Expose fp32 master optimizer state using the corresponding model params."""
+
+    def __init__(self, master_state, model_to_master):
+        self._master_state = master_state
+        self._model_to_master = model_to_master
+        self._master_to_model = {master: model for model, master in model_to_master.items()}
+
+    def _translate_key(self, key):
+        return self._model_to_master.get(key, key)
+
+    def __getitem__(self, key):
+        return self._master_state[self._translate_key(key)]
+
+    def __setitem__(self, key, value):
+        self._master_state[self._translate_key(key)] = value
+
+    def __delitem__(self, key):
+        del self._master_state[self._translate_key(key)]
+
+    def __iter__(self):
+        for key in self._master_state:
+            yield self._master_to_model.get(key, key)
+
+    def __len__(self):
+        return len(self._master_state)
+
+
+class _FP32MasterOptimizerAdapter(torch.optim.Optimizer):
+    """Local optimizer adapter that updates a ZeRO shard through fp32 masters."""
+
+    _base_optimizer_cls = None
+
+    def __init__(self, params, **kwargs):
+        if self._base_optimizer_cls is None:
+            raise TypeError("_FP32MasterOptimizerAdapter requires a base optimizer class.")
+
+        self._owned_pairs: list[tuple[nn.Parameter, nn.Parameter]] = []
+        self._model_to_master: dict[nn.Parameter, nn.Parameter] = {}
+        master_groups = [self._make_master_group(group) for group in _normalize_param_groups(params)]
+
+        self._optimizer = self._base_optimizer_cls(master_groups, **kwargs)
+        self._hook_for_profile = None
+        self._refresh_public_optimizer_state()
+
+    def _make_master_group(self, group: dict) -> dict:
+        master_group = {key: value for key, value in group.items() if key != "params"}
+        master_params = []
+        for param in _as_param_list(group["params"]):
+            master = nn.Parameter(param.detach().float().clone(), requires_grad=param.requires_grad)
+            master_params.append(master)
+            self._owned_pairs.append((param, master))
+            self._model_to_master[param] = master
+        master_group["params"] = master_params
+        return master_group
+
+    def _refresh_public_optimizer_state(self):
+        """Refresh Optimizer-like public attributes from the wrapped optimizer."""
+        self.param_groups = self._optimizer.param_groups
+        self.defaults = dict(self._optimizer.defaults)
+        self.state = _FP32MasterStateProxy(self._optimizer.state, self._model_to_master)
+
+    def zero_grad(self, set_to_none=True):
+        """Clear gradients of the owned model/master parameter pairs."""
+        for param, master in self._owned_pairs:
+            if param.grad is not None:
+                if set_to_none:
+                    param.grad = None
+                else:
+                    param.grad.detach_()
+                    param.grad.zero_()
+            if master.grad is not None:
+                if set_to_none:
+                    master.grad = None
+                else:
+                    master.grad.detach_()
+                    master.grad.zero_()
+        self._optimizer.zero_grad(set_to_none=set_to_none)
+
+    def step(self, closure=None):
+        """Apply one optimizer step after copying model gradients to FP32 master weights."""
+        if closure is not None:
+            raise NotImplementedError(
+                "_FP32MasterOptimizerAdapter does not support closure-based optimizers."
+            )
+
+        for param, master in self._owned_pairs:
+            if param.grad is None:
+                master.grad = None
+                continue
+            if master.grad is None:
+                master.grad = torch.empty_like(master)
+            master.grad.copy_(param.grad.detach().to(dtype=master.dtype))
+
+        result = self._optimizer.step()
+        with torch.no_grad():
+            for param, master in self._owned_pairs:
+                param.copy_(master.to(dtype=param.dtype))
+        return result
+
+    def add_param_group(self, param_group):
+        """Add a new parameter group, mirrored into the fp32 master optimizer."""
+        master_group = self._make_master_group(param_group)
+        self._optimizer.add_param_group(master_group)
+        self._refresh_public_optimizer_state()
+
+    def state_dict(self):
+        """Return the underlying fp32 master optimizer's state dict."""
+        return self._optimizer.state_dict()
+
+    def load_state_dict(self, state_dict):
+        """Load a state dict into the underlying fp32 master optimizer."""
+        self._optimizer.load_state_dict(state_dict)
+        self._refresh_public_optimizer_state()
+
+
+def _make_fp32_master_optimizer_class(optimizer_cls):
+    """Build a local optimizer class for ZeroRedundancyOptimizer."""
+
+    class _FP32MasterOptimizer(_FP32MasterOptimizerAdapter):
+        _base_optimizer_cls = optimizer_cls
+
+    name = getattr(optimizer_cls, "__name__", optimizer_cls.__class__.__name__)
+    _FP32MasterOptimizer.__name__ = f"FP32Master{name}"
+    _FP32MasterOptimizer.__qualname__ = _FP32MasterOptimizer.__name__
+    return _FP32MasterOptimizer
 
 
 def build_optimizer(model: nn.Module, training_args) -> torch.optim.Optimizer:
@@ -156,7 +283,33 @@ def build_optimizer(model: nn.Module, training_args) -> torch.optim.Optimizer:
     if use_zero:
         strategy = training_args.distributed_strategy
         parameters_as_bucket_view = training_args.zero_parameters_as_bucket_view
+        zero_master_dtype = training_args.zero_master_param_dtype
         if strategy == "ddp":
+            if zero_master_dtype == "fp32":
+                logger.info("Using ZeroRedundancyOptimizer (ZeRO Stage-1) with fp32 master params")
+                fp32_master_optimizer_cls = _make_fp32_master_optimizer_class(optimizer_cls)
+                if len(param_dtypes) > 1:
+                    logger.info(
+                        f"Mixed dtype params {param_dtypes}: using per-dtype "
+                        "ZeroRedundancyOptimizer with fp32 master params"
+                    )
+                    dtype_groups = _split_param_groups_by_dtype(groups)
+                    opts = [
+                        ZeroRedundancyOptimizer(
+                            dtype_group,
+                            optimizer_class=fp32_master_optimizer_cls,
+                            parameters_as_bucket_view=parameters_as_bucket_view,
+                            **kwargs,
+                        )
+                        for dtype_group in dtype_groups.values()
+                    ]
+                    return _MultiDtypeZeroOptimizer(opts)
+                return ZeroRedundancyOptimizer(
+                    groups,
+                    optimizer_class=fp32_master_optimizer_cls,
+                    parameters_as_bucket_view=parameters_as_bucket_view,
+                    **kwargs,
+                )
             # Check for mixed dtype parameters - ZeroRedundancyOptimizer requires uniform dtype
             if len(param_dtypes) > 1:
                 # Mixed dtype: split param groups by dtype, one ZeRO optimizer per dtype
@@ -188,9 +341,34 @@ def build_optimizer(model: nn.Module, training_args) -> torch.optim.Optimizer:
                 f"--zero-optimizer ignored: only effective with --distributed-strategy ddp, "
                 f"current strategy is '{strategy}' (already shards optimizer states)."
             )
+    elif training_args.zero_master_param_dtype != "none":
+        logger.warning("--zero-master-param-dtype ignored: --zero-optimizer is not set.")
 
     optimizer = optimizer_cls(groups, **kwargs)
     return optimizer
+
+
+def _as_param_list(params) -> list[nn.Parameter]:
+    if isinstance(params, torch.Tensor):
+        return [params]
+    if isinstance(params, set):
+        raise TypeError(
+            "optimizer parameters need to be organized in ordered collections, "
+            "but got a set."
+        )
+    return list(params)
+
+
+def _normalize_param_groups(params) -> list[dict]:
+    param_groups = list(params)
+    if len(param_groups) == 0:
+        raise ValueError("optimizer got an empty parameter list")
+    if not isinstance(param_groups[0], dict):
+        return [{"params": param_groups}]
+    return [
+        {**group, "params": _as_param_list(group["params"])}
+        for group in param_groups
+    ]
 
 
 def _split_param_groups_by_dtype(groups: list[dict]) -> dict[torch.dtype, list[dict]]:

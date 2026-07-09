@@ -9,7 +9,7 @@ only declares these as abstract methods.
 """
 
 import logging
-import types
+from contextlib import nullcontext
 from typing import Dict, Tuple
 
 import torch
@@ -40,8 +40,9 @@ class FinetuneTrainer(BaseTrainer):
     """
     Standard single-stream finetune trainer.
 
-    forward(batch) → loss_dict/log_dict → backward → step, over the single "vla"
-    dataloader. Behaviorally equivalent to the former BCTrainer.
+    forward(batch) → (loss, log_loss_dict) → backward → step, over the single "vla"
+    dataloader. Behaviorally equivalent to the former BCTrainer, with optional
+    model-owned hooks for training-time policy setup.
     """
 
     # ═══════════════════════════════════════════════
@@ -67,7 +68,13 @@ class FinetuneTrainer(BaseTrainer):
             dtype = resolve_dtype(self.training_args.dtype)
             self._compute_dtype = dtype
 
-        with torch.autocast("cuda", dtype=dtype):
+        autocast_ctx = (
+            nullcontext()
+            if self._cfg_bool("disable_train_autocast", False)
+            else torch.autocast("cuda", dtype=dtype)
+        )
+
+        with autocast_ctx:
             loss, log_loss_dict = self.model(batch)
 
         return loss, log_loss_dict
@@ -75,9 +82,8 @@ class FinetuneTrainer(BaseTrainer):
     def _forward_backward(self) -> dict:
         """Single-stream gradient-accumulation loop (reuses base timed helpers).
 
-        Returns log_dict — a per-step accumulator that already contains the
-        backward loss (key ``action_loss``) and any print-only losses; the loop
-        feeds it straight to collect_metrics.
+        Returns log_dict — a per-step accumulator of model-provided reporting
+        losses; the loop feeds it straight to collect_metrics.
         """
         st = self._stage_timers
         grad_accum = self.training_args.gradient_accumulation_steps
@@ -86,6 +92,8 @@ class FinetuneTrainer(BaseTrainer):
             for micro in range(grad_accum):
                 with self._stage_timers("batch-generator"):
                     batch = self._fetch_batch("vla")
+                self._on_after_train_batch_fetch(batch, micro)
+                self._prepare_model_for_train_step()
                 with st("forward-compute"):
                     loss, log_loss_dict = self._train_forward(batch)
                 sync_grads = self._should_sync_grads(micro, grad_accum)
@@ -98,14 +106,13 @@ class FinetuneTrainer(BaseTrainer):
                        grad_accum: int, sync_grads: bool) -> None:
         """Scale + spike-guard + backward routing, accumulating losses into log_dict.
 
-        ``loss`` is the single scalar to backpropagate; it is loss by
+        ``loss`` is the single scalar to backpropagate; it is scaled by
         1/grad_accum, spike-protected, and backwarded with cross-rank gradient
         sync gated so the all-reduce happens exactly once per optimizer step
         (only on the last accumulation step).
 
-        All losses are recorded into ``log_dict`` (summed across micro-steps):
-        the backward loss goes under ``action_loss`` (the main reported loss),
-        while ``log_loss_dict`` carries print-only losses by their own keys.
+        ``log_loss_dict`` contains model-provided reporting losses, which are
+        accumulated into ``log_dict`` across micro-steps.
         """
         threshold = self.training_args.loss_spike_threshold
         with self._stage_timers("backward-compute"):
@@ -139,6 +146,52 @@ class FinetuneTrainer(BaseTrainer):
         for key, value in log_loss_dict.items():
             v = value.detach().item() if isinstance(value, torch.Tensor) else float(value)
             log_dict[key] = log_dict.get(key, 0.0) + v / grad_accum
+
+    def _cfg_bool(self, key: str, default: bool = False) -> bool:
+        value = getattr(self.model_cfg, key, default)
+        if isinstance(value, str):
+            return value.lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _configure_backend_precision(self) -> None:
+        """Apply optional CUDA backend precision policy from model config."""
+        if not self._cfg_bool("disable_reduced_precision_reduction", False):
+            return
+
+        matmul = torch.backends.cuda.matmul
+        if hasattr(matmul, "allow_bf16_reduced_precision_reduction"):
+            matmul.allow_bf16_reduced_precision_reduction = False
+        if hasattr(matmul, "allow_fp16_reduced_precision_reduction"):
+            matmul.allow_fp16_reduced_precision_reduction = False
+
+    def _on_after_data_iterators_initialized(self):
+        raw = unwrap_model(self.model)
+        hook = getattr(raw, "on_after_data_iterators_initialized", None)
+        if callable(hook):
+            hook(
+                args=self.training_args,
+                completed_steps=self.completed_steps,
+                optimizer=self.optimizer,
+                ctx=self.ctx,
+            )
+
+    def _on_after_train_batch_fetch(self, batch, micro_step: int) -> None:
+        raw = unwrap_model(self.model)
+        hook = getattr(raw, "on_after_train_batch_fetch", None)
+        if callable(hook):
+            hook(
+                args=self.training_args,
+                completed_steps=self.completed_steps,
+                micro_step=micro_step,
+                batch=batch,
+            )
+
+    def _prepare_model_for_train_step(self):
+        """Put model in train mode and let policies re-freeze eval-only modules."""
+        self.model.train()
+        raw = unwrap_model(self.model)
+        if hasattr(raw, "set_frozen_modules_to_eval_mode"):
+            raw.set_frozen_modules_to_eval_mode()
 
     def _on_train_begin(self):
         if self.ctx.is_main:

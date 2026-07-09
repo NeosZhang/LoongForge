@@ -43,9 +43,18 @@ def _groot_n1_7_strategy_builder() -> Callable:
 
 def _cosmos3_droid_strategy_builder() -> Callable:
     from loongforge.embodied.data.datasets.cosmos3 import (
-        build_droid_dataset
+        build_droid_dataset,
     )
+
     return build_droid_dataset
+
+
+def _dreamzero_strategy_builder() -> Callable:
+    from loongforge.embodied.data.datasets.dreamzero.builder import (
+        build_dreamzero_dataset,
+    )
+
+    return build_dreamzero_dataset
 
 
 # name -> lazy loader (imports deferred so lerobot / motus deps only load when used)
@@ -53,7 +62,8 @@ _DATASET_STRATEGY_LOADERS: dict[str, Callable[[], Callable]] = {
     "default": _default_strategy_builder,
     "fastwam": _fastwam_strategy_builder,
     "groot_n1_7": _groot_n1_7_strategy_builder,
-    "cosmos3_droid": _cosmos3_droid_strategy_builder
+    "cosmos3_droid": _cosmos3_droid_strategy_builder,
+    "dreamzero": _dreamzero_strategy_builder,
 }
 
 

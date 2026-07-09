@@ -74,6 +74,12 @@ def parse_train_args():
     # ── 4. Shell dotlist overrides (model.* / data.*) ──
     if overrides:
         ov = OmegaConf.from_dotlist(list(overrides))
+        unknown = set(ov.keys()) - {"model", "data"}
+        if unknown:
+            raise ValueError(
+                "YAML dotlist overrides must be prefixed with 'model.' or 'data.'. "
+                f"Unknown top-level override keys: {sorted(unknown)}"
+            )
         if "model" in ov:
             model_dc = OmegaConf.merge(model_dc, ov.model)
         if "data" in ov:

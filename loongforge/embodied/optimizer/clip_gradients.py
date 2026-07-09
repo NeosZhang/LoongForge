@@ -3,10 +3,46 @@
 
 """Gradient clipping and NaN cleaning."""
 
+from collections import defaultdict
+
 import torch
 import torch.nn as nn
 from torch.distributed.fsdp import FSDPModule
 import torch.distributed as dist
+from torch.distributed.tensor import DTensor
+
+
+def _local_gradient(gradient: torch.Tensor) -> torch.Tensor:
+    """Return the local tensor backing an FSDP2 DTensor gradient."""
+    if isinstance(gradient, DTensor):
+        return gradient._local_tensor
+    return gradient
+
+
+def _local_gradient_groups(model: nn.Module) -> list[list[torch.Tensor]]:
+    """Group mutable local gradients by device and dtype."""
+    # The global L2 norm is the sum of each gradient's squared norm, and one
+    # clip coefficient scales every gradient. Compatible tensors can therefore
+    # share foreach kernels without changing the result; grouping by device and
+    # dtype satisfies foreach constraints while reducing per-tensor launches.
+    groups = defaultdict(list)
+    for parameter in model.parameters():
+        if parameter.grad is not None:
+            gradient = _local_gradient(parameter.grad)
+            groups[(gradient.device, gradient.dtype)].append(gradient)
+    return list(groups.values())
+
+
+def _local_norm_sq(
+    gradient_groups: list[list[torch.Tensor]],
+    device: torch.device,
+) -> torch.Tensor:
+    """Compute the local squared L2 norm in float32."""
+    total_norm_sq = torch.zeros((), device=device)
+    for gradients in gradient_groups:
+        norms = torch._foreach_norm(gradients, 2.0, dtype=torch.float32)
+        total_norm_sq += torch.stack(norms).pow(2).sum()
+    return total_norm_sq
 
 
 def get_grad_norm(model: nn.Module) -> float:
@@ -25,13 +61,11 @@ def get_grad_norm(model: nn.Module) -> float:
     """
 
     is_fsdp = isinstance(model, FSDPModule)
-
-    total_norm_sq = torch.zeros((), device=next(model.parameters()).device)
-
-    for p in model.parameters():
-        if p.grad is not None:
-            grad = p.grad.detach()
-            total_norm_sq += grad.float().pow(2).sum()
+    gradient_groups = _local_gradient_groups(model)
+    total_norm_sq = _local_norm_sq(
+        gradient_groups,
+        next(model.parameters()).device,
+    )
 
     if is_fsdp and dist.is_initialized():
         dist.all_reduce(total_norm_sq, op=dist.ReduceOp.SUM)
@@ -58,10 +92,11 @@ def clip_gradients(model: nn.Module, max_norm: float) -> float:
         return float(total_norm)
 
     # Compute local sharded norm in float32 (handles mixed dtype)
-    local_norm_sq = torch.tensor(0.0, device=next(model.parameters()).device)
-    for p in model.parameters():
-        if p.grad is not None:
-            local_norm_sq += p.grad.detach().float().norm(2) ** 2
+    gradient_groups = _local_gradient_groups(model)
+    local_norm_sq = _local_norm_sq(
+        gradient_groups,
+        next(model.parameters()).device,
+    )
 
     # All-reduce to get global norm across all ranks
     if dist.is_initialized():
@@ -70,9 +105,8 @@ def clip_gradients(model: nn.Module, max_norm: float) -> float:
 
     clip_coef = max_norm / (total_norm + 1e-6)
     clip_coef = torch.clamp(clip_coef, max=1.0)
-    for p in model.parameters():
-        if p.grad is not None:
-            p.grad.mul_(clip_coef.to(p.grad.dtype))
+    for gradients in gradient_groups:
+        torch._foreach_mul_(gradients, clip_coef)
 
     return total_norm.item()
 
@@ -81,5 +115,5 @@ def clean_nan_gradients(model: nn.Module):
     """Replace NaN/Inf gradients with 0."""
     for param in model.parameters():
         if param.grad is not None:
-            torch.nan_to_num(param.grad, nan=0.0, posinf=0.0, neginf=0.0, out=param.grad)
-
+            grad = _local_gradient(param.grad)
+            torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0, out=grad)

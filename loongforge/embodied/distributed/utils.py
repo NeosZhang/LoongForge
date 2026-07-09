@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """Distributed model inspection and argument helpers."""
 
 import inspect
@@ -46,11 +49,6 @@ def unwrap_model(model: nn.Module) -> nn.Module:
     if hasattr(model, "module"):
         return model.module
     return model
-
-
-def module_depth(name: str) -> int:
-    """Return module nesting depth from a dotted module name."""
-    return 0 if not name else name.count(".") + 1
 
 
 def is_container_module(module: nn.Module) -> bool:
