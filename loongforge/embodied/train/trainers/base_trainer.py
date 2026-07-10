@@ -302,12 +302,14 @@ class BaseTrainer(ABC):
 
             # ── Metrics ──
             step_time = time.perf_counter() - t0
-            batch_size = training_args.gradient_accumulation_steps * training_args.per_device_batch_size
+            local_batch_size = training_args.gradient_accumulation_steps * training_args.per_device_batch_size
+            global_batch_size = local_batch_size * self.ctx.world_size
+            consumed_samples = self.completed_steps * global_batch_size
             metrics = self.logger.collect_metrics(
                 log_dict, step_time,
                 self.completed_steps, self.lr_scheduler,
-                self.completed_steps * batch_size,
-                self.model, batch_size, grad_norm,
+                consumed_samples,
+                self.model, local_batch_size, grad_norm,
             )
             metrics["nan_iterations"] = self.nan_iterations
             metrics["skipped_iterations"] = self.skipped_iterations
