@@ -147,6 +147,26 @@ def validate(training_args, model_cfg, data_cfg):
                 f"--profile-step-start ({training_args.profile_step_start})."
             )
 
+    # ── LoRA ──
+    if training_args.lora_r <= 0:
+        raise ValueError(f"--lora-r must be positive, got {training_args.lora_r}")
+    if training_args.lora_alpha <= 0:
+        raise ValueError(
+            f"--lora-alpha must be positive, got {training_args.lora_alpha}"
+        )
+    if not 0.0 <= training_args.lora_dropout < 1.0:
+        raise ValueError(
+            "--lora-dropout must be in [0, 1), got "
+            f"{training_args.lora_dropout}"
+        )
+    if training_args.use_lora:
+        if training_args.init_on_meta:
+            raise ValueError("--use-lora does not currently support --init-on-meta")
+        if training_args.save_interval == 0:
+            logger.warning(
+                "--save-interval=0 disables both checkpoints and LoRA adapter saving."
+            )
+
     # ── Model config sanity ──
     if not model_cfg.model_type:
         raise ValueError("ModelConfig.model_type must be set (from YAML model.model_type).")

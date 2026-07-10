@@ -19,7 +19,9 @@ from torch.utils.data import DataLoader
 from loongforge.embodied.data import build_dataloader
 from loongforge.embodied.distributed.checkpoint import (
     detect_checkpoint_format,
+    is_lora_adapter_checkpoint,
     load_pretrained,
+    read_adapter_meta,
     save_checkpoint,
 )
 from loongforge.embodied.distributed.utils import unwrap_model
@@ -42,7 +44,7 @@ class FinetuneTrainer(BaseTrainer):
 
     forward(batch) → (loss, log_loss_dict) → backward → step, over the single "vla"
     dataloader. Behaviorally equivalent to the former BCTrainer, with optional
-    model-owned hooks for training-time policy setup.
+    model-owned hooks for pre-wrap preparation and training-time policy setup.
     """
 
     # ═══════════════════════════════════════════════
@@ -239,6 +241,31 @@ class FinetuneTrainer(BaseTrainer):
         ``load_pretrained`` here would also fail because there is no
         consolidated single-file model in a DCP checkpoint dir.
         """
+        if is_lora_adapter_checkpoint(path):
+            if not self.training_args.use_lora:
+                raise ValueError(
+                    "Resuming a LoRA adapter checkpoint requires --use-lora."
+                )
+            meta = read_adapter_meta(path) or {}
+            base_checkpoint = meta.get("base_checkpoint")
+            if base_checkpoint:
+                if self.ctx.is_main:
+                    logger.info(
+                        "LoRA resume: loading base weights from %s",
+                        base_checkpoint,
+                    )
+                self._load_pretrained(base_checkpoint)
+            elif self.ctx.is_main:
+                logger.info(
+                    "LoRA resume: model provider supplied base weights; "
+                    "adapter weights will load before distributed wrapping."
+                )
+            self._lora_resume_adapter_path = path
+            self.completed_steps = step
+            self.current_epoch = epoch
+            self.logger.log_resume(step)
+            return
+
         fmt = detect_checkpoint_format(path)
         if fmt == "dcp":
             if self.ctx.is_main:
@@ -280,6 +307,7 @@ class FinetuneTrainer(BaseTrainer):
             self.completed_steps, self.checkpoint_dir, self.ctx, self.training_args,
             epoch=self.current_epoch,
             dataloader_state=self._get_dataloader_state(),
+            model_cfg=self.model_cfg,
         )
 
     # ═══════════════════════════════════════════════

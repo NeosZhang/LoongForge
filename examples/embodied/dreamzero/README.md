@@ -4,6 +4,7 @@ Run these scripts from the repository root.
 
 | Script | Purpose |
 | --- | --- |
+| `prepare_dreamzero_dataset.sh` | Validate LeRobot data and generate required DreamZero metadata. |
 | `precompute_dreamzero_cache.sh` | Generate and validate DreamZero feature cache artifacts. |
 | `run_dreamzero_wan22_5b_full_finetune.sh` | Run Wan2.2 5B full fine-tuning with DDP and ZeRO-1. |
 | `run_dreamzero_wan21_14b_full_finetune.sh` | Run Wan2.1 14B full fine-tuning with FSDP. |
@@ -18,6 +19,25 @@ export DREAMZERO_DATA_ROOT=/path/to/dreamzero/data
 export DREAMZERO_CKPT_ROOT=/path/to/dreamzero/checkpoints
 export DREAMZERO_CACHE_ROOT=/path/to/dreamzero/cache
 ```
+
+## Prepare Dataset
+
+The official preprocessed DROID dataset can be used directly; this command
+validates it and fills any missing DreamZero metadata. Standard LIBERO and
+DreamZero-compatible AgiBot/YAM LeRobot datasets must run this step before
+training.
+
+```bash
+EMBODIMENT_TAG=oxe_droid DATA_PATH=/path/to/droid_lerobot \
+  bash examples/embodied/dreamzero/prepare_dreamzero_dataset.sh
+
+EMBODIMENT_TAG=libero_sim DATA_PATH=/path/to/libero_lerobot \
+  bash examples/embodied/dreamzero/prepare_dreamzero_dataset.sh
+```
+
+Use `EMBODIMENT_TAG=agibot` or `EMBODIMENT_TAG=yam` for the corresponding
+LeRobot datasets. The preparation step only updates `meta/`; it does not
+modify parquet files or images/videos.
 
 ## Generate Cache
 

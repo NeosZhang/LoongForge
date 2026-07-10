@@ -59,14 +59,26 @@ MODEL_SCHEMA = {
     "fastwam": ModelSchema("fastwam.yaml", FastWAMModelConfig, FastWAMDataConfig),
     "groot_n1_7": ModelSchema("groot_n1_7.yaml", GrootN1d7Config, GrootN1d7DataConfig),
     "cosmos3_nano": ModelSchema("cosmos3/nano.yaml", Cosmos3ModelConfig, Cosmos3DroidConfig),
+    "dreamzero_lora_wan22_5b": ModelSchema(
+        "dreamzero_wan22_5b.yaml", DreamZeroConfig, DreamZeroDataConfig
+    ),
     "dreamzero_full_wan22_5b": ModelSchema(
-        "dreamzero_full_wan22_5b.yaml", DreamZeroConfig, DreamZeroDataConfig
+        "dreamzero_wan22_5b.yaml", DreamZeroConfig, DreamZeroDataConfig
+    ),
+    "dreamzero_lora_wan21_14b": ModelSchema(
+        "dreamzero_wan21_14b.yaml", DreamZeroConfig, DreamZeroDataConfig
     ),
     "dreamzero_full_wan21_14b": ModelSchema(
-        "dreamzero_full_wan21_14b.yaml", DreamZeroConfig, DreamZeroDataConfig
+        "dreamzero_wan21_14b.yaml", DreamZeroConfig, DreamZeroDataConfig
     ),
-    "dreamzero_full_libero_wan22_5b": ModelSchema(
-        "dreamzero_full_libero_wan22_5b.yaml", DreamZeroConfig, DreamZeroDataConfig
+    "dreamzero_libero_wan22_5b": ModelSchema(
+        "dreamzero_libero_wan22_5b.yaml", DreamZeroConfig, DreamZeroDataConfig
+    ),
+    "dreamzero_agibot_wan21_14b": ModelSchema(
+        "dreamzero_agibot_wan21_14b.yaml", DreamZeroConfig, DreamZeroDataConfig
+    ),
+    "dreamzero_yam_wan21_14b": ModelSchema(
+        "dreamzero_yam_wan21_14b.yaml", DreamZeroConfig, DreamZeroDataConfig
     ),
 }
 

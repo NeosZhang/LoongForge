@@ -742,6 +742,58 @@ class _FreezeArgs:
 
 
 @dataclass(frozen=True)
+class _LoraArgs:
+    """LoRA/PEFT fine-tuning configuration."""
+
+    use_lora: bool = field(
+        default=False,
+        metadata={
+            "help": "Enable generic PEFT LoRA fine-tuning before distributed "
+                    "wrapping. The model supplies default target modules."
+        },
+    )
+    lora_r: int = field(
+        default=16,
+        metadata={"help": "LoRA rank."},
+    )
+    lora_alpha: int = field(
+        default=32,
+        metadata={"help": "LoRA scaling alpha."},
+    )
+    lora_dropout: float = field(
+        default=0.0,
+        metadata={"help": "Dropout probability inside LoRA adapters."},
+    )
+    lora_target_modules: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Comma-separated target module names. Overrides the "
+                    "model-provided defaults."
+        },
+    )
+    lora_modules_to_save: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Comma-separated modules trained and saved in full. "
+                    "Overrides the model-provided defaults."
+        },
+    )
+    lora_bias: str = field(
+        default="none",
+        metadata={
+            "choices": ["none", "all", "lora_only"],
+            "help": "PEFT LoraConfig.bias policy.",
+        },
+    )
+    lora_init: str = field(
+        default="true",
+        metadata={
+            "help": "PEFT init_lora_weights mode, such as true, gaussian, or pissa."
+        },
+    )
+
+
+@dataclass(frozen=True)
 class _LoggingArgs:
     """Logging cadence, GC control, W&B, and TensorBoard."""
 
@@ -1167,6 +1219,7 @@ class TrainingArgs(
     _DataArgs,
     _CheckpointArgs,
     _FreezeArgs,
+    _LoraArgs,
     _LoggingArgs,
     _ProfilerArgs,
     _CudaGraphArgs,

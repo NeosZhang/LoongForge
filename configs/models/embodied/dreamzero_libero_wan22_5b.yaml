@@ -1,7 +1,7 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-# DreamZero Wan2.2-TI2V-5B full fine-tuning config for LIBERO-format LeRobot data
+# DreamZero Wan2.2-TI2V-5B training config for LIBERO-format LeRobot data
 
 model:
   model_type: dreamzero

@@ -5,7 +5,8 @@
 
 The policy wraps ``WANPolicyHead`` with the shared training interface. The
 forward path returns ``(loss, log_loss_dict)`` following the standard embodied
-trainer contract, and model-owned hooks provide frozen-module mode management.
+trainer contract, and model-owned hooks provide LoRA target defaults and
+frozen-module mode management.
 """
 
 from __future__ import annotations
@@ -179,6 +180,26 @@ class DreamZeroPolicy(PreTrainedPolicy):
         from .dreamzero_provider import dreamzero_model_provider
 
         return dreamzero_model_provider(config=_config_to_dreamzero(cfg))
+
+    @staticmethod
+    def default_lora_targets() -> dict[str, Any]:
+        """Return DreamZero's default PEFT targets and full-train modules."""
+        return {
+            "target_modules": (
+                r"action_head\.model\..*\."
+                r"(?:q|k|v|o|ffn\.[02])"
+            ),
+            "modules_to_save": [
+                "action_head.model.state_encoder",
+                "action_head.model.action_encoder",
+                "action_head.model.action_decoder",
+            ],
+        }
+
+    @staticmethod
+    def lora_requires_pretrained_checkpoint() -> bool:
+        """DreamZero providers load component checkpoints from model config."""
+        return False
 
     # ------------------------------------------------------------------
     # Shared training-loop interface

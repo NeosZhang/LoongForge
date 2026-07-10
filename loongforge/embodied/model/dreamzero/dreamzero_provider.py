@@ -122,20 +122,6 @@ def _should_skip_dit_default_init(
     )
 
 
-def _dit_skip_init_reason(
-    model_config: DreamZeroConfig,
-    full_init_path: str | None,
-    action_state_path: str | None,
-) -> str:
-    if not model_config.skip_init_weights:
-        return "disabled by config"
-    if (full_init_path or "").strip():
-        return "covered by dit_init_checkpoint_path"
-    if model_config.backbone_variant == "wan21_14b" and (action_state_path or "").strip():
-        return "covered by base Wan2.1 DiT plus action_state_init_checkpoint_path"
-    return "constructor init must be preserved"
-
-
 def _raise_if_missing_after_skipped_reset(
     *,
     component: str,
@@ -757,12 +743,6 @@ def _build_diffusion_model(model_config: DreamZeroConfig) -> torch.nn.Module:
         full_init_path,
         action_state_path,
     )
-    if _rank0():
-        logger.info(
-            "[dreamzero] DiT explicit init skip=%s (%s)",
-            skip_default_reset,
-            _dit_skip_init_reason(model_config, full_init_path, action_state_path),
-        )
     with _skip_default_reset_parameters(skip_default_reset):
         model = CausalWanModel(
             model_type=preset["model_type"],
