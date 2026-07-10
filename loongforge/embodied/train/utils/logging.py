@@ -420,7 +420,7 @@ class TrainingLogger:
         lr_scheduler: Any,
         consumed_samples: int,
         model: torch.nn.Module,
-        batch_size: int = 0,
+        local_batch_size: int = 0,
         grad_norm: Optional[float] = None,
     ) -> Dict[str, float]:
         """Collect metrics, including loss, step time, and gradient norm.
@@ -456,8 +456,8 @@ class TrainingLogger:
         metrics["consumed_samples"] = consumed_samples
 
         # Calculate samples/second throughput
-        if batch_size > 0 and step_time > 0:
-            samples_per_sec = batch_size / step_time
+        if local_batch_size > 0 and step_time > 0:
+            samples_per_sec = local_batch_size / step_time
             metrics["samples_per_sec"] = samples_per_sec
         else:
             metrics["samples_per_sec"] = 0.0
