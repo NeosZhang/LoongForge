@@ -135,36 +135,114 @@ class EE6DActionSpace(BaseActionSpace):
     XYZ_SCALE = 500.0
     ROT_SCALE = 10.0
 
-    POS_IDX_1 = (0, 1, 2)
-    POS_IDX_2 = (10, 11, 12)
-    ROT_IDX_1 = (3, 4, 5, 6, 7, 8)
-    ROT_IDX_2 = (13, 14, 15, 16, 17, 18)
+    # Contiguous ranges — expressed as (start, stop) so ``compute_loss`` can
+    # use plain slicing (much faster than tuple advanced-indexing; the latter
+    # emits ``index_put_`` with accumulate on the backward, which forces
+    # ``torch.compile`` to skip CUDA graphs).
+    POS_IDX_1 = (0, 3)     # was (0, 1, 2)
+    POS_IDX_2 = (10, 13)   # was (10, 11, 12)
+    ROT_IDX_1 = (3, 9)     # was (3, 4, 5, 6, 7, 8)
+    ROT_IDX_2 = (13, 19)   # was (13, 14, 15, 16, 17, 18)
 
     def __init__(self):
         """Initialize EE6DActionSpace with MSE loss (position/rotation) and BCE loss (gripper)."""
         super().__init__()
         self.mse = nn.MSELoss()
         self.bce = nn.BCEWithLogitsLoss()
+        # Pre-bake ``gripper_idx`` as a long tensor buffer so that advanced-
+        # indexing scatter in :meth:`preprocess` (``t[..., idx] = 0``) does
+        # not trigger a per-step Python-tuple -> CPU tensor -> H2D copy.
+        # NSys attributed ~150 ms/step to that hidden H2D. Register as a
+        # non-persistent buffer so ``.to(device)`` migrates it once.
+        self.register_buffer(
+            "_gripper_idx_t",
+            torch.as_tensor(self.gripper_idx, dtype=torch.long),
+            persistent=False,
+        )
 
-    def compute_loss(self, pred, target):
+    def compute_loss(self, pred, target, valid_mask=None):
         assert pred.shape == target.shape, "pred/target shapes must match"
         B, T, D = pred.shape
         _ensure_indices_valid(D, self.gripper_idx, "gripper_idx")
 
-        # Gripper BCE
-        g_losses = [self.bce(pred[:, :, gi], target[:, :, gi]) for gi in self.gripper_idx]
-        gripper_loss = sum(g_losses) / len(self.gripper_idx) * self.GRIPPER_SCALE
+        # ``valid_mask`` [B]: True for real samples, False for padded rows
+        # inserted by the collator's static-shape padding (CUDA-graph path).
+        # We compute per-element squared errors / BCE terms manually and
+        # reduce with the mask so padded rows contribute exactly zero and
+        # the denominator matches the number of *real* samples.
+        # When ``valid_mask`` is None (default path) this reduces to the
+        # original ``nn.MSELoss(mean)`` / ``nn.BCEWithLogitsLoss(mean)``.
+        if valid_mask is None:
+            # Fast path: original semantics.
+            g0, g1 = self.gripper_idx
+            gripper_loss = (
+                self.bce(pred[..., g0:g0 + 1], target[..., g0:g0 + 1])
+                + self.bce(pred[..., g1:g1 + 1], target[..., g1:g1 + 1])
+            ) / 2 * self.GRIPPER_SCALE
 
-        # XYZ position
+            p1s, p1e = self.POS_IDX_1
+            p2s, p2e = self.POS_IDX_2
+            pos_loss = (
+                self.mse(pred[..., p1s:p1e], target[..., p1s:p1e])
+                + self.mse(pred[..., p2s:p2e], target[..., p2s:p2e])
+            ) * self.XYZ_SCALE
+
+            r1s, r1e = self.ROT_IDX_1
+            r2s, r2e = self.ROT_IDX_2
+            rot_loss = (
+                self.mse(pred[..., r1s:r1e], target[..., r1s:r1e])
+                + self.mse(pred[..., r2s:r2e], target[..., r2s:r2e])
+            ) * self.ROT_SCALE
+
+            return {
+                "position_loss": pos_loss,
+                "rotate6D_loss": rot_loss,
+                "gripper_loss": gripper_loss,
+            }
+
+        # Masked reduction path: preserve the original scalar-loss magnitude
+        # by dividing by (n_valid * T * width) where width is the channel
+        # count each sub-loss originally averaged over.
+        vmask = valid_mask.to(pred.dtype).view(B, 1, 1)  # broadcast over T, D
+        n_valid = valid_mask.sum().clamp(min=1).to(pred.dtype)
+        inv_v = 1.0 / n_valid  # scalar
+
+        def _masked_mse(p, t, width):
+            # ``nn.MSELoss(mean)`` divides by numel = B*T*width; the masked
+            # analog divides by n_valid*T*width so padded rows drop out.
+            sq = (p - t).pow(2) * vmask
+            return sq.sum() / (T * width) * inv_v
+
+        # Gripper BCE: implement mean-BCE with mask, same expression as
+        # F.binary_cross_entropy_with_logits(reduction='none') then averaged.
+        def _masked_bce(logits, target_):
+            # numerically-stable BCE-with-logits, elementwise:
+            #   loss = max(l,0) - l*t + log(1 + exp(-|l|))
+            l = logits
+            per = l.clamp(min=0) - l * target_ + torch.log1p(torch.exp(-l.abs()))
+            per = per * vmask  # zero out padded rows
+            # Original ``BCEWithLogitsLoss(mean)`` averages over all
+            # elements = B*T*1; masked analog averages over n_valid*T*1.
+            return per.sum() / T * inv_v
+
+        g0, g1 = self.gripper_idx
+        gripper_loss = (
+            _masked_bce(pred[..., g0:g0 + 1], target[..., g0:g0 + 1])
+            + _masked_bce(pred[..., g1:g1 + 1], target[..., g1:g1 + 1])
+        ) / 2 * self.GRIPPER_SCALE
+
+        p1s, p1e = self.POS_IDX_1
+        p2s, p2e = self.POS_IDX_2
         pos_loss = (
-            self.mse(pred[:, :, self.POS_IDX_1], target[:, :, self.POS_IDX_1]) +
-            self.mse(pred[:, :, self.POS_IDX_2], target[:, :, self.POS_IDX_2])
+            _masked_mse(pred[..., p1s:p1e], target[..., p1s:p1e], p1e - p1s)
+            + _masked_mse(pred[..., p2s:p2e], target[..., p2s:p2e], p2e - p2s)
         ) * self.XYZ_SCALE
 
-        # Rotation 6D
+        r1s, r1e = self.ROT_IDX_1
+        r2s, r2e = self.ROT_IDX_2
         rot_loss = (
-            self.mse(pred[:, :, self.ROT_IDX_1], target[:, :, self.ROT_IDX_1]) +
-            self.mse(pred[:, :, self.ROT_IDX_2], target[:, :, self.ROT_IDX_2])
+            _masked_mse(pred[..., r1s:r1e], target[..., r1s:r1e], r1e - r1s)
+            + _masked_mse(pred[..., r2s:r2e], target[..., r2s:r2e], r2e - r2s)
         ) * self.ROT_SCALE
 
         return {
@@ -177,8 +255,8 @@ class EE6DActionSpace(BaseActionSpace):
         """Zero-out gripper channels in proprio/action."""
         proprio_m = proprio.clone()
         action_m = action.clone()
-        proprio_m[..., self.gripper_idx] = 0.0
-        action_m[..., self.gripper_idx] = 0.0
+        proprio_m[..., self._gripper_idx_t] = 0.0
+        action_m[..., self._gripper_idx_t] = 0.0
         return proprio_m, action_m
 
     def postprocess(self, action: torch.Tensor) -> torch.Tensor:

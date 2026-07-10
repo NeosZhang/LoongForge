@@ -260,6 +260,7 @@ class XVLAConfig(PretrainedConfig):
         num_actions: int = 30,
         action_mode: str = "ee6d",
         use_proprio: bool = True,
+        enable_torch_compile: bool = False,
         **kwargs,
     ):
         if florence_config is None:
@@ -285,6 +286,7 @@ class XVLAConfig(PretrainedConfig):
         self.num_actions = num_actions
         self.action_mode = action_mode
         self.use_proprio = use_proprio
+        self.enable_torch_compile = enable_torch_compile
         super().__init__(**kwargs)
 
 
@@ -387,3 +389,5 @@ class XvlaModelConfig:
     action_horizon: int = 30
     max_action_dim: int = 20
     real_action_dim: int = 20
+
+    enable_torch_compile: bool = False

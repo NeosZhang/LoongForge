@@ -373,15 +373,15 @@ class ConvEmbed(nn.Module):
         if len(x.size()) == 3:
             if self.norm and self.pre_norm:
                 x = self.norm(x)
-            x = rearrange(
-                x, 'b (h w) c -> b c h w',
-                h=H, w=W
-            )
+            # Native tensor ops instead of einops.rearrange -- einops triggers
+            # a graph break under torch.compile.
+            B, HW, C = x.shape
+            x = x.view(B, H, W, C).permute(0, 3, 1, 2).contiguous()
 
         x = self.proj(x)
 
         _, _, H, W = x.shape
-        x = rearrange(x, 'b c h w -> b (h w) c')
+        x = x.permute(0, 2, 3, 1).reshape(x.shape[0], H * W, -1)
         if self.norm and not self.pre_norm:
             x = self.norm(x)
 
@@ -1701,7 +1701,9 @@ class Florence2Encoder(Florence2LanguagePreTrainedModel):
         super().__init__(config)
 
         self.dropout = config.dropout
-        self.layerdrop = config.encoder_layerdrop
+        # Normalize ``None`` to 0.0 so the fast-path ``layerdrop > 0.0`` guard
+        # in the forward stays cheap (no Python-side data-dependent branch).
+        self.layerdrop = config.encoder_layerdrop or 0.0
 
         embed_dim = config.d_model
         self.padding_idx = config.pad_token_id
@@ -1838,7 +1840,11 @@ class Florence2Encoder(Florence2LanguagePreTrainedModel):
                 encoder_states = encoder_states + (hidden_states,)
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             to_drop = False
-            if self.training:
+            # Skip the data-dependent branch entirely when layerdrop is zero
+            # (default in this checkpoint). This lets torch.compile trace the
+            # encoder as a single graph without a Python `if` on a scalar
+            # tensor value.
+            if self.training and self.layerdrop > 0.0:
                 dropout_probability = torch.rand([])
                 if dropout_probability < self.layerdrop:  # skip the layer
                     to_drop = True
@@ -1895,7 +1901,7 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
         """
         super().__init__(config)
         self.dropout = config.dropout
-        self.layerdrop = config.decoder_layerdrop
+        self.layerdrop = config.decoder_layerdrop or 0.0
         self.padding_idx = config.pad_token_id
         self.max_target_positions = config.max_position_embeddings
         embed_scale = math.sqrt(config.d_model) if config.scale_embedding else 1.0
@@ -2110,7 +2116,7 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
-            if self.training:
+            if self.training and self.layerdrop > 0.0:
                 dropout_probability = torch.rand([])
                 if dropout_probability < self.layerdrop:
                     continue

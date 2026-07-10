@@ -24,6 +24,8 @@ model:
   max_action_dim: 20
   real_action_dim: 20
 
+  enable_torch_compile: true
+
   # florence_config — passed as one block to Florence2Config(**florence_config).
   # Mirrors configs/models/embodied/config.json exactly so the composed HF config
   # is identical whether built from this YAML or from the checkpoint config.json.
