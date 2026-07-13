@@ -8,11 +8,11 @@ This directory contains the LoongForge-VLA offline evaluation module. It runs be
 - `loongforge.embodied.eval.transport`: WebSocket RPC client/server utilities.
 - `loongforge.embodied.eval.adapters`: benchmark-side adapters.
 - `loongforge.embodied.eval.servers.loongforge_server`: LoongForge policy server entrypoint.
-- `loongforge.embodied.eval.servers.loongforge_policy`: generic `predict_action` eval policy and LoongForge pi05 factory.
+- `loongforge.embodied.eval.servers.loongforge_policy`: generic `predict_action` eval policy, LoongForge pi05 factory, and LoongForge XVLA factory.
 - `loongforge.embodied.eval.servers.predict_action_interface`: shared model interface checks and action shape normalization.
 - `loongforge.embodied.eval.servers.mock_policy`: lightweight protocol mock for tests.
 
-LoongForge source code under `../loongforge` is not patched by this eval module. Model-specific compatibility lives in `eval/servers`.
+LoongForge source code under the repo root `loongforge/` is not patched by this eval module. Model-specific compatibility lives in `eval/servers`.
 
 ## Quick Start: pi05 on LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill
 
@@ -46,7 +46,7 @@ The pi05 configs use:
 - `model.backend: loongforge`
 - `model.model_type: pi05`
 - `model.ckpt_path`: checkpoint directory or `model.safetensors`, unless `model.random_init: true` is set for a smoke run
-- `model.dataset_statistics_path`: dataset stats used for LoongForge pi05 action unnormalization when using trained weights
+- `model.dataset_statistics_path`: dataset stats passed through to model `predict_action()` for model-owned normalization or unnormalization
 - `server.python`: LoongForge Python environment
 - `run.output_dir`: runtime output directory under `eval/reports/<model>/<benchmark>/<run_name>/`; `reports/` is generated locally and is not committed
 
@@ -54,16 +54,19 @@ For protocol/debug smoke testing, copy an existing YAML and set `model.backend: 
 
 ## Model Interface
 
-LoongForge model servers now prefer a shared `predict_action` interface instead of a separate full policy adapter for every model. A reusable `GenericPredictActionPolicy` handles eval RPC behavior: canonical image view selection, `predict_action` invocation, action shape validation, action-dim truncation, chunk caching, latency reporting, metadata, dataset statistics loading, and eval-side q99 action unnormalization.
+LoongForge model servers now prefer a shared `predict_action` interface instead of a separate full policy adapter for every model. A reusable `GenericPredictActionPolicy` handles eval RPC behavior: canonical image view selection, `predict_action` invocation, action shape validation, action-dim truncation, chunk caching, latency reporting, metadata, and dataset statistics loading. Model-specific normalization and unnormalization should happen inside the model's `predict_action()` implementation.
 
 Model-specific logic should be kept in a thin factory/loader. The current pi05 path is:
 
 ```text
 loongforge_server.py
+  -> _warmup_model(model_spec)          # dummy predict_action() to resolve lazy imports
   -> PI05ModelFactory.build(...)
   -> GenericPredictActionPolicy(...)
   -> PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)
 ```
+
+Before the health server is started, `loongforge_server.py` runs a single dummy `predict_action()` call (`_warmup_model`) to force all lazy imports to complete. This prevents circular-import races that would otherwise surface on the first real episode. New model factories should ensure their `predict_action()` tolerates a warmup call with a zero-filled dummy image and an empty instruction string.
 
 A new model can reuse the generic policy when it exposes:
 
