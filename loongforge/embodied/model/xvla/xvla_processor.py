@@ -28,9 +28,14 @@ share one implementation.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
-
+import numpy as np
 import torch
+
+from PIL import Image
+from transformers import AutoImageProcessor
+from transformers import AutoTokenizer
+from typing import Any, Dict, List
+from torchvision.transforms.functional import to_pil_image
 
 
 class XVLATokenizerCore:
@@ -59,8 +64,6 @@ class XVLATokenizerCore:
     def tokenizer(self):
         """Lazy-load the tokenizer on first access."""
         if self._tokenizer is None:
-            from transformers import AutoTokenizer
-
             tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
 
             # Ensure a pad token exists (BART/Florence2 may lack one by default)
@@ -118,8 +121,6 @@ class XVLAImageProcessorCore:
     def image_processor(self):
         """Lazy-load the image processor on first access."""
         if self._image_processor is None:
-            from transformers import AutoImageProcessor
-
             self._image_processor = AutoImageProcessor.from_pretrained(
                 self.tokenizer_path
             )
@@ -137,9 +138,6 @@ class XVLAImageProcessorCore:
             CHW layout as a fallback. Float in [0, 1] or uint8/float in
             [0, 255].
         """
-        from PIL import Image
-        from torchvision.transforms.functional import to_pil_image
-        import numpy as np
 
         if isinstance(img, Image.Image):
             return img

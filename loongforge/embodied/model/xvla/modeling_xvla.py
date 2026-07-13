@@ -22,14 +22,21 @@ from __future__ import annotations
 from typing import Dict
 
 import numpy as np
+import os
 import torch
 
+from pathlib import Path
+from safetensors.torch import load_file
 from transformers import PreTrainedModel
 from .modeling_florence2 import Florence2ForConditionalGeneration
 from .transformer import SoftPromptedTransformer
 from .action_hub import build_action_space
 from .model_configuration_xvla import XVLAConfig
 from loongforge.embodied.model.registry import register_model
+from loongforge.embodied.model.xvla.xvla_processor import (
+    XVLATokenizerCore,
+    XVLAImageProcessorCore,
+)
 
 
 class XVLA(PreTrainedModel):
@@ -120,13 +127,22 @@ class XVLA(PreTrainedModel):
 
         inputs_embeds = self.vlm.get_input_embeddings()(input_ids)  # [B, L, D]
 
-        merged_embeds, attention_mask = self.vlm._merge_input_ids_with_image_features(
+        merged_embeds, _attention_mask = self.vlm._merge_input_ids_with_image_features(
             image_features[:, 0],  # first view: [B, N, D]
             inputs_embeds,         # [B, L, D]
         )
+        # ``_merge_input_ids_with_image_features`` constructs the mask with
+        # ``torch.ones(...)`` for both image and prefix tokens, so it is
+        # provably all-ones on this path. Passing it into the Florence2
+        # encoder triggers ``0 in attention_mask`` (line 1815 of
+        # ``modeling_florence2.py``), which is a Python ``__contains__``
+        # that forces a host sync (``aten::is_nonzero`` on a scalar,
+        # ~200ms/step in NSys). Since the mask is always all-ones we hand
+        # ``None`` to the encoder — mathematically equivalent (adding a
+        # 4D zero bias is identity) and sync-free.
 
         enc_out = self.vlm.language_model.model.encoder(
-            attention_mask=attention_mask,
+            attention_mask=None,
             inputs_embeds=merged_embeds,
         )[0]  # [B, T_enc, D]
 
@@ -142,6 +158,7 @@ class XVLA(PreTrainedModel):
         domain_id: torch.LongTensor,
         proprio: torch.Tensor,
         action: torch.Tensor,  # [B, T=num_actions, D=dim_action]
+        valid_mask: torch.Tensor = None,  # [B] bool; None -> all valid
     ) -> Dict[str, torch.Tensor]:
         """
         1) Encode multimodal inputs.
@@ -155,6 +172,7 @@ class XVLA(PreTrainedModel):
              + torch.arange(B, device=input_ids.device) / B) % (1 - 1e-5)
 
         action_noisy = torch.randn_like(action) * t.view(-1, 1, 1) + action * (1 - t).view(-1, 1, 1)
+
         proprio_m, action_noisy_m = self.action_space.preprocess(proprio, action_noisy)
 
         pred_action = self.transformer(
@@ -164,7 +182,7 @@ class XVLA(PreTrainedModel):
             proprio=proprio_m,
             **enc,
         )
-        return self.action_space.compute_loss(pred_action, action)
+        return self.action_space.compute_loss(pred_action, action, valid_mask=valid_mask)
 
     # ================================= inference =================================
     @torch.no_grad()
@@ -224,9 +242,20 @@ class XVLAPolicy(torch.nn.Module):
         super().__init__()
         self.config = config
         self.model = XVLA(config)
-        # Processor (tokenizer + image_processor) path used by the eval-facing
-        # ``predict_action`` entry. Populated by ``load_pretrained`` and falls
-        # back to the ``TOKENIZER_PATH`` / ``PROCESSOR_PATH`` env vars.
+
+        if config.enable_torch_compile:
+            # Also fix the last batch: keep a stable, static shape so guards
+            # do not trigger a recompile at the tail. The trainer feeds the
+            # same per_device_batch_size on every step in this workload, but
+            # end-of-epoch tail batches could otherwise differ.
+            self._compiled_model = torch.compile(
+                self.model,
+                mode="reduce-overhead",
+                fullgraph=False,
+                dynamic=False,
+            )
+        else:
+            self._compiled_model = self.model
         self._processor_path = ""
         self._num_image_views = int(getattr(config, "num_image_views", 3) or 3)
         self._tokenize_transform = None
@@ -301,7 +330,7 @@ class XVLAPolicy(torch.nn.Module):
         components and expose it alongside the individual terms for logging.
         """
         inputs = self._prepare_inputs(batch)
-        loss_dict = self.model(**inputs)
+        loss_dict = self._compiled_model(**inputs)
         total = sum(v for v in loss_dict.values() if torch.is_tensor(v))
         loss_dict = {**loss_dict, "action_loss": total}
         return total, loss_dict
@@ -342,16 +371,7 @@ class XVLAPolicy(torch.nn.Module):
         """
         cached = getattr(self, "_tokenize_transform", None)
         if cached is None:
-            import os as _os
-            from loongforge.embodied.model.xvla.xvla_processor import (
-                XVLATokenizerCore,
-            )
-            path = (
-                self._processor_path
-                or _os.environ.get("TOKENIZER_PATH", "")
-                or _os.environ.get("PROCESSOR_PATH", "")
-            )
-            cached = XVLATokenizerCore(tokenizer_path=path)
+            cached = XVLATokenizerCore(tokenizer_path=self._processor_path)
             self._tokenize_transform = cached
         return cached
 
@@ -365,17 +385,8 @@ class XVLAPolicy(torch.nn.Module):
         """
         cached = getattr(self, "_image_transform", None)
         if cached is None:
-            import os as _os
-            from loongforge.embodied.model.xvla.xvla_processor import (
-                XVLAImageProcessorCore,
-            )
-            path = (
-                self._processor_path
-                or _os.environ.get("PROCESSOR_PATH", "")
-                or _os.environ.get("TOKENIZER_PATH", "")
-            )
             cached = XVLAImageProcessorCore(
-                tokenizer_path=path,
+                tokenizer_path=self._processor_path,
                 num_views=self._num_image_views,
             )
             self._image_transform = cached
@@ -469,7 +480,6 @@ class XVLAPolicy(torch.nn.Module):
     @classmethod
     def from_pretrained(cls, config_or_path, processor_path=None) -> "XVLAPolicy":
         """Create XVLAPolicy from XVLAConfig, a pretrained path string, or a config dict."""
-        import os
         if isinstance(config_or_path, XVLAConfig):
             cfg = config_or_path
             pretrained_path = None
@@ -486,6 +496,8 @@ class XVLAPolicy(torch.nn.Module):
             pretrained_path = outer_config["pretrained_path"] if "pretrained_path" in outer_config else None
 
         policy = cls(cfg)
+        if processor_path:
+            policy._processor_path = processor_path
         if pretrained_path:
             policy.load_pretrained(pretrained_path)
         return policy
@@ -500,13 +512,11 @@ class XVLAPolicy(torch.nn.Module):
         prefix (``vlm.*`` / ``transformer.*``). We re-add the ``model.`` prefix
         when it is missing so the weights map onto this policy.
         """
-        from pathlib import Path
-        from safetensors.torch import load_file
-
         path = Path(pretrained_path)
         # Remember the checkpoint directory so lazily-built processors
         # (tokenizer / image_processor) can be loaded from it later.
-        self._processor_path = str(path.parent if path.is_file() else path)
+        self._processor_path = str(path.parent if path.is_file() else path) \
+            if self._processor_path is None else self._processor_path
         safetensors_file = path / "model.safetensors" if path.is_dir() else path
         load_kwargs = {"device": str(device)} if device is not None else {}
         state_dict = load_file(str(safetensors_file), **load_kwargs)
