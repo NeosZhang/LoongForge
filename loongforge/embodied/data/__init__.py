@@ -4,7 +4,7 @@
 """Public API for LoongForge embodied data loading."""
 
 from loongforge.embodied.data.dataloader import build_dataloader
-from loongforge.embodied.data.transforms.collator import (
+from loongforge.embodied.data.datasets.transforms.collator import (
     BasePreprocessor,
     PreparedBatch,
 )

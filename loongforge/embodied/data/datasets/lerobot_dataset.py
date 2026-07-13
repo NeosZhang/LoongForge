@@ -5,7 +5,9 @@ Provides:
     - LeRobotV3Dataset(LeRobotDataset): v3.0 Map-style dataset (wraps official lerobot)
     - StreamingLeRobotV3Dataset(StreamingLeRobotDataset): v3.0 Iterable streaming dataset
     - LeRobotV2Dataset(Dataset): v2.0/v2.1 format (no lerobot lib dependency)
-    - build_lerobot_dataset(): Factory function with version dispatch
+    - _build_lerobot_dataset(): version-dispatch factory
+    - build_default_lerobot_dataset(): the "default" dataset strategy builder
+      (fn(model_cfg, data_cfg, training_args) -> Dataset)
 
 Output format (all versions):
     {
@@ -33,7 +35,7 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, MultiLeRobotDataset
 from lerobot.datasets.streaming_dataset import StreamingLeRobotDataset
 
 
@@ -51,22 +53,11 @@ def _read_dataset_info(dataset_root: Path) -> Dict[str, Any]:
     return {}
 
 
-def _build_delta_timestamps(
-    action_horizon: int,
-    fps: int,
-    observation_delta_indices: Optional[List[int]] = None,
-    image_keys: Optional[List[str]] = None,
-) -> Dict[str, list]:
-    """Build delta_timestamps from action_horizon and fps.
-
-    If observation_delta_indices and image_keys are provided, also adds
-    multi-frame observation timestamps for each image key (e.g. for FastWAM).
-    """
-    timestamps: Dict[str, list] = {"action": [i / fps for i in range(action_horizon)]}
-    if observation_delta_indices and image_keys:
-        for key in image_keys:
-            timestamps[key] = [i / fps for i in observation_delta_indices]
-    return timestamps
+def _build_delta_timestamps(action_horizon: int, fps: int) -> Dict[str, list]:
+    """Build delta_timestamps from action_horizon and fps."""
+    return {
+        "action": [i / fps for i in range(action_horizon)],
+    }
 
 
 class LeRobotV3Dataset(LeRobotDataset):
@@ -75,6 +66,24 @@ class LeRobotV3Dataset(LeRobotDataset):
     Provides a simplified constructor that builds delta_timestamps from
     action_horizon and dataset fps, without needing lerobot's PolicyConfig
     or TrainPipelineConfig.
+
+    The class carries **no model-specific logic**. Behaviour that differs per
+    model is injected through three optional hooks (all default to the standard
+    single-anchor pi05 behaviour). Any extra keyword arguments are stored on
+    ``self._strategy_kwargs`` and are available to the hooks:
+
+    - ``delta_timestamps_fn(dataset, info, fps) -> dict``: builds the
+      ``delta_timestamps`` passed to lerobot (default: pi05 action chunk). Runs
+      *before* ``super().__init__`` and may stash geometry on ``dataset`` for
+      later use (e.g. the transform builder / the other hooks).
+    - ``length_fn(dataset) -> int``: overrides ``__len__`` (default: the real
+      lerobot flat length).
+    - ``index_map_fn(dataset, idx) -> int``: maps the sampler ``idx`` to the
+      global flat frame index fed to ``LeRobotDataset.__getitem__`` (default:
+      identity).
+
+    See ``motus/motus_dataset.py`` for the Motus multi-frame hook set, and
+    ``fastwam/fastwam_dataset.py`` for the FastWAM multi-frame-observation hook.
 
     Args:
         repo_id: HuggingFace repo_id or local dataset identifier
@@ -86,6 +95,10 @@ class LeRobotV3Dataset(LeRobotDataset):
         video_backend: Video decoding backend ("torchcodec", "pyav", etc.)
         tolerance_s: Timestamp tolerance for sync checks
         download_videos: Whether to download videos from Hub
+        transform: Per-sample transform applied after lerobot decode
+        delta_timestamps_fn / length_fn / index_map_fn: Optional behaviour hooks
+            (see above).
+        **strategy_kwargs: Extra params consumed by the hooks.
     """
 
     def __init__(
@@ -100,10 +113,16 @@ class LeRobotV3Dataset(LeRobotDataset):
         tolerance_s: float = 1e-4,
         download_videos: bool = False,
         transform: Callable | None = None,
-        observation_delta_indices: Optional[List[int]] = None,
+        delta_timestamps_fn: Callable | None = None,
+        length_fn: Callable | None = None,
+        index_map_fn: Callable | None = None,
+        **strategy_kwargs,
     ):
         self._action_horizon = action_horizon
         self._transform = transform
+        self._length_fn = length_fn
+        self._index_map_fn = index_map_fn
+        self._strategy_kwargs = dict(strategy_kwargs)
 
         # Resolve root for reading info.json before parent __init__
         dataset_root = Path(root) if root is not None else None
@@ -113,16 +132,11 @@ class LeRobotV3Dataset(LeRobotDataset):
             info = {}
         fps = info.get("fps", 10)
 
-        # Discover image keys for multi-frame observation loading (e.g. FastWAM)
-        image_keys: Optional[List[str]] = None
-        if observation_delta_indices:
-            image_keys = [k for k, v in info.get("features", {}).items()
-                          if v.get("dtype") == "video"]
-
-        # Build delta_timestamps: mirrors resolve_delta_timestamps for pi05
-        delta_timestamps = _build_delta_timestamps(
-            action_horizon, fps, observation_delta_indices, image_keys
-        )
+        # Build delta_timestamps: custom hook (e.g. motus / fastwam), else pi05 default.
+        if delta_timestamps_fn is not None:
+            delta_timestamps = delta_timestamps_fn(self, info, fps)
+        else:
+            delta_timestamps = _build_delta_timestamps(action_horizon, fps)
 
         # Call parent LeRobotDataset.__init__ with aligned parameters
         super().__init__(
@@ -143,7 +157,104 @@ class LeRobotV3Dataset(LeRobotDataset):
             f"video_backend={video_backend}"
         )
 
+    def __len__(self):
+        if self._length_fn is not None:
+            return self._length_fn(self)
+        return super().__len__()
+
     def __getitem__(self, idx):
+        if self._index_map_fn is not None:
+            idx = self._index_map_fn(self, idx)
+        data = super().__getitem__(idx)
+        if self._transform is not None:
+            data = self._transform(data)
+        return data
+
+
+class MultiLeRobotV3Dataset(MultiLeRobotDataset):
+    """Multi-task counterpart of :class:`LeRobotV3Dataset` (wraps several repos).
+
+    Concatenates multiple underlying ``LeRobotDataset`` instances (via lerobot's
+    ``MultiLeRobotDataset``) while exposing the *same* three model-agnostic
+    behaviour hooks as :class:`LeRobotV3Dataset`:
+
+    - ``delta_timestamps_fn(dataset, info, fps) -> dict``: runs *before*
+      ``MultiLeRobotDataset.__init__`` (its result is forwarded to every
+      sub-dataset) and may stash geometry on ``dataset`` for the other hooks /
+      the transform builder. ``info`` is read from the first repo's
+      ``meta/info.json``.
+    - ``length_fn(dataset) -> int``: overrides ``__len__`` (default: the real
+      concatenated frame count).
+    - ``index_map_fn(dataset, idx) -> int``: maps the sampler ``idx`` to the
+      global flat frame index fed to ``MultiLeRobotDataset.__getitem__``
+      (default: identity). The flat space is the concatenation of the
+      sub-datasets in ``repo_ids`` order (by ``num_frames``).
+
+    Any extra keyword arguments are stored on ``self._strategy_kwargs`` for the
+    hooks. The class itself carries no model-specific logic.
+
+    See ``motus/motus_dataset.py`` for the Motus multi-frame hook set.
+    """
+
+    def __init__(
+        self,
+        repo_ids: list[str],
+        root: str | Path | None = None,
+        episodes: dict | None = None,
+        image_transforms: Callable | None = None,
+        video_backend: str = "torchcodec",
+        download_videos: bool = False,
+        transform: Callable | None = None,
+        delta_timestamps_fn: Callable | None = None,
+        length_fn: Callable | None = None,
+        index_map_fn: Callable | None = None,
+        **strategy_kwargs,
+    ):
+        self._transform = transform
+        self._length_fn = length_fn
+        self._index_map_fn = index_map_fn
+        self._strategy_kwargs = dict(strategy_kwargs)
+
+        # Resolve the first repo's root to read info.json before parent __init__.
+        base_root = Path(root) if root is not None else None
+        info: Dict[str, Any] = {}
+        if base_root is not None and repo_ids:
+            first_repo_root = base_root / repo_ids[0]
+            if first_repo_root.exists():
+                info = _read_dataset_info(first_repo_root)
+        fps = info.get("fps", 10)
+
+        # Build delta_timestamps: custom hook, else pi05 default.
+        if delta_timestamps_fn is not None:
+            delta_timestamps = delta_timestamps_fn(self, info, fps)
+        else:
+            delta_timestamps = _build_delta_timestamps(
+                self._strategy_kwargs.get("action_horizon", 50), fps
+            )
+
+        super().__init__(
+            repo_ids=repo_ids,
+            root=root,
+            episodes=episodes,
+            image_transforms=image_transforms,
+            delta_timestamps=delta_timestamps,
+            download_videos=download_videos,
+            video_backend=video_backend,
+        )
+
+        logger.info(
+            f"MultiLeRobotV3Dataset: repo_ids={repo_ids}, len={len(self)}, "
+            f"fps={fps}, video_backend={video_backend}"
+        )
+
+    def __len__(self):
+        if self._length_fn is not None:
+            return self._length_fn(self)
+        return super().__len__()
+
+    def __getitem__(self, idx):
+        if self._index_map_fn is not None:
+            idx = self._index_map_fn(self, idx)
         data = super().__getitem__(idx)
         if self._transform is not None:
             data = self._transform(data)
@@ -513,6 +624,8 @@ def _build_lerobot_dataset(
     shuffle: bool = True,
     lerobotdataset_version: str = "v3.0",
     observation_delta_indices: Optional[List[int]] = None,
+    delta_timestamps_fn: Callable | None = None,
+    **strategy_kwargs,
 ) -> Dataset:
     """Factory function to create VLA dataset with version dispatch.
 
@@ -520,6 +633,12 @@ def _build_lerobot_dataset(
         lerobotdataset_version: Dataset format version ("v2.0", "v2.1", "v3.0").
             v2.0/v2.1 use JSONL metadata + one-parquet-per-episode (no lerobot lib needed).
             v3.0 uses lerobot official LeRobotDataset API.
+        observation_delta_indices: Multi-frame observation offsets. For v2.0/v2.1
+            these drive :class:`LeRobotV2Dataset`'s manual multi-frame decode; for
+            v3.0 the multi-frame geometry is instead injected via a
+            ``delta_timestamps_fn`` hook (see ``fastwam/fastwam_dataset.py``).
+        delta_timestamps_fn: Optional ``delta_timestamps_fn`` hook forwarded to the
+            v3.0 map-style dataset (``**strategy_kwargs`` are forwarded alongside).
         (other training_args: see individual dataset classes)
 
     Returns:
@@ -557,7 +676,9 @@ def _build_lerobot_dataset(
                 revision=revision,
                 video_backend=video_backend,
                 tolerance_s=tolerance_s,
+                delta_timestamps_fn=delta_timestamps_fn,
                 observation_delta_indices=observation_delta_indices,
+                **strategy_kwargs,
             )
     else:
         raise ValueError(
@@ -568,8 +689,14 @@ def _build_lerobot_dataset(
     return dataset
 
 
-def build_lerobot_dataset(model_cfg, data_cfg, training_args):
-    """Build lerobot-based VLA dataset from typed configs and CLI training_args."""
+def build_default_lerobot_dataset(model_cfg, data_cfg, training_args):
+    """Default lerobot dataset build strategy (stock loongforge behaviour).
+
+    This is the strategy selected by ``training_args.dataset_strategy == "default"``
+    under ``--dataset-format lerobot_datasets``. It derives ``repo_id`` from
+    ``--dataset-path`` and dispatches to the version-aware factory (``v2.0`` /
+    ``v2.1`` / ``v3.0``, streaming or map-style).
+    """
     dataset_path = training_args.dataset_path
     if not dataset_path:
         raise ValueError("Must specify --dataset-path")
@@ -586,5 +713,5 @@ def build_lerobot_dataset(model_cfg, data_cfg, training_args):
         video_backend=training_args.video_backend,
         tolerance_s=1e-4,
         lerobotdataset_version=training_args.lerobotdataset_version,
-        observation_delta_indices=data_cfg.observation_delta_indices
     )
+

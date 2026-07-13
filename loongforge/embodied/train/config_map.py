@@ -13,13 +13,13 @@ from pathlib import Path
 from typing import Type
 
 from loongforge.embodied.model.pi05.model_configuration_pi05 import Pi05ModelConfig
-from loongforge.embodied.data.transforms.pi05.data_configuration_pi05 import Pi05DataConfig
+from loongforge.embodied.data.datasets.pi05.transforms.data_configuration_pi05 import Pi05DataConfig
 from loongforge.embodied.model.groot_n1_6.model_configuration_groot_n1_6 import GrootN1d6ModelConfig
-from loongforge.embodied.data.transforms.groot_n1_6.data_configuration_groot_n1_6 import GrootN1d6DataConfig
+from loongforge.embodied.data.datasets.groot_n1_6.transforms.data_configuration_groot_n1_6 import GrootN1d6DataConfig
 from loongforge.embodied.model.xvla.model_configuration_xvla import XvlaModelConfig
-from loongforge.embodied.data.transforms.xvla.data_configuration_xvla import XvlaDataConfig
+from loongforge.embodied.data.datasets.xvla.transforms.data_configuration_xvla import XvlaDataConfig
 from loongforge.embodied.model.fastwam.modeling_configuration_fastwam import FastWAMModelConfig
-from loongforge.embodied.data.transforms.fastwam.data_configuration_fastwam import FastWAMDataConfig
+from loongforge.embodied.data.datasets.fastwam.transforms.data_configuration_fastwam import FastWAMDataConfig
 
 _CONFIGS_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent

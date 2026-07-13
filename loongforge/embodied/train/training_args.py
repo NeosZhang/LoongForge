@@ -262,18 +262,22 @@ class TrainingArgs:
     )
 
     # ── Data loading control (cross-model; per-model processing lives in DataConfig) ──
+    # ── Data loading control (cross-model; per-model processing lives in DataConfig) ──
     dataset_format: str = field(
         default="lerobot_datasets",
         metadata={"help": "Dataset backend to use "
-                          "(e.g. lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets)."})
+                          "(e.g. lerobot_datasets, hdf5_datasets, dummy_datasets)."})
     dataset_path: Optional[str] = field(
         default=None,
         metadata={"help": "Filesystem path or repo id of the dataset to train on."},
     )
-    dataset_name: Optional[str] = field(
-        default="bridge_v2",
+    dataset_strategy: Optional[str] = field(
+        default="default",
         metadata={
-            "help": "RLDS dataset name / Open-X-Embodiment key (RLDS loader only)."
+            "help": "Under --dataset-format lerobot_datasets: the model-specific "
+                    "dataset build strategy ('default' stock lerobot, or 'motus' / "
+                    "'fastwam' multi-frame geometry via behaviour hooks); any "
+                    "unrecognised value falls back to 'default'."
         },
     )
     split: str = field(

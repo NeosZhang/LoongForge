@@ -10,12 +10,12 @@ import random
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, IterableDataset, Sampler
+from torch.utils.data import Dataset, IterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
-from torchdata.stateful_dataloader.sampler import StatefulDistributedSampler
 
-from loongforge.embodied.data.transforms.collator import build_preprocessor
-from loongforge.embodied.data.transforms.pipeline import build_transforms_from_args
+from loongforge.embodied.data.datasets.sampler_builder import build_sampler
+from loongforge.embodied.data.datasets.transforms.collator import build_preprocessor
+from loongforge.embodied.data.datasets.transforms.pipeline import build_transforms_from_args
 from loongforge.embodied.distributed import DistributedContext
 
 logger = logging.getLogger(__name__)
@@ -32,73 +32,6 @@ class _SeedWorkerInit:
         np.random.seed(worker_seed)
         random.seed(worker_seed)
         torch.manual_seed(worker_seed)
-
-
-class _BlockShardSampler(Sampler[int]):
-    """Distribute contiguous batches across data-parallel ranks."""
-
-    def __init__(
-        self,
-        dataset: Dataset,
-        *,
-        batch_size: int,
-        num_replicas: int,
-        rank: int,
-        shuffle: bool,
-        seed: int,
-        drop_last: bool = False,
-    ) -> None:
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.num_replicas = num_replicas
-        self.rank = rank
-        self.shuffle = shuffle
-        self.seed = seed
-        self.drop_last = drop_last
-        self.epoch = 0
-
-    def __iter__(self):
-        length = len(self.dataset)
-        if self.shuffle:
-            generator = torch.Generator().manual_seed(self.seed + self.epoch)
-            indices = torch.randperm(length, generator=generator).tolist()
-        else:
-            indices = list(range(length))
-
-        if self.drop_last:
-            usable = (len(indices) // self.batch_size) * self.batch_size
-            indices = indices[:usable]
-
-        batches = [
-            indices[start : start + self.batch_size]
-            for start in range(0, len(indices), self.batch_size)
-            if len(indices[start : start + self.batch_size]) == self.batch_size or not self.drop_last
-        ]
-        for batch_idx, batch in enumerate(batches):
-            if batch_idx % self.num_replicas == self.rank:
-                yield from batch
-
-    def __len__(self) -> int:
-        full_batches, remainder = divmod(len(self.dataset), self.batch_size)
-        total_batches = full_batches if self.drop_last or remainder == 0 else full_batches + 1
-        local_batches = (total_batches + self.num_replicas - 1 - self.rank) // self.num_replicas
-        if not local_batches:
-            return 0
-        if self.drop_last or remainder == 0 or (local_batches - 1) * self.num_replicas + self.rank < full_batches:
-            return local_batches * self.batch_size
-        return (local_batches - 1) * self.batch_size + remainder
-
-    def set_epoch(self, epoch: int) -> None:
-        """Set the epoch index for deterministic shuffling."""
-        self.epoch = epoch
-
-    def state_dict(self) -> dict:
-        """Return checkpointable sampler state."""
-        return {"epoch": self.epoch}
-
-    def load_state_dict(self, state_dict: dict) -> None:
-        """Load checkpointed sampler state."""
-        self.epoch = int(state_dict.get("epoch", 0))
 
 
 class _TransformedMapDataset(Dataset):
@@ -157,6 +90,7 @@ def build_dataloader(model_cfg, data_cfg, training_args, ctx: DistributedContext
     return _build_stateful_dataloader(
         dataset=dataset,
         preprocessor=preprocessor,
+        model_type=model_cfg.model_type or "dummy",
         batch_size=batch_size,
         num_workers=num_workers,
         mp_context=mp_context,
@@ -184,6 +118,7 @@ def _build_stateful_dataloader(
     *,
     dataset,
     preprocessor,
+    model_type: str,
     batch_size: int,
     num_workers: int,
     mp_context,
@@ -205,32 +140,17 @@ def _build_stateful_dataloader(
             persistent_workers=num_workers > 0 and mp_context == "spawn",
         )
 
-    sampler = None
-    shuffle = True
-    sampler_mode = training_args.distributed_sampler_mode
     generator = torch.Generator().manual_seed(seed) if seed_workers else None
-    if ctx.is_distributed and ctx.world_size > 1:
-        if sampler_mode == "block":
-            sampler = _BlockShardSampler(
-                dataset,
-                batch_size=batch_size,
-                num_replicas=ctx.world_size,
-                rank=ctx.rank,
-                shuffle=shuffle,
-                seed=seed,
-                drop_last=False,
-            )
-        else:
-            sampler = StatefulDistributedSampler(
-                dataset,
-                num_replicas=ctx.world_size,
-                rank=ctx.rank,
-                shuffle=shuffle,
-                seed=seed,
-                drop_last=False,
-            )
-        shuffle = False
-
+    sampler = build_sampler(
+        model_type,
+        dataset=dataset,
+        training_args=training_args,
+        ctx=ctx,
+        batch_size=batch_size,
+        seed=seed,
+        shuffle=True,
+    )
+    shuffle = sampler is None
     dl = StatefulDataLoader(
         dataset,
         batch_size=batch_size,
@@ -269,14 +189,9 @@ def _build_preprocessor(model_cfg, data_cfg, training_args, dataset_stats, datas
 def _build_dataset(model_cfg, data_cfg, training_args, dataset_format: str):
     """Build dataset instance based on ``--dataset-format``."""
     if dataset_format == "lerobot_datasets":
-        from .datasets.lerobot_dataset import build_lerobot_dataset
+        from .datasets.dataset_builder import build_dataset_by_strategy
 
-        return build_lerobot_dataset(model_cfg, data_cfg, training_args)
-
-    if dataset_format == "rlds_datasets":
-        from .datasets.rlds_dataset import build_rlds_dataset
-
-        return build_rlds_dataset(model_cfg, data_cfg, training_args)
+        return build_dataset_by_strategy(model_cfg, data_cfg, training_args)
 
     if dataset_format == "hdf5_datasets":
         from .datasets.hdf5_dataset import build_hdf5_dataset
@@ -290,5 +205,5 @@ def _build_dataset(model_cfg, data_cfg, training_args, dataset_format: str):
 
     raise ValueError(
         f"Unknown dataset_format: '{dataset_format}'. "
-        f"Supported: lerobot_datasets, rlds_datasets, hdf5_datasets, dummy_datasets"
+        f"Supported: lerobot_datasets, hdf5_datasets, dummy_datasets"
     )

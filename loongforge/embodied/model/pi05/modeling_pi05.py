@@ -868,9 +868,9 @@ class PI05Policy(nn.Module):
     @torch.no_grad()
     def predict_action(self, images, instructions, state=None, dataset_stats=None) -> np.ndarray:
         """Inference: Euler ODE denoising, returns ndarray (B, action_horizon, max_action_dim)."""
-        from loongforge.embodied.data.transforms.pi05.pi05_transform import StateDiscretizationTransform
-        from loongforge.embodied.data.transforms.utils.builders import convert_stats
-        from loongforge.embodied.data.transforms.utils.image_transform import ImageTransform
+        from loongforge.embodied.data.datasets.pi05.transforms.pi05_transform import StateDiscretizationTransform
+        from loongforge.embodied.data.datasets.transforms.utils.builders import convert_stats
+        from loongforge.embodied.data.datasets.transforms.utils.image_transform import ImageTransform
 
         device = next(self.parameters()).device
         if not isinstance(images[0], list):
