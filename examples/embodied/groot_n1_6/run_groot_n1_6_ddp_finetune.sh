@@ -111,7 +111,7 @@ LOGGING_ARGS=(
 
 # ── Launch ────────────────────────────────────────────────────
 echo "════════════════════════════════════════════════════════════"
-echo "  LoongForgeVLA GR00TN1.6 Training (DDP)"
+echo "  LoongForge GR00TN1.6 Training (DDP)"
 echo "  Model:      $MODEL_NAME"
 echo "  GPUs:       $GPUS_PER_NODE"
 echo "  Data:       $DATA_PATH"
