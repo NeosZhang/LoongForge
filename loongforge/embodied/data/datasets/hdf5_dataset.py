@@ -74,15 +74,6 @@ def _quat_to_rotate6d(q: np.ndarray, scalar_first: bool = False) -> np.ndarray:
     )
 
 
-# AIR-AGILEX domain id from the reference DATA_DOMAIN_ID table.
-_DOMAIN_ID = {
-    "AIR-AGILEX": 10,
-    "AIR-AGILEX-HQ": 5,
-    "AIRBOT": 18,
-    "widowx-air": 4,
-}
-
-
 class HDF5VLADataset(Dataset):
     """Reference-aligned map-style dataset over episode HDF5 files."""
 
@@ -145,7 +136,6 @@ class HDF5VLADataset(Dataset):
         self.language_instruction_key: str = metadata.get(
             "language_instruction_key", "language_instruction"
         )
-        self.domain_id = _DOMAIN_ID.get(self.robot_type, 0)
 
         # Episode files come from metadata["datalist"] (absolute paths) when
         # present, otherwise discovered on disk.
@@ -504,11 +494,11 @@ class HDF5VLADataset(Dataset):
         :class:`LeRobotV3Dataset` so this dataset is a drop-in replacement: the
         per-view images are emitted under ``observation.images.<cam>`` keys
         (raw [C, H, W] float32 in [0, 1]), alongside ``observation.state``,
-        ``action``, ``task`` and ``domain_id``. Image resize / normalization and
-        tokenization are left to the downstream transform + collator (the XVLA
-        collator's raw-image path routes these through the XVLAProcessor), so
-        that swapping in ``lerobot_dataset`` requires no change to
-        ``xvla_transform`` / ``xvla_collator``.
+        ``action``, ``task`` and ``robot_type``. Image resize /
+        normalization and tokenization are left to the downstream transform +
+        collator (the XVLA collator's raw-image path routes these through the
+        XVLAProcessor), so that swapping in ``lerobot_dataset`` requires no
+        change to ``xvla_transform`` / ``xvla_collator``.
 
         The X-VLA-specific action generation is performed here (unchanged):
         time interpolation over ``[cur, cur + QDUR]`` with ``num_actions + 1``
@@ -520,7 +510,7 @@ class HDF5VLADataset(Dataset):
 
         Returns:
             Sample dict with keys: ``observation.images.<cam>`` (one per view),
-            ``observation.state``, ``action``, ``task``, ``domain_id``.
+            ``observation.state``, ``action``, ``task``, ``robot_type``.
         """
         ep_idx, idx = self._index[i]
         f = self._get_episode_data(ep_idx)
@@ -542,7 +532,7 @@ class HDF5VLADataset(Dataset):
             "observation.state": proprio,
             "action": action,
             "task": meta["ins"],
-            "domain_id": torch.tensor(self.domain_id, dtype=torch.long),
+            "robot_type": self.robot_type,
         }
 
         # Lazily read only the frame at ``idx`` for each view (HDF5 slice) and

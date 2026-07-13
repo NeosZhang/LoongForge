@@ -53,6 +53,7 @@ from loongforge.embodied.model.xvla.xvla_processor import (
     XVLAImageProcessorCore,
     XVLATokenizerCore,
 )
+from loongforge.embodied.model.xvla.model_configuration_xvla import resolve_domain_id
 
 
 class XVLATokenizeTransform(BaseTransform, XVLATokenizerCore):
@@ -144,16 +145,44 @@ class XVLAEncodeImageTransform(BaseTransform, XVLAImageProcessorCore):
         return data
 
 
+class XVLADomainIdTransform(BaseTransform):
+    """Resolve ``robot_type`` into the per-sample ``domain_id``.
+
+    Moves the domain-id generation out of :class:`HDF5VLADataset` without
+    changing the logic. The dataset now passes the raw ``robot_type`` string
+    through in the sample dict; this transform maps it to a domain index via
+    ``DOMAIN_ID_MAP`` and writes a 0-dim ``long`` tensor under ``domain_id``,
+    exactly as the dataset did inline
+    (``_DOMAIN_ID.get(robot_type, 0)`` -> ``torch.tensor(..., torch.long)``).
+    The transient ``robot_type`` key is consumed here so it does not reach the
+    collator. Missing ``robot_type`` maps to 0 (same fallback as before).
+    """
+
+    def __init__(self, robot_type_key: str = "robot_type", training: bool = True):
+        BaseTransform.__init__(self, apply_to=["domain_id"], training=training)
+        self.robot_type_key = robot_type_key
+
+    def apply(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Consume ``robot_type`` and write ``domain_id`` (0-dim long tensor)."""
+        robot_type = data.pop(self.robot_type_key, "")
+        data["domain_id"] = torch.tensor(
+            resolve_domain_id(robot_type), dtype=torch.long
+        )
+        return data
+
+
 @register_transform_builder("xvla")
 def build_xvla_transforms(ctx: TransformBuilderContext):
     """Append XVLA-specific per-sample transforms if model_type is xvla.
 
-    Two transforms are appended in order:
+    Three transforms are appended in order:
     1. XVLAEncodeImageTransform – encode ``observation.images.*`` views into
        ``image_input`` / ``image_mask`` via XVLAProcessor.encode_image.
        No-op when the dataset already provides ``image_input`` (reference path).
     2. XVLATokenizeTransform – tokenize the language instruction into
        ``input_ids`` via XVLAProcessor.encode_language.
+    3. XVLADomainIdTransform – resolve the sample's ``robot_type`` into
+       ``domain_id`` (moved out of ``HDF5VLADataset``).
     """
     transforms: list = []
     model_cfg = ctx.model_cfg
@@ -175,4 +204,5 @@ def build_xvla_transforms(ctx: TransformBuilderContext):
     transforms.append(XVLATokenizeTransform(
         tokenizer_path=tokenizer_path,
     ))
+    transforms.append(XVLADomainIdTransform())
     return transforms

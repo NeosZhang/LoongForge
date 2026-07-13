@@ -31,7 +31,7 @@ from transformers import PreTrainedModel
 from .modeling_florence2 import Florence2ForConditionalGeneration
 from .transformer import SoftPromptedTransformer
 from .action_hub import build_action_space
-from .model_configuration_xvla import XVLAConfig
+from .model_configuration_xvla import XVLAConfig, resolve_domain_id
 from loongforge.embodied.model.registry import register_model
 from loongforge.embodied.model.xvla.xvla_processor import (
     XVLATokenizerCore,
@@ -399,6 +399,7 @@ class XVLAPolicy(torch.nn.Module):
         instructions,
         state=None,
         dataset_stats=None,
+        domain_id=None,
     ) -> np.ndarray:
         """Eval-facing entry point matching the shared ``predict_action`` interface.
 
@@ -466,7 +467,8 @@ class XVLAPolicy(torch.nn.Module):
                 state = state[..., :dim_proprio]
             proprio = state.to(device)
 
-        domain_id = torch.zeros(B, dtype=torch.long, device=device)
+        domain_value = resolve_domain_id(getattr(self.config, "robot_type", ""))
+        domain_id = torch.full((B,), domain_value, dtype=torch.long, device=device) if domain_id is None else domain_id
 
         actions = self.model.generate_actions(
             input_ids=input_ids,

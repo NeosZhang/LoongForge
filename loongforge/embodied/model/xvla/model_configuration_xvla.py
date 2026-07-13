@@ -41,6 +41,70 @@ from typing import Any
 from transformers import PretrainedConfig
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Robot-type -> domain id (single source of truth).
+#
+# Synced 1:1 with the reference X-VLA ``DATA_DOMAIN_ID`` table
+# (datasets/domain_config.py). The domain id selects the
+# ``SoftPromptedTransformer``'s per-domain soft prompts / ``DomainAwareLinear``
+# weights, so it must match the value used when the checkpoint was trained.
+#
+# Kept in the model package (not the data layer) so both the training data
+# pipeline (``HDF5VLADataset``) and the inference path (``XVLAPolicy`` /
+# ``predict_action``) resolve ``domain_id`` from the same table, without the
+# eval path importing ``loongforge.embodied.data``. Unknown robot types
+# fall back to 0.
+# ─────────────────────────────────────────────────────────────────────────────
+DOMAIN_ID_MAP: dict[str, int] = {
+    # fine-tuning domains
+    "Bridge": 0,
+    "RT1": 1,
+    "Calvin": 2,
+    "libero": 3,
+    "widowx-air": 4,
+    "AIR-AGILEX-HQ": 5,
+    "robotwin2_abs_ee": 6,
+    "robotwin2_clean": 6,
+    "robocasa-human": 7,
+    "VLABench": 8,
+    "AGIBOT-challenge": 9,
+    "AIR-AGILEX": 10,
+    "AIRBOT": 18,
+    # pretraining domains
+    "robomind-franka": 11,
+    "robomind-ur": 12,
+    "Droid-Left": 13,
+    "Droid-Right": 14,
+    "AGIBOT": 15,
+    "robomind-agilex": 16,
+    "robomind-franka-dual": 17,
+    # agibot world challenge (reference maps these to 0)
+    "agiworld-on-site-pack": 0,
+    "agiworld-on-site-pack-extra": 0,
+    "agiworld-on-site-conveyor": 0,
+    "agiworld-on-site-conveyor-extra": 0,
+    "agiworld-on-site-restock": 0,
+    "agiworld-on-site-pour": 0,
+    "agiworld-on-site-microwave": 0,
+    "agiworld-on-site-cloth": 0,
+    "agiworld-on-site-cloth-2": 0,
+    # lerobot-sim
+    "lift2": 0,
+    # x2robot
+    "x2robot": 0,
+}
+
+
+def resolve_domain_id(robot_type: str | None) -> int:
+    """Resolve a robot type to its domain id via :data:`DOMAIN_ID_MAP`.
+
+    Mirrors the training-path generation (``_DOMAIN_ID.get(robot_type, 0)``);
+    unknown / empty robot types map to 0.
+    """
+    return int(DOMAIN_ID_MAP.get(robot_type or "", 0))
+
+
+
 def _coerce_to_dict(value: Any) -> Any:
     """Convert dataclass schema instances to plain dicts, pass others through."""
     if is_dataclass(value) and not isinstance(value, type):
@@ -261,6 +325,7 @@ class XVLAConfig(PretrainedConfig):
         action_mode: str = "ee6d",
         use_proprio: bool = True,
         enable_torch_compile: bool = False,
+        robot_type: str = "",
         **kwargs,
     ):
         if florence_config is None:
@@ -287,6 +352,10 @@ class XVLAConfig(PretrainedConfig):
         self.action_mode = action_mode
         self.use_proprio = use_proprio
         self.enable_torch_compile = enable_torch_compile
+        # Embodiment/domain key. Resolved to a domain id via ``DOMAIN_ID_MAP``
+        # at inference time (see ``XVLAPolicy.predict_action``), mirroring the
+        # training path where the dataset maps ``robot_type`` -> domain id.
+        self.robot_type = robot_type
         super().__init__(**kwargs)
 
 
@@ -391,3 +460,7 @@ class XvlaModelConfig:
     real_action_dim: int = 20
 
     enable_torch_compile: bool = False
+
+    # Embodiment/domain key, resolved to a domain id via ``DOMAIN_ID_MAP`` at
+    # inference time (see XVLAConfig.robot_type). Set per benchmark/embodiment.
+    robot_type: str = ""
