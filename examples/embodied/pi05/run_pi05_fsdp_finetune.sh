@@ -108,7 +108,7 @@ LOGGING_ARGS=(
 
 # -- Launch -------------------------------------------------------------------
 echo "========================================================================"
-echo "  LoongForgeVLA pi05 Training (FSDP)"
+echo "  LoongForge pi05 Training (FSDP)"
 echo "  Model:      $MODEL_NAME"
 echo "  GPUs:       $GPUS_PER_NODE x $NNODES nodes"
 echo "  Data:       $DATA_PATH"
