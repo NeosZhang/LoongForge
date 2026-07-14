@@ -248,14 +248,24 @@ class XVLAPolicy(torch.nn.Module):
             # do not trigger a recompile at the tail. The trainer feeds the
             # same per_device_batch_size on every step in this workload, but
             # end-of-epoch tail batches could otherwise differ.
-            self._compiled_model = torch.compile(
+            compiled = torch.compile(
                 self.model,
                 mode="reduce-overhead",
                 fullgraph=False,
                 dynamic=False,
             )
         else:
-            self._compiled_model = self.model
+            compiled = self.model
+        # Hold the (optionally compiled) forward entry WITHOUT registering it as
+        # a submodule. It either *is* self.model or wraps it via
+        # OptimizedModule._orig_mod, so its parameters are already covered by the
+        # "model.*" keys. If assigned as a normal nn.Module attribute, every
+        # parameter would be duplicated in state_dict() under "_compiled_model.*"
+        # (or "_compiled_model._orig_mod.*"), bloating checkpoints and producing
+        # spurious "missing keys" reports on load_pretrained. object.__setattr__
+        # bypasses nn.Module submodule registration; the parameters remain
+        # trainable via the registered "model" submodule.
+        object.__setattr__(self, "_compiled_model", compiled)
         self._processor_path = ""
         self._num_image_views = int(getattr(config, "num_image_views", 3) or 3)
         self._tokenize_transform = None
