@@ -45,8 +45,6 @@
 
 > 🐉 LoongForge is part of Baidu Baige's **Loong** open-source series — named after the traditional Chinese **loong boat (龙舟)**, a symbol of coordinated power and forward momentum.
 
-<img width="2834" height="1160" alt="loongforge-overview-notitle1" src="https://github.com/user-attachments/assets/4bc9d3f2-914c-4c01-91dc-10d22c08e02f" />
-
 **LoongForge** is a unified training framework for **LLMs, VLMs, diffusion, and embodied models**, covering **pre-training**, **continued pre-training**, and **SFT**. Its core LLM/VLM/diffusion stacks are built upon Megatron-LM with deep systemic enhancements across **model coverage**, **training performance**, and **hardware support**, while embodied models are trained on a dedicated torch-native stack — together delivering **significant speedups over mainstream open-source baselines**.
 
 Before going open-source, LoongForge was developed as **AIAK-Training-LLM**, Baidu Baige's training acceleration stack. It has supported production training for enterprise customers across **Education**, **Computer Vision**, and **Embodied AI**, typically delivering **30%~50% speedup over customer baselines**, with the largest production runs reaching **5,000+ XPUs**.
