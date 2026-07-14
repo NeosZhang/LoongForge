@@ -32,9 +32,11 @@ model factory/loader:
   example: PI05ModelFactory in servers/loongforge_policy.py
 
 generic eval policy:
-  RPC payload handling, image view selection, predict_action invocation,
-  action chunk cache, action shape validation, action dim truncation,
-  dataset statistics loading, q99 unnormalization, latency, metadata
+  RPC payload handling, image view selection (primary/wrist up to 2 views),
+  predict_action invocation, action chunk cache, action shape validation,
+  action dim truncation, dataset statistics loading, latency, metadata.
+  Action unnormalization is NOT done here; it is the model's responsibility
+  inside predict_action().
   example: GenericPredictActionPolicy in servers/loongforge_policy.py
 ```
 
@@ -84,7 +86,7 @@ If the user asks for a dry-run, generation test, or re-application test, write g
    - Use `PredictActionModel`, `validate_predict_action_model()`, and `call_predict_action()` to define and test the contract.
    - Accept these output shapes from the model and normalize to `[H, action_dim]`: `[D]`, `[H, D]`, or `[B, H, D]`.
    - Make the model factory handle model-private setup: imports, config registration, checkpoint loading, tokenizer paths, device/dtype, compile flags, random-init, and metadata.
-   - Let `GenericPredictActionPolicy` handle eval-private behavior: RPC payloads, image view selection, chunk caching, action shape validation, q99 unnormalization, latency, request IDs, and response format.
+   - Let `GenericPredictActionPolicy` handle eval-private behavior: RPC payloads, image view selection (extracts `primary`/`head` plus one of `wrist`/`right`/`left`, maximum 2 views), chunk caching, action shape validation, latency, request IDs, and response format. Action unnormalization is the model's responsibility and must happen inside `predict_action()`.
 
 3. Define state and action semantics explicitly.
    - Keep benchmark-native `canonical_obs["state"]` out of the model server unless it is already model-ready.
@@ -92,7 +94,7 @@ If the user asks for a dry-run, generation test, or re-application test, write g
    - If a model consumes state, verify that `model_state` ordering, units, frame, shape, and `dataset_stats["observation.state"]` match training.
    - Record `action_dim`, `state_dim`, `action_horizon`, `max_action_dim`, and `max_state_dim` in YAML.
    - Check whether the model emits raw actions or normalized actions.
-   - If normalized actions require q01/q99 inverse transform, require matching `dataset_statistics_path` and confirm `action.q01` and `action.q99` exist.
+   - If normalized actions require inverse transform (e.g. pi05 q01/q99, or LeRobot mean/std), implement that inside the model's `predict_action()`, not in the generic eval policy.
    - Do not reuse pi05 q01/q99 unnormalization for another model unless the model uses that exact convention.
 
 4. Write YAML configs for all supported benchmarks.
@@ -108,8 +110,9 @@ If the user asks for a dry-run, generation test, or re-application test, write g
 5. Wire server startup only as needed.
    - Reuse existing LoongForge server routing for pi05-style integrations when possible.
    - Add server-manager routing for a new `model.backend` only when an existing server entrypoint cannot serve it.
-   - Ensure health readiness means the model factory has completed and action RPC can start.
+   - Ensure health readiness means the model factory has completed, the warmup `predict_action()` call has run (see below), and action RPC can start.
    - Use reusable health server binding for short repeated smoke runs when local patterns support it.
+   - After model factory build and before health server startup, run a warmup `predict_action()` with a zero-filled dummy image and an empty instruction. This forces all lazy imports (including potential circular-import paths) to complete before the first real episode arrives. The call is wrapped in a try/except so a warmup exception does not abort startup, but the model must not enter a corrupted state from a warmup call.
    - Before running the smoke matrix, check for leftover orchestrator/policy-server processes and occupied server ports.
    - Keep benchmark client Python env and model server Python env explicit. Run the top-level orchestrator with the benchmark/simulator conda environment, while YAML `server.python` starts the model server environment.
 
@@ -163,7 +166,7 @@ Use pi05 as the canonical example of the shared `predict_action` architecture:
 - Generic eval policy: `GenericPredictActionPolicy` in `loongforge/embodied/eval/servers/loongforge_policy.py`.
 - Model factory: `PI05ModelFactory` in `loongforge/embodied/eval/servers/loongforge_policy.py`.
 - Backward-compatible wrapper: `LoongForgePI05Policy`, which should not be the preferred pattern for new integrations.
-- Server entrypoint: `loongforge/embodied/eval/servers/loongforge_server.py` builds the factory output and wraps it in `GenericPredictActionPolicy`.
+- Server entrypoint: `loongforge/embodied/eval/servers/loongforge_server.py` builds the factory output, runs `_warmup_model()` to resolve lazy imports, wraps in `GenericPredictActionPolicy`, then starts the health server.
 - Routing: `loongforge/embodied/eval/orchestrator/server_manager.py` maps `loongforge`, `pi05`, and `loongforge_pi05` to the LoongForge server.
 - Adapter state boundary: benchmark adapters provide `canonical_obs["state"]` for native structured state and `canonical_obs["model_state"]` for model-ready state; runners forward only `model_state` as RPC payload `state`.
 - YAML configs: `examples/embodied/pi05/eval/configs/<benchmark>/*.yaml`.

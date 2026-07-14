@@ -46,6 +46,24 @@ class HealthHandler(BaseHTTPRequestHandler):
         return
 
 
+def _warmup_model(model_spec: Any) -> None:
+    """Run a single dummy predict_action call to trigger all lazy imports before serving."""
+    import numpy as np
+
+    logging.info("Warming up model to resolve lazy imports...")
+    try:
+        dummy_image = np.zeros((224, 224, 3), dtype=np.uint8)
+        model_spec.model.predict_action(
+            images=[[dummy_image]],
+            instructions=["warmup"],
+            state=None,
+            dataset_stats=None,
+        )
+        logging.info("Model warmup complete.")
+    except Exception as exc:
+        logging.warning("Model warmup call raised an exception (ignored): %s", exc)
+
+
 def start_health_server(port: int, ckpt_path: str) -> None:
     """Run start_health_server."""
     HealthHandler.ckpt_path = ckpt_path
@@ -124,22 +142,24 @@ def main() -> None:
         raise SystemExit("checkpoint must be set by model.ckpt_path in YAML unless model.random_init is true")
 
     logging.basicConfig(level=logging.INFO, force=True)
-    model_spec = PI05ModelFactory.build(
-        ckpt_path=str(Path(args.ckpt_path)),
-        loongforge_root=args.loongforge_root,
-        device=args.device,
-        use_bf16=args.use_bf16,
-        dataset_statistics_path=args.dataset_statistics_path,
-        tokenizer_path=args.tokenizer_path,
-        action_dim=args.action_dim,
-        state_dim=args.state_dim,
-        action_horizon=args.action_horizon,
-        max_action_dim=args.max_action_dim,
-        max_state_dim=args.max_state_dim,
-        compile_model=args.compile_model,
-        compile_mode=args.compile_mode,
-        random_init=args.random_init,
-    )
+    if args.model_type == "pi05":
+        model_spec = PI05ModelFactory.build(
+            ckpt_path=str(Path(args.ckpt_path)),
+            loongforge_root=args.loongforge_root,
+            device=args.device,
+            use_bf16=args.use_bf16,
+            dataset_statistics_path=args.dataset_statistics_path,
+            tokenizer_path=args.tokenizer_path,
+            action_dim=args.action_dim,
+            state_dim=args.state_dim,
+            action_horizon=args.action_horizon,
+            max_action_dim=args.max_action_dim,
+            max_state_dim=args.max_state_dim,
+            compile_model=args.compile_model,
+            compile_mode=args.compile_mode,
+            random_init=args.random_init,
+        )
+    _warmup_model(model_spec)
     policy = GenericPredictActionPolicy(
         model=model_spec.model,
         metadata=model_spec.metadata,

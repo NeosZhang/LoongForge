@@ -40,13 +40,12 @@ class GenericPredictActionPolicy:
         """Initialize the generic predict_action eval policy."""
         self._model = model
         self._dataset_stats = self._load_dataset_stats(dataset_statistics_path)
-        self._action_stats = self._extract_action_stats(self._dataset_stats)
         self._chunk_cache: Dict[str, tuple[int, np.ndarray]] = {}
         self._request_id_prefix = request_id_prefix
         self._metadata = {
             "protocol_version": PROTOCOL_VERSION,
             "action_dim": int(action_dim),
-            "action_unnormalization": self._action_unnormalization_mode(),
+            "action_unnormalization": "model_predict_action",
             "supports_preempt": False,
             **metadata,
         }
@@ -96,7 +95,6 @@ class GenericPredictActionPolicy:
             action_dim=int(self._metadata["action_dim"]),
         )
         inference_latency_ms = (time.perf_counter() - start_time) * 1000.0
-        chunk = self._unnormalize_actions(chunk)
         if not disable_action_cache:
             self._chunk_cache[episode_id] = (0, chunk)
         return {
@@ -108,35 +106,6 @@ class GenericPredictActionPolicy:
     def _request_id(self, episode_id: str, episode_step: int) -> str:
         """Build a stable request id for eval responses."""
         return f"{self._request_id_prefix}-{episode_id}-{episode_step}"
-
-    def _unnormalize_actions(self, actions: np.ndarray) -> np.ndarray:
-        """Apply eval-side action unnormalization when dataset statistics are present."""
-        if not self._action_stats:
-            return actions
-        q01 = np.asarray(self._action_stats["q01"], dtype=np.float32)
-        q99 = np.asarray(self._action_stats["q99"], dtype=np.float32)
-        dim = min(actions.shape[-1], q01.shape[-1])
-        out = actions.copy()
-        out[..., :dim] = (out[..., :dim] + 1.0) / 2.0 * (q99[:dim] - q01[:dim]) + q01[:dim]
-        return out
-
-    def _action_unnormalization_mode(self) -> str:
-        """Describe whether eval-side action unnormalization is active."""
-        if self._action_stats and "q01" in self._action_stats and "q99" in self._action_stats:
-            return "q99"
-        return "none"
-
-    @staticmethod
-    def _extract_action_stats(dataset_stats: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Extract action statistics used by eval-side unnormalization."""
-        if not dataset_stats:
-            return None
-        stats = dataset_stats.get("action")
-        if not isinstance(stats, dict):
-            return None
-        if "q01" not in stats or "q99" not in stats:
-            raise ValueError("action unnormalization requires action.q01 and action.q99")
-        return stats
 
     @staticmethod
     def _build_image_input(images: Dict[str, np.ndarray]) -> list[np.ndarray]:

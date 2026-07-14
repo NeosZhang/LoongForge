@@ -225,6 +225,23 @@ def tokenize_prompts(
     return {"input_ids": encoded["input_ids"], "attention_mask": encoded["attention_mask"]}
 
 
+def _q99_unnormalize_actions(actions: torch.Tensor, action_stats: Optional[dict]) -> torch.Tensor:
+    """Unnormalize PI05 quantile-normalized actions with dataset action stats."""
+    if action_stats is None:
+        return actions
+    if "q01" not in action_stats or "q99" not in action_stats:
+        raise ValueError(
+            "PI05 is configured for quantile action unnormalization and requires "
+            "dataset_stats['action'].q01 and q99"
+        )
+    q01 = torch.as_tensor(action_stats["q01"], dtype=actions.dtype, device=actions.device)
+    q99 = torch.as_tensor(action_stats["q99"], dtype=actions.dtype, device=actions.device)
+    dim = min(actions.shape[-1], q01.shape[-1])
+    out = actions.clone()
+    out[..., :dim] = (out[..., :dim] + 1.0) / 2.0 * (q99[:dim] - q01[:dim]) + q01[:dim]
+    return out
+
+
 def build_tokenizer(tokenizer_name: str, local_files_only: bool = True):
     """Build a HuggingFace tokenizer from the given name or path."""
     if not tokenizer_name:
@@ -907,7 +924,10 @@ class PI05Policy(nn.Module):
         tokens = tok["input_ids"].to(device)
         masks = tok["attention_mask"].bool().to(device)
 
-        return self.model.sample_actions(images_list, img_masks, tokens, masks).cpu().numpy()
+        actions = self.model.sample_actions(images_list, img_masks, tokens, masks)
+        action_stats = convert_stats(dataset_stats.get("action")) if dataset_stats else None
+        actions = _q99_unnormalize_actions(actions, action_stats)
+        return actions.cpu().numpy()
 
     @classmethod
     def from_pretrained(cls, model_cfg) -> "PI05Policy":

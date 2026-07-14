@@ -30,10 +30,10 @@ def predict_action(images, instructions, state=None, dataset_stats=None):
 
 参数含义：
 
-- `images`：batch 后的图像输入。当前 generic policy 会按 benchmark canonical image views 选择 primary/wrist 等视角，并传给模型。
+- `images`：batch 后的图像输入。generic policy 会从 canonical image views 中提取 `primary`（或 `head`）作为主视角，以及 `wrist`（或 `right`/`left`）作为腕部视角，最多构成 `[primary, wrist]` 的列表传给模型。若 benchmark 只有一个视角，则只传 `[primary]`。
 - `instructions`：batch 后的语言指令列表。
 - `state`：可选模型状态输入，来自 adapter 产出的 `model_state`。当前 PI05 smoke 路径默认传 `None`。
-- `dataset_stats`：可选 dataset statistics，用于模型侧或 eval 侧执行归一化/反归一化相关逻辑。
+- `dataset_stats`：可选 dataset statistics，由 eval 侧加载后透传给模型；模型如需 state 归一化、action 反归一化或其他模型私有后处理，应在自己的 `predict_action()` 内部消费。
 
 注意：接口参数名保持 `state`，因为这是模型 `predict_action()` 的通用语义；adapter 侧字段叫 `model_state`，表示“准备传给模型的 state”。runner 会做如下转换：
 
@@ -159,6 +159,8 @@ class KwargsModel:
 - 如果输出最后一维小于 `action_dim`，会报 `ValueError`。
 - 如果输出最后一维大于 `action_dim`，会裁剪到前 `action_dim` 维。
 
+`GenericPredictActionPolicy` 不再在模型外部执行 action 反归一化。模型 `predict_action()` 应返回当前 eval action adapter 可消费的动作；如果模型输出是 normalized action，应在 `predict_action()` 内部根据模型配置的 normalization mode 使用 `dataset_stats` 完成对应反归一化。例如 PI05 当前 `ACTION` 使用 quantile normalization，因此需要 `dataset_stats["action"].q01/q99`；其他 LeRobot 风格模型可能使用 `mean/std` 或 `min/max`。
+
 例如 benchmark 需要 7D action：
 
 ```python
@@ -281,6 +283,7 @@ PY
 - 如果使用 `model_state`，其语义、维度、顺序和 `dataset_stats["observation.state"]` 必须与模型训练数据一致。
 - model factory 只处理模型私有加载逻辑，不清理 benchmark-native dict state。
 - benchmark-native observation/state 结构应在 adapter/payload 层处理。
+- `predict_action()` 能接受 warmup 调用：`predict_action(images=[[zeros_224x224]], instructions=["warmup"], state=None, dataset_stats=None)`。server 在 health 启动前会执行一次此调用以触发所有延迟 import，异常会被 warning 忽略但不应导致模型状态损坏。
 
 ## 9. 常见错误
 

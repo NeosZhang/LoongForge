@@ -17,7 +17,7 @@ python -m loongforge.embodied.eval.orchestrator.run --config <config.yaml>
 
 YAML 中：
 
-- `benchmark.name` 选择 benchmark，例如 `libero`、`calvin`、`simplerenv`、`robotwin`。
+- `benchmark.name` 选择 benchmark，例如 `libero`、`calvin`、`simplerenv`、`robotwin`、`maniskill`。
 - `model.backend` 选择模型后端，例如 `loongforge`、`mock`。
 - `server.python` 指定模型 server 使用的 Python 环境。
 - `run.output_dir` 指定评测结果基准目录；统一入口默认会为每次运行创建时间戳子目录，避免复用旧结果。
@@ -63,11 +63,12 @@ LoongForge 相关逻辑集中在 `loongforge/embodied/eval/servers`，不修改 
 - 根据 YAML 构造 pi05 policy。
 - 支持从 checkpoint 加载权重。
 - 支持 `model.random_init: true`，用于不加载权重的链路验证。
+- server 启动后、health 上线前执行一次 dummy `_warmup_model()` 调用，确保所有延迟 import 在首个 episode 请求前完成，避免循环导入竞态。
 - 将统一 observation schema 转换为 pi05 输入。
 - 执行 pi05 inference，返回 action chunk。
-- 按 LoongForge pi05 的 q99 规则做 action 反归一化。
+- pi05 action 反归一化由模型 `predict_action()` 内部负责，eval 侧不再额外执行。
 
-pi05 action 反归一化公式：
+pi05 action 反归一化公式（模型内部实现，仅供参考）：
 
 ```text
 norm = 2 * (x - q01) / (q99 - q01) - 1
@@ -81,34 +82,36 @@ x = (norm + 1) / 2 * (q99 - q01) + q01
 配置和报告都按模型、benchmark、单次运行组织：
 
 ```text
-eval/
-  configs/
-    <model>/
-      <benchmark>/
-        <run_name>.yaml
-  reports/
-    <model>/
-      <benchmark>/
-        <yyyymmdd_hhmmss>_<run_name>/
-          policy_server.log
-          results.jsonl
-          summary.csv
-          suite_summary.csv
-          artifacts/
-            ... benchmark-specific trace / replay / video / official logs ...
+examples/embodied/<model>/eval/configs/
+  <benchmark>/
+    <run_name>.yaml
+
+loongforge/embodied/eval/reports/
+  <model>/
+    <benchmark>/
+      <yyyymmdd_hhmmss>_<run_name>/
+        policy_server.log
+        results.jsonl
+        summary.csv
+        suite_summary.csv
+        artifacts/
+          ... benchmark-specific trace / replay / video / official logs ...
 ```
 
 示例：
 
 ```text
 examples/embodied/pi05/eval/configs/libero/smoke_steps10.yaml
-reports/pi05/libero/<timestamp>_smoke_steps10/
+loongforge/embodied/eval/reports/pi05/libero/<timestamp>_smoke_steps10/
 
 examples/embodied/pi05/eval/configs/simplerenv/eggplant_300step.yaml
-reports/pi05/simplerenv/<timestamp>_eggplant_300step/
+loongforge/embodied/eval/reports/pi05/simplerenv/<timestamp>_eggplant_300step/
 
 examples/embodied/pi05/eval/configs/robotwin/random_init_5step.yaml
-reports/pi05/robotwin/<timestamp>_random_init_5step/
+loongforge/embodied/eval/reports/pi05/robotwin/<timestamp>_random_init_5step/
+
+examples/embodied/pi05/eval/configs/maniskill/pick_cube_20step.yaml
+loongforge/embodied/eval/reports/pi05/maniskill/<timestamp>_pick_cube_20step/
 ```
 
 `policy_server.log` 保留在 run 根目录。benchmark 相关产物统一放到 `artifacts/` 下，内部层级由 runner 按 benchmark 特性组织。RoboTwin 运行时生成的 `worker_files/` 不作为最终报告保留，只保留归档后的 official log、deploy config、`_result.txt`、bridge `trace.json` 和可选 `mp4` 视频。

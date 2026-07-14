@@ -1,7 +1,24 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared predict_action interface helpers for embodied eval model adapters."""
+"""Shared predict_action interface helpers for embodied eval model adapters.
+
+A model that uses the generic eval policy should implement
+``predict_action(images, instructions, state=None, dataset_stats=None)`` with
+these responsibilities:
+
+- Accept batched eval images and instructions.
+- Accept optional model-ready state from the benchmark adapter.
+- Accept optional dataset statistics passed through by eval.
+- Apply any model-specific preprocessing needed before inference.
+- Apply model-specific state normalization when the model consumes state.
+- Apply model-specific action unnormalization when the model emits normalized actions.
+- Return an action chunk in the action convention expected by the benchmark adapter.
+
+This module only validates the interface and normalizes output shape. It does
+not apply q01/q99, mean/std, min/max, or other model-specific normalization
+rules; those belong inside the model's ``predict_action`` implementation.
+"""
 
 from __future__ import annotations
 
@@ -22,7 +39,11 @@ class PredictActionModel(Protocol):
         state: Optional[Any] = None,
         dataset_stats: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        """Return an action chunk for batched images and instructions."""
+        """Return an adapter-ready action chunk for batched model inputs.
+
+        Implementations may use ``dataset_stats`` for their own normalization or
+        unnormalization logic; the generic caller only passes it through.
+        """
 
 
 def validate_predict_action_model(model: Any) -> None:

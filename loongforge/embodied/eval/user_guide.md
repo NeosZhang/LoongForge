@@ -34,9 +34,8 @@ flowchart LR
     J --> K[WebSocket + msgpack-numpy RPC]
     K --> H
     H --> S[Model factory / loader]
-    S --> L[model.predict_action]
-    L --> M[Action q99 unnormalization]
-    M --> K
+    S --> L[model.predict_action\nmodel-owned normalization / unnormalization]
+    L --> K
     K --> N[Benchmark action adapter]
     N --> O[Environment step]
     O --> P[results / trace / replay / official logs]
@@ -50,9 +49,9 @@ flowchart LR
 4. runner 通过 WebSocket + msgpack-numpy RPC 发给 policy server；benchmark-native 结构化状态只留在 adapter/trace 侧，模型 server 只接收 `model_state`。benchmark 侧不直接 import 或修改 LoongForge 模型代码。
 5. LoongForge policy server 根据 YAML 选择 model factory，factory 负责 import 模型、注册模型私有 config、加载 checkpoint 或按 `model.random_init: true` 随机初始化，并返回实现统一 `predict_action()` 的模型实例。
 6. `GenericPredictActionPolicy` 负责 eval RPC、image view 整理、action chunk cache、latency、metadata、action shape 校验和 action dim 裁剪，然后调用 `model.predict_action(images, instructions, state=model_state, dataset_stats=dataset_stats)`。
-7. 模型输出 normalized action chunk 后，server 按 LoongForge `dataset_statistics.json["action"]["q01"/"q99"]` 执行 q99 反归一化。benchmark-native dict state 不在 model factory 中兜底处理；如需给模型传 state，应由对应 benchmark adapter 产出已规整的 `model_state`。
-8. 反归一化后的 action 返回 benchmark client，再由 benchmark action adapter 转成具体环境需要的动作格式，例如 LIBERO/SimplerEnv/ManiSkill 的 7D action 或 RoboTwin 的 14D bimanual action。
-9. 环境执行 step 后，runner 记录 episode 结果、trace、replay 或 RoboTwin official 日志。policy server 日志独立写入 `server.log`。
+7. 模型在自己的 `predict_action()` 内部决定是否消费 `dataset_stats`，并负责模型私有的 state 归一化、action 反归一化或其他后处理。benchmark-native dict state 不在 model factory 中兜底处理；如需给模型传 state，应由对应 benchmark adapter 产出已规整的 `model_state`。
+8. `predict_action()` 返回的 action chunk 返回 benchmark client，再由 benchmark action adapter 转成具体环境需要的动作格式，例如 LIBERO/SimplerEnv/ManiSkill 的 7D action 或 RoboTwin 的 14D bimanual action。
+9. 环境执行 step 后，runner 记录 episode 结果、trace、replay 或 RoboTwin official 日志。policy server 日志独立写入 `policy_server.log`（YAML 字段 `server.log`）。
 
 ## 2. 已支持内容
 
@@ -65,7 +64,7 @@ flowchart LR
 | SimplerEnv rollout | 已接入 Bridge tasks、Vulkan runtime、trace/GIF 输出和固定小动作 sanity；当前模型结果仅作 smoke/debug |
 | RoboTwin official runner | 已接入 YAML 入口；random-init 14D pi05 已跑通 5-step official episode，正式评测需要 14D RoboTwin pi05 权重 |
 | ManiSkill runner | 已接入 YAML 入口和 PickCube 7D 单臂 smoke 配置；正式评测需要 ManiSkill-compatible checkpoint 与 stats |
-| action q99 反归一化 | 已按 LoongForge pi05 规范实现 |
+| action 反归一化 | 由模型 `predict_action()` 内部负责（pi05 使用 q99，其他模型可能不同）；eval 侧通过 `dataset_statistics_path` 将 stats 透传给模型 |
 | replay GIF / trace / summary 输出 | 已支持；磁盘紧张时可关闭 `run.save_replay` 和 `run.save_trace` |
 
 ## 3. 环境要求
@@ -136,7 +135,7 @@ timeouts:
 - `benchmark.name` 决定 runner，目前支持 `libero`、`calvin`、`simplerenv`、`robotwin`、`maniskill`。
 - `model.backend` 使用 `loongforge` 或 `mock`。
 - `model.ckpt_path` 可以是包含 `model.safetensors` 的目录，也可以直接指向权重文件。
-- `model.dataset_statistics_path` 用于 LoongForge pi05 action q99 反归一化。
+- `model.dataset_statistics_path` 用于 LoongForge pi05 action 反归一化（由模型 `predict_action()` 内部消费，eval 侧只做透传）。
 - `server.python` 指向 LoongForge server 环境。
 - `run.output_dir` 在 YAML 中写基准 run tag 目录；统一入口默认会在运行时生成时间戳目录，避免复用旧 `results.jsonl`。
 - 磁盘紧张或只做接口 smoke 时，可设置 `run.save_replay: false`、`run.save_trace: false`，只保留 `results.jsonl`、`summary.csv`、`suite_summary.csv` 和 `policy_server.log`。
@@ -287,21 +286,20 @@ RoboTwin 会把 official 日志、deploy config、`_result.txt`、bridge `trace.
 配置和报告都按模型、benchmark、单次运行组织。后续新增 benchmark 时也必须沿用这个标准，不要再把不同 benchmark 的配置或产物平铺在同一层。
 
 ```text
-eval/
-  configs/
-    <model>/
-      <benchmark>/
-        <run_name>.yaml
-  reports/
-    <model>/
-      <benchmark>/
-        <run_name>/
-          policy_server.log
-          results.jsonl
-          summary.csv
-          suite_summary.csv
-          artifacts/
-            ... benchmark-specific trace / replay / video / official logs ...
+examples/embodied/<model>/eval/configs/
+  <benchmark>/
+    <run_name>.yaml
+
+loongforge/embodied/eval/reports/
+  <model>/
+    <benchmark>/
+      <run_name>/
+        policy_server.log
+        results.jsonl
+        summary.csv
+        suite_summary.csv
+        artifacts/
+          ... benchmark-specific trace / replay / video / official logs ...
 ```
 
 YAML 中的 `run.output_dir` 应写到稳定 run tag 目录，例如 `reports/pi05/robotwin/random_init_5step`。统一入口默认启用 `run.timestamped_output: true`，实际运行时会创建 `<yyyymmdd_hhmmss>_<run_tag>` 目录。`reports/` 是本地运行产物，不随代码提交。如需复用固定目录调试，可显式设置 `run.timestamped_output: false`。
@@ -356,7 +354,7 @@ factory 只负责模型私有逻辑：import、config/tokenizer/processor、chec
 
 6. 跑 smoke test。
 
-benchmark client 必须运行在对应 conda 环境；model server 使用模型自己的 server 环境。至少验证 server health、WebSocket RPC、`predict_action()` action shape、action dim、dataset stats 反归一化、结果文件写入。对 SAPIEN 类 benchmark 还要确认 Vulkan ICD。
+benchmark client 必须运行在对应 conda 环境；model server 使用模型自己的 server 环境。至少验证 server health、WebSocket RPC、`predict_action()` action shape、action dim、模型侧 dataset stats 处理、结果文件写入。对 SAPIEN 类 benchmark 还要确认 Vulkan ICD。
 
 ### 12.2 state 边界约定
 
