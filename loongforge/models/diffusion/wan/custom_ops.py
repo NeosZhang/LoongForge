@@ -66,7 +66,7 @@ def _rotary_interleaved_kernel(
     tl.store(OUT_ptr, out.to(tl.float32), mask=seq_mask & k_mask)
 
 
-def apply_rotary_interleaved(
+def _apply_rotary_interleaved(
     x: torch.Tensor,
     cos: torch.Tensor,
     sin: torch.Tensor,
@@ -117,3 +117,32 @@ def apply_rotary_interleaved(
             num_stages=1,
         )
     return output
+
+
+class _FusedWanRope(torch.autograd.Function):
+    """Autograd wrapper around the fused interleaved-RoPE Triton kernel.
+
+    Wraps :func:`_apply_rotary_interleaved` so that gradients propagate back
+    through the fused kernel. The interleaved rotary is a per-pair rotation, so
+    the Jacobian w.r.t. ``x`` is the same forward kernel evaluated with
+    ``sin`` negated. ``cos``/``sin`` are position tables and do not
+    receive gradients.
+    """
+
+    @staticmethod
+    def forward(ctx, x, cos, sin):
+        """Apply interleaved rotary embedding to ``x`` and save cos/sin for backward."""
+        ctx.save_for_backward(cos, sin)
+        return _apply_rotary_interleaved(x, cos, sin)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """Compute the gradient by applying the forward kernel with ``sin`` negated."""
+        cos, sin = ctx.saved_tensors
+        grad_input = _apply_rotary_interleaved(grad_output.contiguous(), cos, -sin)
+        return grad_input, None, None
+
+
+def apply_rotary_interleaved(x, cos, sin, **kwargs):
+    """Apply fused interleaved RoPE with autograd support."""
+    return _FusedWanRope.apply(x, cos, sin)
