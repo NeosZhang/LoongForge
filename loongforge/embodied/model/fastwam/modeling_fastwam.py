@@ -40,8 +40,7 @@ class FastWAMPolicy(nn.Module):
         super().__init__()
         self.core = core
         self.dit = getattr(core, "dit", None)
-        self._log_step = 0
-        self._log_interval = 1  # log every step; matches args.log_interval default
+
 
     @classmethod
     def from_pretrained(cls, cfg: Any) -> "FastWAMPolicy":
@@ -105,16 +104,6 @@ class FastWAMPolicy(nn.Module):
                     output[key] = value.detach()
                 else:
                     output[key] = torch.tensor(float(value), device=loss.device)
-
-        # Log sub-losses directly here since the trainer only prints action_loss.
-        self._log_step += 1
-        if self._log_step % self._log_interval == 0:
-            parts = [f"loss={loss.detach().item():.4f}"]
-            for k, v in output.items():
-                if k != "action_loss":
-                    val = v.item() if torch.is_tensor(v) else float(v)
-                    parts.append(f"{k}={val:.4f}")
-            logger.info("[fastwam] step=%d  %s", self._log_step, "  ".join(parts))
 
         return loss, {k: v for k, v in output.items() if k != "action_loss"}
 
