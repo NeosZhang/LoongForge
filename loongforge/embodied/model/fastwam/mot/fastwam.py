@@ -75,10 +75,6 @@ class FastWAM(torch.nn.Module):
         self.proprio_dim = None if proprio_dim is None else int(proprio_dim)
         if self.proprio_dim is not None:
             self.proprio_encoder = nn.Linear(self.proprio_dim, self.text_dim).to(torch_dtype)
-            with torch.random.fork_rng():  # [DEBUG] fix proprio_encoder init for alignment
-                torch.manual_seed(42)
-                nn.init.normal_(self.proprio_encoder.weight, mean=0, std=0.02)
-                nn.init.zeros_(self.proprio_encoder.bias)
         else:
             self.proprio_encoder = None
 
@@ -400,10 +396,6 @@ class FastWAM(torch.nn.Module):
             )
         context = context.to(device=self.device, dtype=self.torch_dtype, non_blocking=True)
         context_mask = context_mask.to(device=self.device, dtype=torch.bool, non_blocking=True)
-        import logging as _lctx
-        _lctx.getLogger(__name__).info(
-            f"[context-debug] raw_text_context: mean={context.float().mean():.8f} shape={tuple(context.shape)}"
-        )
         if self.proprio_encoder is not None:
             if proprio is None:
                 raise ValueError("`sample['proprio']` is required when `proprio_dim` is enabled.")
@@ -508,21 +500,6 @@ class FastWAM(torch.nn.Module):
 
     def training_loss(self, sample, tiled: bool = False):
         """Compute the combined video and action training loss."""
-        import logging as _log
-        if self.proprio_encoder is not None:
-            _log.getLogger(__name__).info(
-                f"[proprio-encoder-fingerprint] weight.mean={float(self.proprio_encoder.weight.float().mean()):.8f} "
-                f"weight.std={float(self.proprio_encoder.weight.float().std()):.8f} "
-                f"bias.mean={float(self.proprio_encoder.bias.float().mean()):.8f}"
-            )
-        # [DEBUG] video_expert weight fingerprint
-        _log.getLogger(__name__).info(
-            f"[video-expert-fingerprint] "
-            f"blocks[0].modulation.mean={float(self.video_expert.blocks[0].modulation.float().mean()):.8f} "
-            f"blocks[0].self_attn.q.weight.mean="
-            f"{float(self.video_expert.blocks[0].self_attn.q.weight.float().mean()):.8f}"
-        )
-        torch.manual_seed(1234)  # [DEBUG] fix noise for loss alignment verification
         inputs = self.build_inputs(sample, tiled=tiled)
         input_latents = inputs["input_latents"]
         batch_size = input_latents.shape[0]
@@ -531,20 +508,6 @@ class FastWAM(torch.nn.Module):
         action = inputs["action"]
         action_is_pad = inputs["action_is_pad"]
         image_is_pad = inputs["image_is_pad"]
-
-        import logging as _log2
-        _log2.getLogger(__name__).info(
-            f"[tensor-debug] input_latents: mean={input_latents.float().mean():.6f} "
-            f"std={input_latents.float().std():.6f} shape={tuple(input_latents.shape)} "
-            f"dtype={input_latents.dtype}"
-        )
-        _log2.getLogger(__name__).info(
-            f"[tensor-debug] action: mean={action.float().mean():.6f} "
-            f"std={action.float().std():.6f} shape={tuple(action.shape)}"
-        )
-        _log2.getLogger(__name__).info(
-            f"[tensor-debug] context: mean={context.float().mean():.6f} shape={tuple(context.shape)}"
-        )
 
         noise_video = torch.randn_like(input_latents)
         timestep_video = self.train_video_scheduler.sample_training_t(
@@ -567,18 +530,6 @@ class FastWAM(torch.nn.Module):
         noisy_action = self.train_action_scheduler.add_noise(action, noise_action, timestep_action)
         target_action = self.train_action_scheduler.training_target(action, noise_action, timestep_action)
 
-        _log2.getLogger(__name__).info(
-            f"[tensor-debug] noise_video: mean={noise_video.float().mean():.6f} t_video={float(timestep_video[0]):.4f}"
-        )
-        _log2.getLogger(__name__).info(
-            f"[tensor-debug] noise_action: mean={noise_action.float().mean():.6f} "
-            f"t_action={float(timestep_action[0]):.4f}"
-        )
-        _log2.getLogger(__name__).info(
-            f"[tensor-debug] target_video: mean={target_video.float().mean():.6f} "
-            f"target_action: mean={target_action.float().mean():.6f}"
-        )
-
         video_pre = self.video_expert.pre_dit(
             x=latents,
             timestep=timestep_video,
@@ -598,11 +549,6 @@ class FastWAM(torch.nn.Module):
         video_tokens = video_pre["tokens"]
         action_tokens = action_pre["tokens"]
 
-        import logging as _log_tok
-        _log_tok.getLogger(__name__).info(
-            f"[pre-dit-debug] video_tokens: mean={video_tokens.float().mean():.6f} shape={tuple(video_tokens.shape)} "
-            f"action_tokens: mean={action_tokens.float().mean():.6f}"
-        )
 
         attention_mask = self._build_mot_attention_mask(
             video_seq_len=video_tokens.shape[1],
@@ -640,11 +586,6 @@ class FastWAM(torch.nn.Module):
 
         pred_action = self.action_expert.post_dit(tokens_out["action"], action_pre)
 
-        import logging as _log_pred
-        _log_pred.getLogger(__name__).info(
-            f"[post-dit-debug] pred_video: mean={pred_video.float().mean():.6f} "
-            f"tokens_out_video_mean={tokens_out['video'].float().mean():.6f}"
-        )
 
         include_initial_video_step = inputs["first_frame_latents"] is None
         if inputs["first_frame_latents"] is not None:
@@ -684,15 +625,6 @@ class FastWAM(torch.nn.Module):
             "loss_video": self.loss_lambda_video * float(loss_video.detach().item()),
             "loss_action": self.loss_lambda_action * float(loss_action.detach().item()),
         }
-        import logging as _log
-        _log.getLogger(__name__).info(
-            f"[loss-fingerprint] step=fixed "
-            f"loss={float(loss_total):.6f} "
-            f"loss_video={float(loss_video):.6f} "
-            f"loss_action={float(loss_action):.6f} "
-            f"t_video={float(timestep_video[0]):.6f} "
-            f"t_action={float(timestep_action[0]):.6f}"
-        )
         return loss_total, loss_dict
 
     @torch.no_grad()
