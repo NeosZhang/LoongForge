@@ -18,15 +18,11 @@ model:
   backend: loongforge
   model_type: pi05
   name: loongforge-pi05-simplerenv-stack-cube
-  ckpt_path: /ssd1/sunyuehang/pi05_libero_base
-  dataset_statistics_path: ""
-  tokenizer_name: /ssd1/huangyi/model/paligemma-3b-pt-224
   action_dim: 7
   state_dim: 7
   action_horizon: 50
   max_action_dim: 32
   max_state_dim: 32
-  use_bf16: false
   compile_model: false
 
 server:
@@ -36,10 +32,14 @@ server:
   python: /workspace/miniconda3/envs/loongforge/bin/python
   log: /workspace/LoongForge-VLA/loongforge/embodied/eval/reports/pi05/simplerenv/stack_cube_60step/policy_server.log
   start_timeout_sec: 900
+  ckpt_path: /ssd1/sunyuehang/pi05_libero_base
+  dataset_statistics_path: ""
+  loongforge_root: /workspace/LoongForge-VLA
+  tokenizer_path: /ssd1/huangyi/model/paligemma-3b-pt-224
+  use_bf16: false
 
 env:
   eval_root: /workspace/LoongForge-VLA/loongforge/embodied/eval
-  loongforge_root: /workspace/LoongForge-VLA
   simplerenv_root: /workspace/SimplerEnv
   ld_library_path: /ssd1/opt/nvidia_lib
   nvidia_lib_dir: /ssd1/opt/nvidia_lib

@@ -2,14 +2,11 @@ model:
   backend: loongforge
   model_type: pi05
   name: pi05
-  ckpt_path: /path/to/pi05/checkpoint/steps_10
-  dataset_statistics_path: /path/to/pi05/checkpoint/steps_10/dataset_statistics.json
   action_dim: 7
   state_dim: 7
   action_horizon: 50
   max_action_dim: 32
   max_state_dim: 32
-  use_bf16: true
 
 benchmark:
   name: maniskill
@@ -32,6 +29,9 @@ server:
   health_port: 10094
   start_timeout_sec: 180
   log: /workspace/LoongForge-VLA/loongforge/embodied/eval/reports/pi05/maniskill/pick_cube_20step/policy_server.log
+  ckpt_path: /path/to/pi05/checkpoint/steps_10
+  loongforge_root: /workspace/LoongForge-VLA
+  use_bf16: true
 
 timeouts:
   policy_call_ms: 20000
@@ -49,4 +49,3 @@ run:
   cfg_scale: 1.5
 
 env:
-  loongforge_root: /workspace/LoongForge-VLA

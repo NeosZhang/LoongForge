@@ -27,6 +27,7 @@ server:
   health_port: 12104
   start_timeout_sec: 60
   log: /ssd1/sunyuehang/LoongForge-VLA/loongforge/embodied/eval/reports/mock/maniskill/mock_state_smoke/policy_server.log
+  loongforge_root: /ssd1/sunyuehang/LoongForge-VLA
 
 timeouts:
   policy_call_ms: 20000
@@ -44,5 +45,4 @@ run:
   cfg_scale: 1.0
 
 env:
-  loongforge_root: /ssd1/sunyuehang/LoongForge-VLA
   eval_root: /ssd1/sunyuehang/LoongForge-VLA/loongforge/embodied/eval
