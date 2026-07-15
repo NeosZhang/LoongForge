@@ -1305,8 +1305,8 @@ class WanVideoVAE(nn.Module):
         return values
 
 
-    def single_encode(self, video, device):
-        """Encode one video tensor on the target device."""
+    def _encode_on_device(self, video, device):
+        """Encode video tensor(s) on the target device."""
         video = video.to(device)
         x = self.model.encode(video, self.scale)
         return x
@@ -1321,28 +1321,11 @@ class WanVideoVAE(nn.Module):
 
     def encode(self, videos, device, tiled=False, tile_size=None, tile_stride=None):
         """Encode videos or tensors into latent states."""
-        tile_size = (34, 34) if tile_size is None else tile_size
-        tile_stride = (18, 16) if tile_stride is None else tile_stride
-        # videos = [video.to("cpu") for video in videos]
-        hidden_states = []
-        for video in videos:
-            video = video.unsqueeze(0)
-            if tiled:
-                raise NotImplementedError("Tiled encoding is not allowed yet.")
-                tile_size = (
-                    tile_size[0] * self.upsampling_factor,
-                    tile_size[1] * self.upsampling_factor,
-                )
-                tile_stride = (
-                    tile_stride[0] * self.upsampling_factor,
-                    tile_stride[1] * self.upsampling_factor,
-                )
-                hidden_state = self.tiled_encode(video, device, tile_size, tile_stride)
-            else:
-                hidden_state = self.single_encode(video, device)
-            hidden_state = hidden_state.squeeze(0)
-            hidden_states.append(hidden_state)
-        hidden_states = torch.stack(hidden_states)
+        if tiled:
+            raise NotImplementedError("Tiled encoding is not allowed yet.")
+        if isinstance(videos, (list, tuple)):
+            videos = torch.stack(list(videos))
+        hidden_states = self._encode_on_device(videos, device)
         return hidden_states
 
 
