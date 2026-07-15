@@ -101,7 +101,8 @@ If the user asks for a dry-run, generation test, or re-application test, write g
    - By default, generate one short demo/smoke YAML for each supported benchmark, such as LIBERO, CALVIN, SimplerEnv, RoboTwin, and ManiSkill.
    - Keep demo YAMLs bounded: prefer one task, one episode, and low max steps where runner knobs allow it.
    - Use local runner knobs where available: LIBERO `max_tasks: 1` and `episodes_per_task: 1`; CALVIN one sequence and low max steps; SimplerEnv one task/episode with bounded max steps; RoboTwin one generated episode or one task with bounded max steps; ManiSkill one episode with low `max_steps`.
-   - Include `model.backend`, `model.model_type`, `model.name`, `model.ckpt_path`, `model.dataset_statistics_path`, tokenizer path/name, action/state dimensions, random-init or real-checkpoint mode, and runtime knobs.
+   - Include `model.backend`, `model.model_type`, and model-structure fields (`action_dim`, `action_horizon`, etc.) in the `model:` section.
+   - Include infrastructure fields (`ckpt_path`, `tokenizer_path`, `dataset_statistics_path`, `use_bf16`, `loongforge_root`) in the `server:` section, not `model:`.
    - Include `server.python`, `server.host`, `server.port`, `server.health_port`, `server.start_timeout_sec`, and `server.log`.
    - Use unique ports per smoke config to avoid health-port collisions during repeated runs.
    - Include `run.output_dir`, `run.seed`, `run.save_trace`, and replay flags when supported.
@@ -164,14 +165,16 @@ Use pi05 as the canonical example of the shared `predict_action` architecture:
 - Model interface: `PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)` in the model package.
 - Interface helpers: `loongforge/embodied/eval/servers/predict_action_interface.py`.
 - Generic eval policy: `GenericPredictActionPolicy` in `loongforge/embodied/eval/servers/loongforge_policy.py`.
-- Model factory: `PI05ModelFactory` in `loongforge/embodied/eval/servers/loongforge_policy.py`.
-- Backward-compatible wrapper: `LoongForgePI05Policy`, which should not be the preferred pattern for new integrations.
-- Server entrypoint: `loongforge/embodied/eval/servers/loongforge_server.py` builds the factory output, runs `_warmup_model()` to resolve lazy imports, wraps in `GenericPredictActionPolicy`, then starts the health server.
+- Model factory: `PI05ModelFactory` in `loongforge/embodied/eval/factories/pi05_factory.py`.
+- Factory registry: `register_factory`, `build_model_spec` in `loongforge/embodied/eval/factories/registry.py`. New models register with `@register_factory("<model_type>")` and declare `model_config_cls = <ModelConfig>`.
+- Server config: `EvalServerArgs` dataclass and `parse_eval_server_config` in `loongforge/embodied/eval/servers/eval_server_config.py`. The YAML `server:` section is merged directly into `EvalServerArgs` via OmegaConf; the YAML `model:` section is merged into the registered `ModelConfig` (e.g. `Pi05ModelConfig`) via OmegaConf.
+- Backward-compatible wrapper: `LoongForgePI05Policy` in `loongforge/embodied/eval/factories/pi05_factory.py`, which should not be the preferred pattern for new integrations.
+- Server entrypoint: `loongforge/embodied/eval/servers/loongforge_server.py` calls `parse_eval_server_config` to get `EvalServerArgs` + `raw_model_dict`, then `build_model_spec` to load the model, then `_warmup_model()` to resolve lazy imports, then wraps in `GenericPredictActionPolicy`.
 - Routing: `loongforge/embodied/eval/orchestrator/server_manager.py` maps `loongforge`, `pi05`, and `loongforge_pi05` to the LoongForge server.
 - Adapter state boundary: benchmark adapters provide `canonical_obs["state"]` for native structured state and `canonical_obs["model_state"]` for model-ready state; runners forward only `model_state` as RPC payload `state`.
-- YAML configs: `examples/embodied/pi05/eval/configs/<benchmark>/*.yaml`.
+- YAML configs: `examples/embodied/pi05/eval/configs/<benchmark>/*.yaml`. Infrastructure fields (`ckpt_path`, `tokenizer_path`, `dataset_statistics_path`, `use_bf16`, `loongforge_root`) live in `server:` section; model-structure fields (`action_dim`, `action_horizon`, `compile_model`, etc.) live in `model:` section.
 
-For new models, prefer explicit factory names such as `<Model>ModelFactory`, explicit `model.backend` values, and reuse of `GenericPredictActionPolicy` so backend, architecture, and benchmark-specific adapter logic do not collapse into one concept.
+For new models, create `loongforge/embodied/eval/factories/<model>_factory.py` with a `@register_factory("<model_type>")` class that declares `model_config_cls` and implements `build(model_cfg, server_args) -> PredictActionModelSpec`. Add the module path to `_FACTORY_MODULES` in `factories/registry.py`. No changes to `loongforge_server.py` are needed.
 
 ## Required final response
 

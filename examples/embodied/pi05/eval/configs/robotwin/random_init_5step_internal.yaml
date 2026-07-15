@@ -11,15 +11,11 @@ model:
   backend: loongforge
   model_type: pi05
   name: loongforge-pi05-robotwin-random-init
-  random_init: true
-  ckpt_path: /workspace/LoongForge-VLA/loongforge/embodied/eval
   action_dim: 14
   state_dim: 14
   action_horizon: 50
   max_action_dim: 32
   max_state_dim: 32
-  tokenizer_name: /ssd1/huangyi/model/paligemma-3b-pt-224
-  use_bf16: false
   compile_model: false
   action_mode: abs
 
@@ -30,10 +26,14 @@ server:
   python: /workspace/miniconda3/envs/loongforge/bin/python
   log: /workspace/LoongForge-VLA/loongforge/embodied/eval/reports/pi05/robotwin/random_init_5step/policy_server.log
   start_timeout_sec: 900
+  random_init: true
+  ckpt_path: /workspace/LoongForge-VLA/loongforge/embodied/eval
+  loongforge_root: /workspace/LoongForge-VLA
+  tokenizer_path: /ssd1/huangyi/model/paligemma-3b-pt-224
+  use_bf16: false
 
 env:
   eval_root: /workspace/LoongForge-VLA/loongforge/embodied/eval
-  loongforge_root: /workspace/LoongForge-VLA
   robotwin_root: /workspace/RoboTwin
   robotwin_python: /workspace/miniconda3/envs/robotwin/bin/python
 

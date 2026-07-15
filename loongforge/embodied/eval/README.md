@@ -8,11 +8,14 @@ This directory contains the LoongForge-VLA offline evaluation module. It runs be
 - `loongforge.embodied.eval.transport`: WebSocket RPC client/server utilities.
 - `loongforge.embodied.eval.adapters`: benchmark-side adapters.
 - `loongforge.embodied.eval.servers.loongforge_server`: LoongForge policy server entrypoint.
-- `loongforge.embodied.eval.servers.loongforge_policy`: generic `predict_action` eval policy, LoongForge pi05 factory, and LoongForge XVLA factory.
+- `loongforge.embodied.eval.servers.loongforge_policy`: generic `predict_action` eval policy (`GenericPredictActionPolicy`) and shared data types.
+- `loongforge.embodied.eval.servers.eval_server_config`: `EvalServerArgs` dataclass and `parse_eval_server_config` YAML parser.
 - `loongforge.embodied.eval.servers.predict_action_interface`: shared model interface checks and action shape normalization.
 - `loongforge.embodied.eval.servers.mock_policy`: lightweight protocol mock for tests.
+- `loongforge.embodied.eval.factories.registry`: model factory registry (`MODEL_FACTORY_REGISTRY`, `register_factory`, `build_model_spec`).
+- `loongforge.embodied.eval.factories.pi05_factory`: PI05 model factory (`PI05ModelFactory`).
 
-LoongForge source code under the repo root `loongforge/` is not patched by this eval module. Model-specific compatibility lives in `eval/servers`.
+LoongForge source code under the repo root `loongforge/` is not patched by this eval module. Model-specific compatibility lives in `eval/factories`.
 
 ## Quick Start: pi05 on LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill
 
@@ -45,8 +48,9 @@ The pi05 configs use:
 
 - `model.backend: loongforge`
 - `model.model_type: pi05`
-- `model.ckpt_path`: checkpoint directory or `model.safetensors`, unless `model.random_init: true` is set for a smoke run
-- `model.dataset_statistics_path`: dataset stats passed through to model `predict_action()` for model-owned normalization or unnormalization
+- `model.action_dim`, `model.action_horizon`, etc.: Pi05ModelConfig structure fields
+- `server.ckpt_path`: checkpoint directory or `model.safetensors`, unless `server.random_init: true` is set for a smoke run
+- `server.dataset_statistics_path`: dataset stats passed through to model `predict_action()` for model-owned normalization or unnormalization
 - `server.python`: LoongForge Python environment
 - `run.output_dir`: runtime output directory under `eval/reports/<model>/<benchmark>/<run_name>/`; `reports/` is generated locally and is not committed
 
@@ -56,26 +60,23 @@ For protocol/debug smoke testing, copy an existing YAML and set `model.backend: 
 
 LoongForge model servers now prefer a shared `predict_action` interface instead of a separate full policy adapter for every model. A reusable `GenericPredictActionPolicy` handles eval RPC behavior: canonical image view selection, `predict_action` invocation, action shape validation, action-dim truncation, chunk caching, latency reporting, metadata, and dataset statistics loading. Model-specific normalization and unnormalization should happen inside the model's `predict_action()` implementation.
 
-Model-specific logic should be kept in a thin factory/loader. The current pi05 path is:
+Model-specific logic should be kept in a thin factory under `eval/factories/`. The current pi05 path is:
 
 ```text
 loongforge_server.py
-  -> _warmup_model(model_spec)          # dummy predict_action() to resolve lazy imports
-  -> PI05ModelFactory.build(...)
+  -> parse_eval_server_config(yaml)      # EvalServerArgs + raw_model_dict
+  -> build_model_spec(server_args, raw_model_dict)
+       -> build_model_config("pi05", raw_model_dict)  # OmegaConf → Pi05ModelConfig
+       -> PI05ModelFactory.build(model_cfg, server_args)
+            -> build_model(model_cfg)                 # training-side registry
+            -> model.model.load_pretrained(ckpt_path) # training-side weight loader
+            -> model.to(device).eval()
+  -> _warmup_model(model_spec)           # dummy predict_action() to resolve lazy imports
   -> GenericPredictActionPolicy(...)
   -> PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)
 ```
 
-Before the health server is started, `loongforge_server.py` runs a single dummy `predict_action()` call (`_warmup_model`) to force all lazy imports to complete. This prevents circular-import races that would otherwise surface on the first real episode. New model factories should ensure their `predict_action()` tolerates a warmup call with a zero-filled dummy image and an empty instruction string.
-
-A new model can reuse the generic policy when it exposes:
-
-```python
-def predict_action(images, instructions, state=None, dataset_stats=None):
-    ...
-```
-
-The model factory is responsible for importing model code, registering model-specific configs, loading checkpoints, moving the model to the target device/dtype, and returning metadata. Benchmark-native structured state stays on the adapter side; runners forward only `model_state` to the model server, so models do not need to know each benchmark's observation dict shape.
+To add a new model, create `eval/factories/<model>_factory.py`, implement a factory class with `model_config_cls` and a `build(model_cfg, server_args)` classmethod, decorate it with `@register_factory("<model_type>")`, and add its module path to `_FACTORY_MODULES` in `eval/factories/registry.py`. No changes needed in `loongforge_server.py`.
 
 ## Outputs
 
@@ -91,7 +92,8 @@ A benchmark run writes:
 
 ## Development Notes
 
-- Keep model framework logic behind policy server adapters.
+- Keep model framework logic in `eval/factories/<model>_factory.py`. Do not add model-specific code to `loongforge_server.py`.
 - Do not modify `../loongforge` source code for eval-specific compatibility.
 - Prefer adding YAML configs over command-line parameter sprawl.
 - Use `model.backend` in YAML for backend selection and `benchmark.name` for benchmark selection.
+- New model factories should ensure their `predict_action()` tolerates a warmup call with a zero-filled dummy image and an empty instruction string (`_warmup_model` in `loongforge_server.py` runs this before serving).

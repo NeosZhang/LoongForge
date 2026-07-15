@@ -174,8 +174,10 @@ def _run_robotwin_once(config: Dict[str, Any], config_path: str = "") -> Dict[st
     args = robotwin_runner.build_argparser().parse_args([])
     args = robotwin_runner._apply_config(args, config)
     model = config.get("model") or {}
-    if not args.policy_ckpt_path and not bool(model.get("random_init", False)):
-        raise ValueError("policy checkpoint must be set by model.ckpt_path in YAML unless model.random_init is true")
+    server_cfg = config.get("server") or {}
+    random_init = bool(server_cfg.get("random_init", model.get("random_init", False)))
+    if not args.policy_ckpt_path and not random_init:
+        raise ValueError("policy checkpoint must be set by server.ckpt_path in YAML unless server.random_init is true")
     if not args.task_name:
         raise ValueError("task name must be set by benchmark.task_name in YAML")
 

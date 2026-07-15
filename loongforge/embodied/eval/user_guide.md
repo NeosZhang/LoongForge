@@ -47,7 +47,7 @@ flowchart LR
 2. orchestrator 读取 YAML 后启动 benchmark client，并按 `server.python` 拉起独立的 LoongForge pi05 policy server。
 3. benchmark runner 从环境拿到原始 observation，由 benchmark-side adapter 转成统一 observation schema，包括图像、结构化状态、可传给模型的 `model_state`、语言指令和 episode/task 元信息。
 4. runner 通过 WebSocket + msgpack-numpy RPC 发给 policy server；benchmark-native 结构化状态只留在 adapter/trace 侧，模型 server 只接收 `model_state`。benchmark 侧不直接 import 或修改 LoongForge 模型代码。
-5. LoongForge policy server 根据 YAML 选择 model factory，factory 负责 import 模型、注册模型私有 config、加载 checkpoint 或按 `model.random_init: true` 随机初始化，并返回实现统一 `predict_action()` 的模型实例。
+5. LoongForge policy server 根据 YAML 选择 model factory，factory 负责 import 模型、注册模型私有 config、加载 checkpoint 或按 `server.random_init: true` 随机初始化，并返回实现统一 `predict_action()` 的模型实例。
 6. `GenericPredictActionPolicy` 负责 eval RPC、image view 整理、action chunk cache、latency、metadata、action shape 校验和 action dim 裁剪，然后调用 `model.predict_action(images, instructions, state=model_state, dataset_stats=dataset_stats)`。
 7. 模型在自己的 `predict_action()` 内部决定是否消费 `dataset_stats`，并负责模型私有的 state 归一化、action 反归一化或其他后处理。benchmark-native dict state 不在 model factory 中兜底处理；如需给模型传 state，应由对应 benchmark adapter 产出已规整的 `model_state`。
 8. `predict_action()` 返回的 action chunk 返回 benchmark client，再由 benchmark action adapter 转成具体环境需要的动作格式，例如 LIBERO/SimplerEnv/ManiSkill 的 7D action 或 RoboTwin 的 14D bimanual action。
@@ -91,15 +91,11 @@ model:
   backend: loongforge
   model_type: pi05
   name: loongforge-pi05
-  ckpt_path: /path/to/checkpoint_or_model_dir
-  dataset_statistics_path: /path/to/dataset_statistics.json
-  tokenizer_name: /path/to/paligemma-3b-pt-224
   action_dim: 7
   state_dim: 7
   action_horizon: 50
   max_action_dim: 32
   max_state_dim: 32
-  use_bf16: false
   compile_model: false
 
 server:
@@ -109,14 +105,11 @@ server:
   python: /workspace/miniconda3/envs/loongforge/bin/python
   log: /path/to/policy_server.log
   start_timeout_sec: 900
-
-env:
-  eval_root: /workspace/LoongForge-VLA/loongforge/embodied/eval
+  ckpt_path: /path/to/checkpoint_or_model_dir
+  dataset_statistics_path: /path/to/dataset_statistics.json
+  tokenizer_path: /path/to/paligemma-3b-pt-224
+  use_bf16: false
   loongforge_root: /workspace/LoongForge-VLA
-  libero_config_path: /path/to/libero_config
-  mujoco_gl: osmesa
-  pyopengl_platform: osmesa
-  ld_library_path: /path/to/nvidia_lib
 
 run:
   output_dir: /workspace/LoongForge-VLA/loongforge/embodied/eval/reports/pi05/libero/smoke_steps10
@@ -134,8 +127,9 @@ timeouts:
 
 - `benchmark.name` 决定 runner，目前支持 `libero`、`calvin`、`simplerenv`、`robotwin`、`maniskill`。
 - `model.backend` 使用 `loongforge` 或 `mock`。
-- `model.ckpt_path` 可以是包含 `model.safetensors` 的目录，也可以直接指向权重文件。
-- `model.dataset_statistics_path` 用于 LoongForge pi05 action 反归一化（由模型 `predict_action()` 内部消费，eval 侧只做透传）。
+- `model:` section 只包含模型结构字段（`action_dim`、`action_horizon`、`compile_model` 等），对应各模型的 ModelConfig dataclass。
+- `server.ckpt_path` 可以是包含 `model.safetensors` 的目录，也可以直接指向权重文件。
+- `server.dataset_statistics_path` 用于 LoongForge pi05 action 反归一化（由模型 `predict_action()` 内部消费，eval 侧只做透传）。
 - `server.python` 指向 LoongForge server 环境。
 - `run.output_dir` 在 YAML 中写基准 run tag 目录；统一入口默认会在运行时生成时间戳目录，避免复用旧 `results.jsonl`。
 - 磁盘紧张或只做接口 smoke 时，可设置 `run.save_replay: false`、`run.save_trace: false`，只保留 `results.jsonl`、`summary.csv`、`suite_summary.csv` 和 `policy_server.log`。
@@ -308,11 +302,11 @@ YAML 中的 `run.output_dir` 应写到稳定 run tag 目录，例如 `reports/pi
 
 统一 `predict_action()` 接口和 `GenericPredictActionPolicy` 重构后，已用各 benchmark 对应 conda 环境完成 smoke 验证。当前已确认：
 
-- LIBERO：2026-07-07 使用真实 PI05 权重跑 `libero10_smoke_internal.yaml` task 0，结果为 `success: 1`、`success_rate: 1.0`、`steps: 267`，确认重构后不再出现 `must be real number, not dict`，`model_state` 边界生效。
-- CALVIN：2026-07-07 使用 random-init PI05 跑 `smoke_internal.yaml`，server metadata 确认为 `random_init: true`、`ckpt_path: random_init://pi05`，完成 1 条 sequence 的 30-step rollout，exit code 0，`avg_length: 0.0` 符合随机初始化链路 smoke 预期。
-- SimplerEnv：2026-07-07 使用 random-init PI05 跑 `widowx_carrot_on_plate`，完成 60-step rollout，exit code 0，`success: 0` 符合随机初始化链路 smoke 预期。该 env 需要显式带上 LoongForge `PYTHONPATH`。
-- RoboTwin：2026-07-07 使用 random-init 14D PI05 跑 official `adjust_bottle/demo_clean`，完成 5-step official episode，return code 0，`success: 0` 符合随机初始化链路 smoke 预期。官方 log 中仍可能出现 SAPIEN/Vulkan warning 或 `Render Error` 文本，但本轮进程返回 0 并产出标准结果。
-- ManiSkill：2026-07-07 使用 random-init PI05 跑 `PickCube-v1`，完成 5-step rollout，exit code 0，`success: 0` 符合随机初始化链路 smoke 预期。当前 7D checkpoint/action stats 不作为正式 ManiSkill score。
+- LIBERO：2026-07-15 使用真实 PI05 权重（`pi05_libero_finetuned_v044`）跑 `libero10_smoke_internal.yaml` task 0，结果为 `success: 1`、`success_rate: 1.0`、`steps: 267`。本次使用修复后的 `_load_pi05_pretrained`，正确处理 checkpoint 中 `model.*` 格式的 key，load 成功。
+- CALVIN：2026-07-15 使用 random-init PI05 跑 `smoke_internal.yaml`，完成 1 条 sequence 的 30-step rollout，exit code 0，`avg_length: 0.0` 符合链路 smoke 预期。CALVIN smoke 使用 `random_init: true` 是因为当前没有 CALVIN 专属 pi05 checkpoint，正式成绩依赖对应 checkpoint 和 dataset statistics。
+- SimplerEnv：2026-07-15 使用真实 PI05 权重（LIBERO 域 checkpoint）跑 `widowx_put_eggplant_in_basket`，完成 300-step rollout，exit code 0，`success: 0`，当前使用 LIBERO 域 checkpoint 仅作链路 smoke，不作为可信 SimplerEnv score。该 env 需要显式带上 LoongForge `PYTHONPATH`。
+- RoboTwin：2026-07-15 使用 random-init 14D PI05 跑 official `adjust_bottle/demo_clean`，完成 5-step official episode，return code 0，`success: 0` 符合随机初始化链路 smoke 预期。官方 log 中仍可能出现 SAPIEN/Vulkan warning 或 `Render Error` 文本，但本轮进程返回 0 并产出标准结果。
+- ManiSkill：2026-07-15 使用 random-init PI05 跑 `PickCube-v1`，完成 5-step rollout，exit code 0，`success: 0` 符合随机初始化链路 smoke 预期。当前 7D checkpoint/action stats 不作为正式 ManiSkill score。
 
 最近一次资源状态：
 
