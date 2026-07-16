@@ -20,6 +20,10 @@ from loongforge.embodied.model.xvla.model_configuration_xvla import XvlaModelCon
 from loongforge.embodied.data.datasets.xvla.transforms.data_configuration_xvla import XvlaDataConfig
 from loongforge.embodied.model.fastwam.modeling_configuration_fastwam import FastWAMModelConfig
 from loongforge.embodied.data.datasets.fastwam.transforms.data_configuration_fastwam import FastWAMDataConfig
+from loongforge.embodied.model.groot_n1_7.model_configuration_groot_n1_7 import GrootN1d7Config
+from loongforge.embodied.data.datasets.groot_n1_7.transforms.data_configuration_groot_n1_7 import (
+    GrootN1d7DataConfig,
+)
 
 _CONFIGS_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent
@@ -41,6 +45,7 @@ MODEL_SCHEMA = {
     "groot_n1_6": ModelSchema("groot_n1_6.yaml", GrootN1d6ModelConfig, GrootN1d6DataConfig),
     "xvla": ModelSchema("xvla.yaml", XvlaModelConfig, XvlaDataConfig),
     "fastwam": ModelSchema("fastwam.yaml", FastWAMModelConfig, FastWAMDataConfig),
+    "groot_n1_7": ModelSchema("groot_n1_7.yaml", GrootN1d7Config, GrootN1d7DataConfig),
 }
 
 
