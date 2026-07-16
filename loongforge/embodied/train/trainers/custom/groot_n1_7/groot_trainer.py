@@ -30,7 +30,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from loongforge.embodied.distributed.utils import filter_supported_kwargs, unwrap_model
 from loongforge.embodied.distributed.utils import parse_optional_int_list
-from loongforge.embodied.optimizer.lr import build_param_groups
+from loongforge.embodied.optimizer.lr_scheduler import build_param_groups
 from loongforge.embodied.optimizer.optimizer import OPTIMIZER_REGISTRY
 from loongforge.embodied.train.trainers.supervised.finetune_trainer import FinetuneTrainer
 

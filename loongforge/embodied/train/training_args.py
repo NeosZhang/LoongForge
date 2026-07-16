@@ -209,11 +209,159 @@ class TrainingArgs:
                     "group uses --lr-base."
         },
     )
+    # ============================================================
+    # Learning Rate Schedules (relative LR vs optimizer step)
+    #
+    # Notation:
+    #   W   : warmup steps
+    #   T   : total training steps
+    #   C   : cycle length (per-cycle span)
+    #   peak: maximum LR (after warmup)
+    #   min : minimum LR
+    #   lr_end: final LR for polynomial decay
+    #
+    # Axes:
+    #   y-axis: lr (relative scale)
+    #   x-axis: step →
+    #
+    # ------------------------------------------------------------
+    # linear (warmup + linear decay to 0):
+    #
+    #   lr ^
+    #      |                 /\
+    #      |                /  \
+    #      |               /    \
+    #      |______________/      \____________ 0
+    #      +---------------W------T-----------> step
+    #
+    #   warmup: 0 → peak (linear)
+    #   decay : peak → 0 (linear)
+    #
+    # ------------------------------------------------------------
+    # cosine (warmup + cosine decay to 0):
+    #
+    #   lr ^
+    #      |                 /\
+    #      |                /  `-.
+    #      |               /      `-.
+    #      |______________/          `______ 0
+    #      +---------------W-----------T----> step
+    #
+    #   decay follows: 0.5 * (1 + cos(pi * t))
+    #
+    # ------------------------------------------------------------
+    # cosine_with_restarts (periodic cosine decay):
+    #
+    #   lr ^
+    #      |            /\      /\      /\
+    #      |           /  \    /  \    /  \
+    #      |          /    \  /    \  /    \
+    #      |_________/      \/      \/      \___ 0
+    #      +-----------W-----------------------> step
+    #
+    #   each cycle: cosine decay from peak → 0
+    #   cycles repeat with period C
+    #
+    # ------------------------------------------------------------
+    # polynomial (warmup + polynomial decay):
+    #
+    #   lr ^
+    #      |                 /\
+    #      |                /  `.
+    #      |               /     `.
+    #      |______________/        `_______ lr_end
+    #      +---------------W--------T------> step
+    #
+    #   decay: (1 - t/T)^p
+    #
+    # ------------------------------------------------------------
+    # constant:
+    #
+    #   lr ^
+    #      | ============================== peak
+    #      |
+    #      +------------------------------------> step
+    #
+    # ------------------------------------------------------------
+    # constant_with_warmup:
+    #
+    #   lr ^
+    #      |                /=================== peak
+    #      |               /
+    #      |______________/
+    #      +---------------W--------------------> step
+    #
+    # ------------------------------------------------------------
+    # inverse_sqrt (Transformer-style):
+    #
+    #   lr ^
+    #      |                /\
+    #      |               /  `--.
+    #      |              /       `--.
+    #      |_____________/            `--...   ~1/sqrt(step)
+    #      +---------------W------------------> step
+    #
+    #   warmup: linear
+    #   decay : ∝ step^(-0.5)
+    #
+    # ------------------------------------------------------------
+    # cosine_with_min_lr:
+    #
+    #   lr ^
+    #      |                 /\
+    #      |                /  `-.
+    #      |               /      `-.
+    #   min|______________/          `------ min
+    #      +---------------W-----------T----> step
+    #
+    # ------------------------------------------------------------
+    # cosine_warmup_with_min_lr:
+    #
+    #   lr ^
+    #      |             ./\
+    #      |            /   `-.
+    #      |           /       `-.
+    #   min|__________/           `------ min
+    #      +---------------W-----------T--> step
+    #
+    #   warmup start ≈ peak / W (if not explicitly set)
+    #
+    # ------------------------------------------------------------
+    # lambda_linear (multi-cycle linear warmup + linear decay):
+    #
+    #   lr ^
+    #      |            /\            /\            /\
+    #      |           /  \          /  \          /  \
+    #      |          /    \        /    \        /    \
+    #   min|_________/      \______/      \______/      \______
+    #      |        W      C      W      C      W      C
+    #      +--------------------------------------------------> step
+    #
+    #   Per cycle:
+    #     warmup: f_start → f_max (linear, over W)
+    #     decay : f_max   → f_min (linear, over C - W)
+    #
+    #   Global step is partitioned into consecutive cycles of length C
+    #
+    # ============================================================
     lr_decay_style: str = field(
         default="cosine_with_min_lr",
         metadata={
-            "help": "LR schedule shape (e.g. constant, linear, cosine, "
-                    "cosine_with_min_lr)."
+            "choices": [
+                "linear",
+                "cosine",
+                "cosine_with_restarts",
+                "polynomial",
+                "constant",
+                "constant_with_warmup",
+                "inverse_sqrt",
+                "cosine_with_min_lr",
+                "cosine_warmup_with_min_lr",
+                "lambda_linear",
+            ],
+            "help": "Learning-rate scheduler name. Most values are passed to "
+                    "transformers.get_scheduler; lambda_linear uses the custom "
+                    "LambdaLinearScheduler."
         },
     )
     lr_warmup_iters: int = field(
@@ -226,6 +374,59 @@ class TrainingArgs:
     min_lr: float = field(
         default=1e-6,
         metadata={"help": "Lower bound the LR schedule decays to (floor)."},
+    )
+    # ── lambda_linear scheduler params ──
+    lambda_f_max: float = field(
+        default=0.4,
+        metadata={
+            "help": "lambda_linear: peak LR multiplier (applied after warmup). "
+                    "Only used when --lr-decay-style=lambda_linear."
+        },
+    )
+    lambda_f_min: float = field(
+        default=0.0,
+        metadata={
+            "help": "lambda_linear: minimum LR multiplier (floor of each cycle). "
+                    "Only used when --lr-decay-style=lambda_linear."
+        },
+    )
+    lambda_f_start: float = field(
+        default=0.0,
+        metadata={
+            "help": "lambda_linear: LR multiplier at the start of warmup. "
+                    "Only used when --lr-decay-style=lambda_linear."
+        },
+    )
+    lambda_cycle_length: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": "lambda_linear: number of steps per cycle. Defaults to "
+                    "--train-iters when unset. "
+                    "Only used when --lr-decay-style=lambda_linear."
+        },
+    )
+    # ── polynomial scheduler params ──
+    lr_end: float = field(
+        default=1e-7,
+        metadata={
+            "help": "polynomial: final LR value at the end of decay. "
+                    "Only used when --lr-decay-style=polynomial."
+        },
+    )
+    polynomial_power: float = field(
+        default=1.0,
+        metadata={
+            "help": "polynomial: power factor of the decay curve. "
+                    "Only used when --lr-decay-style=polynomial."
+        },
+    )
+    # ── cosine_with_restarts scheduler params ──
+    num_cycles: float = field(
+        default=1.0,
+        metadata={
+            "help": "cosine_with_restarts: number of hard restart cycles. "
+                    "Only used when --lr-decay-style=cosine_with_restarts."
+        },
     )
     init_on_meta: bool = field(
         default=False,

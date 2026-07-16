@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 from torch.distributed.optim import ZeroRedundancyOptimizer
 from loongforge.embodied.distributed.utils import is_rank_zero
-from loongforge.embodied.optimizer.lr import build_param_groups
+from loongforge.embodied.optimizer.lr_scheduler import build_param_groups
 
 try:
     from transformer_engine.pytorch.optimizers import FusedAdam as _TEFusedAdam
