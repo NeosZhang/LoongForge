@@ -15,6 +15,8 @@ model:
   dim_time: 32
   max_len_seq: 512
   use_hetero_proj: false
+  attn_dropout: 0.1
+  mlp_dropout: 0.1
   soft_prompt_length: 32
 
   action_mode: ee6d

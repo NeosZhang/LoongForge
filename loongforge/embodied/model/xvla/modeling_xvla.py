@@ -100,6 +100,8 @@ class XVLA(PreTrainedModel):
             dim_time=config.dim_time,
             max_len_seq=config.max_len_seq,
             use_hetero_proj=config.use_hetero_proj,
+            attn_dropout=config.attn_dropout,
+            mlp_dropout=config.mlp_dropout,
         )
 
     # ============================= Florence2 encoder =============================

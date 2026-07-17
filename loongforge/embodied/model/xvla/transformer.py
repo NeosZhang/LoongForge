@@ -281,20 +281,28 @@ class TransformerBlock(nn.Module):
     Standard Transformer block (pre-LN): LN → MHSA → residual, LN → MLP → residual.
     """
 
-    def __init__(self, hidden_size: int, num_heads: int, mlp_ratio: float = 4.0) -> None:
+    def __init__(
+        self,
+        hidden_size: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        attn_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
+    ) -> None:
         """
         Initialize a standard pre-LN Transformer block.
 
-        Builds two LayerNorms, one MHSA layer, and one MLP layer with 0.1 dropout.
+        Builds two LayerNorms, one MHSA layer (attention dropout ``attn_dropout``),
+        and one MLP layer (dropout ``mlp_dropout``).
         """
         super().__init__()
         self.norm1 = nn.LayerNorm(hidden_size)
         self.norm2 = nn.LayerNorm(hidden_size)
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, attn_drop=0.1)
+        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True, attn_drop=attn_dropout)
         self.mlp = Mlp(
             in_features=hidden_size,
             hidden_features=int(hidden_size * mlp_ratio),
-            drop=0.1,
+            drop=mlp_dropout,
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -335,6 +343,8 @@ class SoftPromptedTransformer(nn.Module):
         len_soft_prompts: int = 32,
         max_len_seq: int = 512,
         use_hetero_proj: bool = False,
+        attn_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
     ) -> None:
         """
         Initialize the SoftPromptedTransformer.
@@ -351,7 +361,16 @@ class SoftPromptedTransformer(nn.Module):
         self.use_hetero_proj = use_hetero_proj
 
         self.blocks = nn.ModuleList(
-            [TransformerBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)]
+            [
+                TransformerBlock(
+                    hidden_size,
+                    num_heads,
+                    mlp_ratio=mlp_ratio,
+                    attn_dropout=attn_dropout,
+                    mlp_dropout=mlp_dropout,
+                )
+                for _ in range(depth)
+            ]
         )
 
         if use_hetero_proj:

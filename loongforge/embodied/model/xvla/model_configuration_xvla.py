@@ -318,6 +318,8 @@ class XVLAConfig(PretrainedConfig):
         dim_time: int = 32,
         max_len_seq: int = 512,
         use_hetero_proj: bool = False,
+        attn_dropout: float = 0.1,
+        mlp_dropout: float = 0.1,
         soft_prompt_length: int = 32,
         max_action_dim: int = 20,
         real_action_dim: int = 20,
@@ -345,6 +347,10 @@ class XVLAConfig(PretrainedConfig):
         self.dim_time = dim_time
         self.max_len_seq = max_len_seq
         self.use_hetero_proj = use_hetero_proj
+        # Transformer-block dropout (attention / MLP), plumbed to
+        # SoftPromptedTransformer -> TransformerBlock.
+        self.attn_dropout = attn_dropout
+        self.mlp_dropout = mlp_dropout
         self.soft_prompt_length = soft_prompt_length
         self.max_action_dim = max_action_dim
         self.real_action_dim = real_action_dim
@@ -449,6 +455,8 @@ class XvlaModelConfig:
     dim_time: int = 32
     max_len_seq: int = 512
     use_hetero_proj: bool = False
+    attn_dropout: float = 0.1
+    mlp_dropout: float = 0.1
     soft_prompt_length: int = 32
 
     # Action & proprio (shared with data side)
