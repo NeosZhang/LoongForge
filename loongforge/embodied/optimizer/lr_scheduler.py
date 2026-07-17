@@ -1,64 +1,193 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
-#
-# Modified from Cosmos (NVIDIA cosmos-framework) under the OpenMDW-1.1 License.
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: OpenMDW-1.1
 
-"""Module for lr_scheduler."""
-from typing import Optional
+"""Per-module LR groups + scheduler factory."""
 
-import numpy as np
 import logging
+from typing import Dict, List
+
+import torch.nn as nn
+
+from loongforge.embodied.distributed.utils import is_rank_zero, unwrap_model
+from torch.optim.lr_scheduler import LambdaLR
+from loongforge.embodied.optimizer.custom_lr_scheduler import LambdaLinearScheduler
+from transformers import get_scheduler
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
-class LambdaLinearScheduler:
+def _log_model_lr(model: nn.Module, max_depth: int = 3, groups: List[Dict] = None) -> None:
+    """Log named submodules with trainable parameter counts, and optionally their LR assignment.
+
+    When ``groups`` is provided, each module row also shows the lr value assigned to
+    its parameters (aggregated from the first param found in that module).
+    Only logs on rank 0 (or when distributed is not initialized).
     """
-    Linear instead of cosine decay for the main part of the cycle.
-    """
 
-    def __init__(self, warm_up_steps, f_min, f_max, f_start, cycle_lengths, verbosity_interval=0):
-        """__init__."""
-        assert len(warm_up_steps) == len(f_min) == len(f_max) == len(f_start) == len(cycle_lengths)
-        self.lr_warm_up_steps = warm_up_steps
-        self.f_start = f_start
-        self.f_min = f_min
-        self.f_max = f_max
-        self.cycle_lengths = cycle_lengths
-        self.cum_cycles = np.cumsum([0] + list(self.cycle_lengths))
-        self.last_f = 0.0
-        self.verbosity_interval = verbosity_interval
+    if not is_rank_zero():
+        return
 
-    def find_in_interval(self, n):
-        """find_in_interval."""
-        interval = 0
-        for cl in self.cum_cycles[1:]:
-            if n <= cl:
-                return interval
-            interval += 1
+    # Build param_id → lr mapping when groups are available
+    param_to_lr: dict = {}
+    if groups is not None:
+        for group in groups:
+            for p in group.get("params", []):
+                param_to_lr[id(p)] = group["lr"]
 
-    def __call__(self, n, **kwargs):
-        """__call__."""
-        return self.schedule(n, **kwargs)
-
-    def schedule(self, n, **kwargs):
-        """schedule."""
-        cycle = self.find_in_interval(n)
-        n = n - self.cum_cycles[cycle]
-        if self.verbosity_interval > 0:
-            if n % self.verbosity_interval == 0:
-                logger.info(f"current step: {n}, recent lr-multiplier: {self.last_f}, current cycle {cycle}")
-
-        if n < self.lr_warm_up_steps[cycle]:
-            f = (self.f_max[cycle] - self.f_start[cycle]) / self.lr_warm_up_steps[cycle] * n + self.f_start[cycle]
-            self.last_f = f
-            return f
+    if groups is not None:
+        title = "[LR Groups] Model modules with LR assignment:"
+    else:
+        title = (
+            "[LR Groups] Model modules"
+            " (use paths below with --lr-group to set per-module LR):"
+        )
+    lines = [title]
+    for name, module in model.named_modules():
+        if not name:
+            continue
+        depth = name.count(".")
+        if depth >= max_depth:
+            continue
+        trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+        if trainable == 0:
+            continue
+        indent = "  " + "  " * depth
+        if trainable >= 1_000_000:
+            param_str = f"{trainable / 1e6:.1f}M"
+        elif trainable >= 1_000:
+            param_str = f"{trainable / 1e3:.1f}K"
         else:
-            f = self.f_min[cycle] + (self.f_max[cycle] - self.f_min[cycle]) * (self.cycle_lengths[cycle] - n) / (
-                self.cycle_lengths[cycle] - self.lr_warm_up_steps[cycle]
+            param_str = str(trainable)
+
+        if groups is not None:
+            lrs = {param_to_lr[id(p)] for p in module.parameters() if p.requires_grad and id(p) in param_to_lr}
+            if not lrs:
+                lr_str = "  lr=frozen"
+            elif len(lrs) == 1:
+                lr_str = f"  lr={lrs.pop():.2e}"
+            else:
+                lr_str = "  lr=mixed(" + ", ".join(f"{v:.2e}" for v in sorted(lrs)) + ")"
+        else:
+            lr_str = ""
+
+        lines.append(f"{indent}{name:<60s}  ({param_str} trainable params){lr_str}")
+    logger.info("\n".join(lines))
+
+
+def _parse_lr_group(lr_group_str: str) -> list[tuple[str, float]]:
+    """Parse 'path1=lr1,path2=lr2' into an ordered [(path, lr)] list."""
+    result = []
+    for item in lr_group_str.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid --lr-group entry '{item}': expected 'module.path=lr'"
             )
-            self.last_f = f
-            return f
+        path, lr_str = item.rsplit("=", 1)
+        result.append((path.strip(), float(lr_str.strip())))
+    return result
+
+
+def build_param_groups(model: nn.Module, training_args) -> List[Dict]:
+    """Build optimizer param groups with per-module LR from CLI training_args.
+
+    LR assignment priority (highest to lowest):
+      1. ``--lr-group``  — comma-separated ``module.path=lr`` pairs.
+         Entries are processed in order; earlier entries consume parameters
+         first, so more specific (deeper) paths should be listed before
+         broader ancestor paths.
+         Example: ``model.paligemma_with_expert.gemma_expert=1e-4,
+                   model.paligemma_with_expert=1e-5``
+      2. ``--lr-base``  — fallback for all remaining trainable parameters.
+
+    Parameters are never double-counted: once a parameter is assigned to a
+    group it is excluded from all subsequent groups.
+    """
+    raw = unwrap_model(model)
+    frozen_ids = {id(p) for p in raw.parameters() if not p.requires_grad}
+    used_ids = set()
+    groups = []
+
+    base_lr = training_args.lr_base
+
+    _log_model_lr(raw)
+
+    lr_mappings: list[tuple[str, float]] = []
+    lr_group_str = training_args.lr_group
+
+    if lr_group_str:
+        lr_mappings = _parse_lr_group(lr_group_str)
+
+    for path, lr_val in lr_mappings:
+        module = raw
+        try:
+            for attr in path.split("."):
+                module = getattr(module, attr)
+        except AttributeError:
+            continue
+
+        parameters = module.parameters() if isinstance(module, nn.Module) else [module]
+        params = [
+            p for p in parameters
+            if p.requires_grad and id(p) not in frozen_ids and id(p) not in used_ids
+        ]
+        if params:
+            groups.append({"params": params, "lr": lr_val, "name": path})
+            used_ids.update(id(p) for p in params)
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(f"LR group '{path}': lr={lr_val}, params={len(params)}")
+
+    # Base group: everything else
+    other = [
+        p for p in raw.parameters()
+        if p.requires_grad and id(p) not in used_ids and id(p) not in frozen_ids
+    ]
+    if other:
+        groups.append({"params": other, "lr": base_lr, "name": "base"})
+
+    _log_model_lr(raw, 3, groups=groups)
+
+    return groups
+
+
+def build_scheduler(optimizer, training_args):
+    """Build LR scheduler from CLI training_args."""
+
+    if training_args.lr_decay_style == "lambda_linear":
+        cycle_len = training_args.lambda_cycle_length or training_args.train_iters
+
+        _scheduler = LambdaLinearScheduler(
+            warm_up_steps=[training_args.lr_warmup_iters],
+            f_min=[training_args.lambda_f_min],
+            f_max=[training_args.lambda_f_max],
+            f_start=[training_args.lambda_f_start],
+            cycle_lengths=[cycle_len]
+        )
+
+        logger.info(
+            f"LambdaLinear scheduler: f_max={training_args.lambda_f_max}, "
+            f"f_min={training_args.lambda_f_min}, warmup={training_args.lr_warmup_iters}, "
+            f"cycle_len={cycle_len}"
+        )
+
+        return LambdaLR(optimizer, _scheduler.schedule)
+    else:
+        kwargs = {}
+        style = training_args.lr_decay_style
+        if style in {"cosine_with_min_lr", "cosine_warmup_with_min_lr"}:
+            kwargs["min_lr"] = training_args.min_lr
+        elif style == "polynomial":
+            kwargs["lr_end"] = training_args.lr_end
+            kwargs["power"] = training_args.polynomial_power
+        elif style == "cosine_with_restarts":
+            kwargs["num_cycles"] = training_args.num_cycles
+
+        return get_scheduler(
+            name=style,
+            optimizer=optimizer,
+            num_warmup_steps=training_args.lr_warmup_iters,
+            num_training_steps=training_args.train_iters,
+            scheduler_specific_kwargs=kwargs,
+        )
