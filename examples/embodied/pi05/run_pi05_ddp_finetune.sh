@@ -9,6 +9,7 @@
 set -euo pipefail
 
 export LOONGFORGE_PATH="/workspace/LoongForge"
+export NO_ALBUMENTATIONS_UPDATE=1
 
 # ── Paths ─────────────────────────────────────────────────────
 TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/paligemma-3b-pt-224"}
@@ -51,8 +52,8 @@ DATA_ARGS=(
 TRAINING_ARGS=(
     --trainer-type FinetuneTrainer
     --train-iters 20
-    --per-device-batch-size 4
-    --gradient-accumulation-steps 2
+    --per-device-batch-size 12
+    --gradient-accumulation-steps 1
     --seed 42
     --output-dir $OUTPUT_DIR
     # Learning rate
@@ -74,6 +75,9 @@ TRAINING_ARGS=(
 
 DISTRIBUTED_TRAINING_ARGS=(
     --distributed-strategy ddp
+    --ddp-find-unused-parameters False
+    --ddp-static-graph True
+    --ddp-gradient-as-bucket-view True
     --dtype bfloat16
 )
 
