@@ -9,7 +9,7 @@
 
 Per-sample transform tailored for the DROID action-policy SFT recipe. Mirrors
 cosmos-framework's ``ActionTransformPipeline`` bit-for-bit on the pieces that
-feed ``Cosmos3Nano._forward_raw_video_with_action``:
+feed ``Cosmos3._forward_raw_video_with_action``:
 
 1. Aspect-preserving bicubic resize + bottom/right reflection-pad (edge-pad
    when padding exceeds spatial dim) to the closest predefined target in
@@ -35,7 +35,7 @@ import torchvision.transforms.functional as transforms_F
 from transformers import AutoTokenizer
 
 from loongforge.embodied.data.datasets.transforms.base import BaseTransform
-from loongforge.embodied.model.modules.cosmos3.sequence_packing import SequencePlan
+from loongforge.embodied.model.cosmos3.sequence_packing import SequencePlan
 from loongforge.embodied.data.datasets.transforms.registry import (
     TransformBuilderContext,
     register_transform_builder,
@@ -205,8 +205,8 @@ def _pad_action_to_max_dim(action: torch.Tensor, max_action_dim: int) -> torch.T
     return torch.cat([action, pad], dim=-1)
 
 
-@register_transform_builder("cosmos3_nano")
-def build_cosmos3_nano_transforms(ctx: TransformBuilderContext):
+@register_transform_builder("cosmos3")
+def build_cosmos3_transforms(ctx: TransformBuilderContext):
     """Build Cosmos3 action-policy per-sample transforms."""
     model_cfg = ctx.model_cfg
     data_cfg = ctx.data_cfg

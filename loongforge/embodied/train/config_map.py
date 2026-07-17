@@ -24,8 +24,8 @@ from loongforge.embodied.model.groot_n1_7.model_configuration_groot_n1_7 import 
 from loongforge.embodied.data.datasets.groot_n1_7.transforms.data_configuration_groot_n1_7 import (
     GrootN1d7DataConfig,
 )
-from loongforge.embodied.model.cosmos3_nano.modeling_configuration_cosmos3_nano import Cosmos3NanoModelConfig
-from loongforge.embodied.data.datasets.cosmos3_nano.data_configuration_cosmos3_nano import Cosmos3NanoDroidConfig
+from loongforge.embodied.model.cosmos3.modeling_configuration_cosmos3 import Cosmos3ModelConfig
+from loongforge.embodied.data.datasets.cosmos3.data_configuration_cosmos3 import Cosmos3DroidConfig
 
 _CONFIGS_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent
@@ -48,7 +48,7 @@ MODEL_SCHEMA = {
     "xvla": ModelSchema("xvla.yaml", XvlaModelConfig, XvlaDataConfig),
     "fastwam": ModelSchema("fastwam.yaml", FastWAMModelConfig, FastWAMDataConfig),
     "groot_n1_7": ModelSchema("groot_n1_7.yaml", GrootN1d7Config, GrootN1d7DataConfig),
-    "cosmos3_nano": ModelSchema("cosmos3_nano.yaml", Cosmos3NanoModelConfig,  Cosmos3NanoDroidConfig)
+    "cosmos3_nano": ModelSchema("cosmos3/nano.yaml", Cosmos3ModelConfig, Cosmos3DroidConfig),
 }
 
 

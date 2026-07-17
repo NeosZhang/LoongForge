@@ -5,7 +5,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-"""DROID LeRobot v3.0 dataset for Cosmos3-Nano action-policy SFT.
+"""DROID LeRobot v3.0 dataset for Cosmos3 action-policy SFT.
 
 Minimal port of cosmos-framework's ``DROIDLeRobotDataset`` with the
 ``action_space="joint_pos"`` + ``use_state=True`` recipe (8D action, raw
@@ -227,7 +227,7 @@ class DROIDLeRobotDataset(Dataset):
         if not use_state:
             raise NotImplementedError(
                 "DROIDLeRobotDataset only supports use_state=True (matches the canonical "
-                "Cosmos3-Nano DROID-policy recipe)."
+                "Cosmos3 DROID-policy recipe)."
             )
 
         self._root = Path(root)

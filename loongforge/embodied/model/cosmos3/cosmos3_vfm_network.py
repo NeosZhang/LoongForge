@@ -36,7 +36,7 @@ def get_context_parallel_sharded_sequence(
 
 def get_context_parallel_last_hidden_state(packed_outputs, **kwargs):
     """Extract last hidden state from packed outputs."""
-    from loongforge.embodied.model.modules.cosmos3.sequence_packing import get_all_seq
+    from loongforge.embodied.model.cosmos3.sequence_packing import get_all_seq
     return get_all_seq(packed_outputs)
 
 

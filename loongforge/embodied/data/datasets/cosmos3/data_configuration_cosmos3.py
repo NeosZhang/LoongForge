@@ -36,8 +36,8 @@ from typing import TYPE_CHECKING, Any
 
 
 @dataclass(frozen=True)
-class Cosmos3NanoDroidConfig:
-    """CosmosNano data-processing config (maps 1:1 to YAML ``data:`` section)."""
+class Cosmos3DroidConfig:
+    """Cosmos3 data-processing config (maps 1:1 to YAML ``data:`` section)."""
 
     action_chunk_length: int = 32
     max_text_tokens: int = 2048

@@ -42,7 +42,7 @@ def _groot_n1_7_strategy_builder() -> Callable:
 
 
 def _cosmos3_droid_strategy_builder() -> Callable:
-    from loongforge.embodied.data.datasets.cosmos3_nano import (
+    from loongforge.embodied.data.datasets.cosmos3 import (
         build_droid_dataset
     )
     return build_droid_dataset

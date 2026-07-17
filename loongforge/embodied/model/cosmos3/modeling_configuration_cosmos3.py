@@ -47,10 +47,10 @@ from typing import TYPE_CHECKING, Any
 
 
 @dataclass(frozen=True)
-class Cosmos3NanoModelConfig:
+class Cosmos3ModelConfig:
     """Cosmos model-structure config (maps 1:1 to YAML ``model:`` section)."""
 
-    model_type: str = "cosmos3_nano"
+    model_type: str = "cosmos3"
     qwen3_vl_path: str = "Qwen/Qwen3-VL-8B-Instruct"
     qk_norm_for_text: bool = True
     qk_norm_for_diffusion: bool = True

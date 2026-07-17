@@ -5,7 +5,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-"""Cosmos3 preprocessor: collate function producing Cosmos3NanoBatch."""
+"""Cosmos3 preprocessor: collate function producing Cosmos3Batch."""
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -13,12 +13,12 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from loongforge.embodied.data.datasets.transforms.collator import BasePreprocessor, register_preprocessor
-from loongforge.embodied.model.modules.cosmos3.sequence_packing import SequencePlan
+from loongforge.embodied.model.cosmos3.sequence_packing import SequencePlan
 
 
 @dataclass
-class Cosmos3NanoBatch:
-    """Batch for Cosmos3-Nano training with raw video (online VAE encode in forward).
+class Cosmos3Batch:
+    """Batch for Cosmos3 training with raw video (online VAE encode in forward).
 
     Action fields are populated only when the per-sample transform produces
     them (e.g. for the DROID action-policy SFT recipe). They stay ``None`` /
@@ -53,9 +53,9 @@ class Cosmos3NanoBatch:
         return self
 
 
-@register_preprocessor("cosmos3_nano")
+@register_preprocessor("cosmos3")
 class Cosmos3Preprocessor(BasePreprocessor):
-    """Cosmos3 collate_fn: applies per-sample transform and assembles Cosmos3NanoBatch."""
+    """Cosmos3 collate_fn: applies per-sample transform and assembles Cosmos3Batch."""
 
     @classmethod
     def from_config(
@@ -69,7 +69,7 @@ class Cosmos3Preprocessor(BasePreprocessor):
         """from_config."""
         return cls()
 
-    def __call__(self, examples: List[Dict[str, Any]]) -> Cosmos3NanoBatch:
+    def __call__(self, examples: List[Dict[str, Any]]) -> Cosmos3Batch:
         """Apply transform to each sample and collate into batch."""
         has_action = all("action" in s and s.get("sequence_plan") is not None
                          and getattr(s["sequence_plan"], "has_action", False) for s in examples)
@@ -82,7 +82,7 @@ class Cosmos3Preprocessor(BasePreprocessor):
         start_frames = [s.get("start_frame") for s in examples]
         task_indices = [s.get("task_index") for s in examples]
 
-        return Cosmos3NanoBatch(
+        return Cosmos3Batch(
             videos=[s["video"] for s in examples],
             text_token_ids=[s["text_token_ids"] for s in examples],
             sequence_plans=[s["sequence_plan"] for s in examples],

@@ -5,10 +5,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: OpenMDW-1.1
 
-"""Cosmos3-Nano architecture: MoT video generation SFT via rectified flow matching.
+"""Cosmos3 architecture: MoT video generation SFT via rectified flow matching.
 
 Supports two batch formats:
-1. Cosmos3NanoBatch (from cosmos3_dataset.py): raw videos, online VAE encode in forward
+1. Cosmos3Batch (from cosmos3_dataset.py): raw videos, online VAE encode in forward
 2. Legacy PackedBatch: pre-packed PackedSequence (for smoke tests)
 """
 
@@ -29,40 +29,40 @@ from torch.distributed.checkpoint import FileSystemReader
 from transformers import AutoTokenizer
 from accelerate import init_on_device
 
-from loongforge.embodied.model.modules.cosmos3.cosmos3_vfm_network import (
+from loongforge.embodied.model.cosmos3.cosmos3_vfm_network import (
     Cosmos3VFMNetwork,
     Cosmos3VFMNetworkConfig,
 )
 from loongforge.embodied.model.registry import register_model
-from loongforge.embodied.model.cosmos3_nano.modeling_configuration_cosmos3_nano import Cosmos3NanoModelConfig
-from loongforge.embodied.model.modules.cosmos3.flow_matching import compute_flow_matching_loss
-from loongforge.embodied.model.modules.cosmos3.modeling_utils import has_noisy_tokens
-from loongforge.embodied.model.modules.cosmos3.rectified_flow import RectifiedFlow
-from loongforge.embodied.model.modules.cosmos3.sequence_packing import (
+from loongforge.embodied.model.cosmos3.modeling_configuration_cosmos3 import Cosmos3ModelConfig
+from loongforge.embodied.model.cosmos3.flow_matching import compute_flow_matching_loss
+from loongforge.embodied.model.cosmos3.modeling_utils import has_noisy_tokens
+from loongforge.embodied.model.cosmos3.rectified_flow import RectifiedFlow
+from loongforge.embodied.model.cosmos3.sequence_packing import (
     PackedSequence, SequencePlan, pack_input_sequence, add_special_tokens,
 )
-from loongforge.embodied.model.modules.cosmos3.data_and_condition import GenerationDataClean
-from loongforge.embodied.model.modules.cosmos3.unified_mot import Qwen3VLMoTConfig, Qwen3VLTextForCausalLM
-from loongforge.embodied.model.modules.cosmos3.wan2pt2_vae_4x16x16 import Wan2pt2VAEInterface
-from loongforge.embodied.data.datasets.cosmos3_nano.transforms.cosmos3_preprocessor import Cosmos3NanoBatch
+from loongforge.embodied.model.cosmos3.data_and_condition import GenerationDataClean
+from loongforge.embodied.model.cosmos3.unified_mot import Qwen3VLMoTConfig, Qwen3VLTextForCausalLM
+from loongforge.embodied.model.cosmos3.wan2pt2_vae_4x16x16 import Wan2pt2VAEInterface
+from loongforge.embodied.data.datasets.cosmos3.transforms.cosmos3_preprocessor import Cosmos3Batch
 
 logger = logging.getLogger(__name__)
 
 
-@register_model("cosmos3_nano")
-class Cosmos3Nano(nn.Module):
-    """Cosmos3-Nano: MoT (Mixture of Transformers) video generation model.
+@register_model("cosmos3")
+class Cosmos3(nn.Module):
+    """Cosmos3: MoT (Mixture of Transformers) video generation model.
 
     Supports online VAE encoding: receives raw videos, encodes to latents,
     then runs noise injection + packing + MoT forward + flow matching loss.
     """
 
     @classmethod
-    def from_pretrained(cls, cfg) -> "Cosmos3Nano":
+    def from_pretrained(cls, cfg) -> "Cosmos3":
         """from_pretrained."""
         return cls(cfg)
 
-    def __init__(self, config: Cosmos3NanoModelConfig):
+    def __init__(self, config: Cosmos3ModelConfig):
         """__init__."""
         super().__init__()
         # Build language model (MoT-wrapped Qwen3-VL)
@@ -180,7 +180,7 @@ class Cosmos3Nano(nn.Module):
         """
         self.net.to_empty(device=device)
         self.net.init_weights(buffer_device=device)
-        logger.info("Cosmos3-Nano materialized on %s", device)
+        logger.info("Cosmos3 materialized on %s", device)
 
     def load_pretrained(self, path: str, device=None):
         """Load pretrained weights from DCP or standard format."""
@@ -192,7 +192,7 @@ class Cosmos3Nano(nn.Module):
             _local.PosixPath = _pathlib_mod.PosixPath
             sys.modules['pathlib._local'] = _local
 
-        logger.info(f"Loading Cosmos3-Nano DCP checkpoint from: {model_dir}")
+        logger.info(f"Loading Cosmos3 DCP checkpoint from: {model_dir}")
 
         # Checkpoint keys have 'net.' prefix — load into full model state_dict
         # Only include keys that exist in checkpoint to avoid strict key errors
@@ -217,16 +217,16 @@ class Cosmos3Nano(nn.Module):
             logger.warning(f"DCP: {len(missing)} missing keys (first 5: {missing[:5]})")
         if unexpected:
             logger.warning(f"DCP: {len(unexpected)} unexpected keys (first 5: {unexpected[:5]})")
-        logger.info("Cosmos3-Nano DCP checkpoint loaded successfully")
+        logger.info("Cosmos3 DCP checkpoint loaded successfully")
 
     def encode(self, images, instructions, **kwargs):
         """Not implemented; call ``forward`` directly during training."""
         raise NotImplementedError("Use forward() directly.")
 
-    def forward(self, batch: Cosmos3NanoBatch, iteration=None, **kwargs) -> Dict[str, torch.Tensor]:
+    def forward(self, batch: Cosmos3Batch, iteration=None, **kwargs) -> Dict[str, torch.Tensor]:
         """Training forward: online VAE encode → noise → pack → MoT → loss.
 
-        Accepts Cosmos3NanoBatch (raw videos) from cosmos3_dataset.py.
+        Accepts Cosmos3Batch (raw videos) from cosmos3_dataset.py.
         """
         if batch.actions is not None:
             return self._forward_raw_video_with_action(batch, iteration=iteration)
@@ -436,5 +436,5 @@ class Cosmos3Nano(nn.Module):
 
 
     def predict_action(self, **kwargs) -> Dict[str, np.ndarray]:
-        """Action prediction (inference) - not yet implemented for Cosmos3Nano."""
-        raise NotImplementedError("Cosmos3Nano predict_action not yet implemented.")
+        """Action prediction (inference) - not yet implemented for Cosmos3."""
+        raise NotImplementedError("Cosmos3 predict_action not yet implemented.")

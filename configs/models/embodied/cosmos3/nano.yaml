@@ -1,13 +1,13 @@
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
 
-# Cosmos3-Nano DROID action-policy SFT recipe.
+# Cosmos3 DROID action-policy SFT recipe.
 # Adds action heads on top of the vision-only cosmos3_nano.yaml.
 # Training parameters are provided via CLI args (--lr, --batch-size, etc.)
 
 
 model:
-  model_type: "cosmos3_nano"
+  model_type: "cosmos3"
   qwen3_vl_path: "/mnt/cluster/models/Qwen/Qwen3-VL-8B-Instruct"
   qk_norm_for_text: true
   qk_norm_for_diffusion: true

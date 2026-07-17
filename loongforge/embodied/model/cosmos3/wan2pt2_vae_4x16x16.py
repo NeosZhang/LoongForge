@@ -26,7 +26,7 @@ if dist.is_available():
     from torch.distributed.distributed_c10d import _get_default_group
     from torch.distributed.utils import _sync_module_states, _verify_param_shape_across_processes
 
-from loongforge.embodied.data.datasets.cosmos3_nano.transforms.cosmos3_action_transform import VIDEO_RES_SIZE_INFO
+from loongforge.embodied.data.datasets.cosmos3.transforms.cosmos3_action_transform import VIDEO_RES_SIZE_INFO
 
 
 # For sequential decoding, CACHE_T is the number of frames to cache.
