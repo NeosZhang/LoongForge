@@ -75,9 +75,9 @@ TRAINING_ARGS=(
 
 DISTRIBUTED_TRAINING_ARGS=(
     --distributed-strategy ddp
-    --ddp-find-unused-parameters False
-    --ddp-static-graph True
-    --ddp-gradient-as-bucket-view True
+    --ddp-find-unused-parameters
+    --ddp-static-graph
+    --ddp-gradient-as-bucket-view
     --dtype bfloat16
 )
 
