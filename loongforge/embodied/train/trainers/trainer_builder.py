@@ -6,7 +6,6 @@
 import logging
 
 from loongforge.embodied.train.trainers.custom.groot_n1_6 import GrootN1d6Trainer
-from loongforge.embodied.train.trainers.custom.groot_n1_7 import GrootN1d7Trainer
 from loongforge.embodied.train.trainers.supervised.finetune_trainer import FinetuneTrainer
 
 logger = logging.getLogger(__name__)
@@ -14,7 +13,6 @@ logger = logging.getLogger(__name__)
 _TRAINER_CLASSES = {
     "FinetuneTrainer": FinetuneTrainer,
     "GrootN1d6Trainer": GrootN1d6Trainer,
-    "GrootN1d7Trainer": GrootN1d7Trainer,
 }
 
 

@@ -63,7 +63,7 @@ DATA_ARGS=(
 
 # ── Training params ───────────────────────────────────────────
 TRAINING_ARGS=(
-    --trainer-type GrootN1d7Trainer
+    --trainer-type FinetuneTrainer
     --train-iters 100
     --per-device-batch-size 4
     --gradient-accumulation-steps 1
@@ -76,6 +76,7 @@ TRAINING_ARGS=(
     --optimizer AdamW
     --clip-grad 1.0
     --weight-decay 1.0e-5
+    --weight-decay-grouping bias_norm
     --adam-beta1 0.9
     --adam-beta2 0.999
     --adam-eps 1e-8
@@ -90,6 +91,7 @@ DISTRIBUTED_TRAINING_ARGS=(
     --dtype bfloat16
     --ddp-bucket-cap-mb 100
     --no-ddp-find-unused-parameters
+    #--dataloader-seed-workers
 )
 
 # ── Logging params ────────────────────────────────────────────
