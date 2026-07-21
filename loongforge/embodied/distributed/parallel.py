@@ -6,6 +6,7 @@
 import logging
 
 import torch
+import torch._dynamo
 import torch.nn as nn
 from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import FSDPModule, MixedPrecisionPolicy, fully_shard
@@ -77,6 +78,8 @@ def _wrap_ddp(model: nn.Module, training_args, ctx: DistributedContext, dtype: t
         model = model.to(device=ctx.device)
     else:
         model = model.to(dtype=dtype, device=ctx.device)
+
+    torch._dynamo.config.optimize_ddp = training_args.dynamo_optimize_ddp
 
     ddp_kwargs = {
         "broadcast_buffers": training_args.ddp_broadcast_buffers,

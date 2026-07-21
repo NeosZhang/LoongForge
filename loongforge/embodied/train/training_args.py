@@ -1052,6 +1052,14 @@ class TrainingArgs:
             "help": "Batch gradient copies into buckets to reduce kernel launches."
         },
     )
+    dynamo_optimize_ddp: bool = field(
+        default=True,
+        metadata={
+            "help": "Set torch._dynamo.config.optimize_ddp. When True, TorchDynamo "
+                    "is allowed to optimize across DDP bucket boundaries. Disable "
+                    "(False) if you hit graph-break errors with DDP + torch.compile."
+        },
+    )
     dtype: str = field(
         default="bfloat16",
         metadata={
