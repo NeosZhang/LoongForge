@@ -28,6 +28,8 @@ from loongforge.embodied.model.cosmos3.modeling_configuration_cosmos3 import Cos
 from loongforge.embodied.data.datasets.cosmos3.data_configuration_cosmos3 import Cosmos3DroidConfig
 from loongforge.embodied.model.dreamzero.model_configuration_dreamzero import DreamZeroConfig
 from loongforge.embodied.data.datasets.dreamzero.transforms.data_configuration_dreamzero import DreamZeroDataConfig
+from loongforge.embodied.model.lingbot_va.model_configuration_lingbot_va import LingBotVAModelConfig
+from loongforge.embodied.data.datasets.lingbot_va.transforms.data_configuration_lingbot_va import LingBotVADataConfig
 
 _CONFIGS_DIR = (
     Path(__file__).resolve().parent.parent.parent.parent
@@ -45,6 +47,12 @@ class ModelSchema:
 
 
 MODEL_SCHEMA = {
+    "lingbot_va_robotwin": ModelSchema(
+        "lingbot_va_robotwin.yaml", LingBotVAModelConfig, LingBotVADataConfig
+    ),
+    "lingbot_va_libero": ModelSchema(
+        "lingbot_va_libero.yaml", LingBotVAModelConfig, LingBotVADataConfig
+    ),
     "pi05": ModelSchema("pi05.yaml", Pi05ModelConfig, Pi05DataConfig),
     "groot_n1_6": ModelSchema("groot_n1_6.yaml", GrootN1d6ModelConfig, GrootN1d6DataConfig),
     "xvla": ModelSchema("xvla.yaml", XvlaModelConfig, XvlaDataConfig),
