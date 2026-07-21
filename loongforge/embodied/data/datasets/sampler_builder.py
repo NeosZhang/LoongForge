@@ -134,6 +134,7 @@ def default_sampler_builder(context: SamplerBuilderContext) -> Optional[Sampler]
     if not (ctx.is_distributed and ctx.world_size > 1):
         return None
 
+    drop_last = context.training_args.batch_drop_last
     if context.training_args.distributed_sampler_mode == "block":
         return _BlockShardSampler(
             dataset,
@@ -142,7 +143,7 @@ def default_sampler_builder(context: SamplerBuilderContext) -> Optional[Sampler]
             rank=ctx.rank,
             shuffle=context.shuffle,
             seed=context.seed,
-            drop_last=False,
+            drop_last=drop_last,
         )
 
     return StatefulDistributedSampler(
@@ -151,7 +152,7 @@ def default_sampler_builder(context: SamplerBuilderContext) -> Optional[Sampler]
         rank=ctx.rank,
         shuffle=context.shuffle,
         seed=context.seed,
-        drop_last=False,
+        drop_last=drop_last,
     )
 
 
