@@ -272,8 +272,21 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
             if not response.get("ok", False):
                 raise RuntimeError(f"Policy error: {response}")
 
-            action_chunk = np.asarray(response["data"]["actions"], dtype=np.float32).reshape(-1, 7)
-            flat_action = action_chunk[0]
+            # X-VLA ee6d is 20D; pi05 is already 7D. Optional postprocess converts
+            # model space → ManiSkill 7D (pos3 + rot_delta3 + grip1) for pd_ee_delta_pose.
+            from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
+
+            raw_chunk = np.asarray(response["data"]["actions"], dtype=np.float32)
+            if raw_chunk.ndim == 1:
+                raw_chunk = raw_chunk.reshape(1, -1)
+            postprocess_key = getattr(args, "action_postprocess", "") or ""
+            processed = postprocess_actions(raw_chunk, postprocess_key)
+            if processed.shape[-1] < 7:
+                raise ValueError(
+                    f"ManiSkill expects >=7D after postprocess, got shape {processed.shape} "
+                    f"(action_postprocess={postprocess_key!r})"
+                )
+            flat_action = processed[0, :7].astype(np.float32)
             env_action = adapter.action_from_canonical({"actions": flat_action})
             obs, reward, done, truncated, info = env.step(env_action)
             done_flag = bool(_to_scalar(done))
@@ -359,6 +372,7 @@ def _apply_config(args: argparse.Namespace, config: Dict[str, Any]) -> argparse.
         (benchmark, "allow_dummy_image", "allow_dummy_image"),
         (benchmark, "max_steps", "max_steps"),
         (benchmark, "success_reward_threshold", "success_reward_threshold"),
+        (benchmark, "action_postprocess", "action_postprocess"),
         (server, "host", "host"),
         (server, "port", "port"),
         (run, "seed", "seed"),
@@ -402,6 +416,11 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-dummy-image", action="store_true")
     parser.add_argument("--disable-action-cache", action="store_true")
     parser.add_argument("--cfg-scale", type=float, default=1.5)
+    parser.add_argument(
+        "--action-postprocess",
+        default="",
+        help="Optional key from ACTION_POSTPROCESS_REGISTRY (e.g. ee6d_to_axis_angle for X-VLA)",
+    )
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--seed", type=int, default=7)

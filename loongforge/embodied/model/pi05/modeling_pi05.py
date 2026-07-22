@@ -894,16 +894,23 @@ class PI05Policy(nn.Module):
             images = [[img] for img in images]
         B = len(images)
         image_transform = ImageTransform(apply_to=[], image_size=self._image_size)
-        num_images = 2
+        # Use the number of views provided by the eval client so LIBERO (2) and
+        # RoboTwin (3) both work without hard-coding a single camera count.
+        num_images = max(len(images[0]), 1)
 
         images_list, img_masks = [], []
         for v in range(num_images):
-            view = [
-                im_list[v] if v < len(im_list) else torch.zeros(3, self._image_size, self._image_size)
-                for im_list in images
-            ]
+            view = []
+            mask_vals = []
+            for im_list in images:
+                if v < len(im_list):
+                    view.append(im_list[v])
+                    mask_vals.append(True)
+                else:
+                    view.append(torch.zeros(3, self._image_size, self._image_size))
+                    mask_vals.append(False)
             images_list.append(image_transform.process_batch(view).to(device))
-            img_masks.append(torch.ones(B, dtype=torch.bool, device=device))
+            img_masks.append(torch.tensor(mask_vals, dtype=torch.bool, device=device))
 
         if state is not None:
             if not isinstance(state, torch.Tensor):

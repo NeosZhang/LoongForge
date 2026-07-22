@@ -74,14 +74,17 @@ Current internal CALVIN status:
 benchmark env:       /workspace/miniconda3/envs/calvin
 repo/config assets:  /ssd1/sunyuehang/calvin
 validation dataset:  /ssd1/sunyuehang/calvin_debug_dataset
-smoke status:        pass; 1 sequence, first subtask capped at 30 steps, trace and summary written
-model score status:  smoke/debug only with current LIBERO-domain pi05 checkpoint
+pi05 configs:        only smoke(_internal).yaml
+                     server.random_init: true (link smoke, not task-success)
+smoke status:        pass; 1 sequence, first subtask capped at 30 steps
+model score status:  need CALVIN-domain ckpt + dataset_statistics.json
 ```
 
 Used by:
 
 ```text
-examples/embodied/pi05/eval/configs/calvin/*.yaml
+examples/embodied/pi05/eval/configs/calvin/smoke.yaml
+examples/embodied/pi05/eval/configs/calvin/smoke_internal.yaml
 ```
 
 ## SAPIEN Vulkan Runtime
@@ -144,18 +147,21 @@ Runtime variables are covered in the shared SAPIEN Vulkan Runtime section above.
 Current SimplerEnv status:
 
 ```text
-Bridge tasks configured: eggplant, carrot_on_plate, stack_cube, spoon_on_towel
-Runtime smoke:         pass
-Fixed-action sanity:   pass; small meter-scale actions move the WidowX controller
-Model score status:    smoke/debug only until Bridge/WidowX pi05 checkpoint and dataset_statistics.json are available
+X-VLA WidowX status:   task success after absolute EE controller patch
+                       (see examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md)
+                       configs: examples/embodied/xvla/eval/configs/simplerenv/*
+pi05 configs:          only widowx_stack_cube_smoke(_internal).yaml
+                       server.random_init: true (link smoke, not task-success)
+                       other Bridge tasks: edit task_name in-file comments
 ```
 
-The current internal pi05 SimplerEnv configs use LIBERO-domain weights or no Bridge/WidowX `dataset_statistics_path`. They validate benchmark plumbing, trace writing, and GIF output, but they are not credible SimplerEnv benchmark scores.
+Upstream SimplerEnv without the 255isWhite-style absolute EE registration will mis-execute absolute pose actions as deltas. Prefer cloning the fork documented in `SIMPLERENV_PATCH_en.md` or applying the two manual patches.
 
 Used by:
 
 ```text
 examples/embodied/pi05/eval/configs/simplerenv/*.yaml
+examples/embodied/xvla/eval/configs/simplerenv/*.yaml
 ```
 
 ## RoboTwin
@@ -191,10 +197,27 @@ ffmpeg version 7.0.2-static
 
 The `ffmpeg` executable is provided by the installed `imageio-ffmpeg` package and linked into the `robotwin` env `bin` directory so RoboTwin official video logging can launch `ffmpeg` directly.
 
+Current RoboTwin status (2026-07-21):
+
+```text
+Official evaluator:    script/eval_policy.py via robotwin_runner + bridges/robotwin_policy.py
+action_bridge modes:   strict_14d | duplicate_7d | pi05_aloha_14d | ee6d_dual
+pi05 RoboTwin2:        task success (adjust_bottle demo_clean)
+                       action_bridge=pi05_aloha_14d, action_dim=14, action_horizon=32
+                       checkpoint example: /ssd1/sunyuehang/pi0.5_robotwin2
+                       stats: examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json
+                       (from ckpt assets/.../norm_stats.json: state→observation.state, actions→action)
+xvla RoboTwin2:        task success (adjust_bottle demo_clean)
+                       action_bridge=ee6d_dual, domain_id=6
+                       checkpoint example: /ssd1/sunyuehang/X-VLA-RoboTwin2
+Smoke-only:            edit adjust_bottle_smoke*.yaml (random_init / duplicate_7d); no separate YAML
+```
+
 Used by:
 
 ```text
 examples/embodied/pi05/eval/configs/robotwin/*.yaml
+examples/embodied/xvla/eval/configs/robotwin/*.yaml
 ```
 
 ## ManiSkill
@@ -208,14 +231,10 @@ Runtime Python:
 Current ManiSkill status:
 
 ```text
-Initial task configured: PickCube-v1
-Runner type:             Gym/Gymnasium ManiSkill runner
-Runtime import status:   torch / mani_skill / gymnasium / sapien imports pass
-Action interface:        7D single-arm smoke path, pd_ee_delta_pose-style control
-State smoke status:      PickCube-v1 reset/step passes with obs_mode=state, sim_backend=auto, render_backend=gpu
-Policy smoke status:     mock and pi05 random-init end-to-end RPC smoke pass with trace, summary, and replay GIF output
-RGBD smoke status:       mock policy RGBD rollout passes with NVIDIA Vulkan ICD, trace, summary, and replay GIF output
-Model score status:      smoke/debug until ManiSkill-compatible checkpoint and dataset_statistics.json are available
+pi05 configs:          only pick_cube_smoke(_internal).yaml
+                       server.random_init: true (link smoke, not task-success)
+Task:                  PickCube-v1, 7D, pd_ee_delta_pose
+Model score status:    need ManiSkill-domain ckpt + dataset_statistics.json
 ```
 
 Visual smoke uses the shared SAPIEN Vulkan runtime documented above. The ManiSkill runner prepares the NVIDIA ICD and library path before importing ManiSkill/SAPIEN.
@@ -230,22 +249,27 @@ examples/embodied/pi05/eval/configs/maniskill/*.yaml
 
 ```text
 examples/embodied/pi05/eval/configs/libero/*.yaml
+examples/embodied/xvla/eval/configs/libero/*.yaml
   benchmark env: /workspace/miniconda3/envs/libero
   runtime:       /workspace/miniconda3/envs/libero/bin/python
 
 examples/embodied/pi05/eval/configs/calvin/*.yaml
+examples/embodied/xvla/eval/configs/calvin/*.yaml
   benchmark env: /workspace/miniconda3/envs/calvin
   runtime:       /workspace/miniconda3/envs/calvin/bin/python
 
 examples/embodied/pi05/eval/configs/simplerenv/*.yaml
+examples/embodied/xvla/eval/configs/simplerenv/*.yaml
   benchmark env: /workspace/miniconda3/envs/simplerenv
   runtime:       /workspace/miniconda3/envs/simplerenv/bin/python
 
 examples/embodied/pi05/eval/configs/robotwin/*.yaml
+examples/embodied/xvla/eval/configs/robotwin/*.yaml
   benchmark env: /workspace/miniconda3/envs/robotwin
   runtime:       /workspace/miniconda3/envs/robotwin/bin/python
 
 examples/embodied/pi05/eval/configs/maniskill/*.yaml
+examples/embodied/xvla/eval/configs/maniskill/*.yaml
   benchmark env: /workspace/miniconda3/envs/maniskill
   runtime:       /workspace/miniconda3/envs/maniskill/bin/python
 ```

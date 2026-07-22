@@ -13,10 +13,21 @@ import numpy as np
 import pytest
 
 from loongforge.embodied.eval.adapters.robotwin import ROBOTWIN_ACTION_REORDER, RoboTwinAdapter
-from loongforge.embodied.eval.bridges.robotwin_policy import ModelClient
+from loongforge.embodied.eval.bridges.robotwin_policy import (
+    ModelClient,
+    _adapt_to_pi_decode_state,
+    _adapt_to_pi_encode_actions,
+    _delta_to_absolute_actions,
+    _ee6d_action_to_env,
+    _PI05_DELTA_JOINT_MASK,
+    _PI05_JOINT_FLIP_MASK,
+)
 from loongforge.embodied.eval.orchestrator.runners.robotwin_runner import (
+    _build_robotwin_records,
     _override_eval_policy_for_smoke,
     _override_step_limit,
+    _parse_official_episode_outcomes,
+    _robotwin_rate_from_result,
     build_command,
     _write_deploy_policy,
 )
@@ -126,6 +137,45 @@ def test_robotwin_policy_rejects_7d_without_bridge() -> None:
 
     with pytest.raises(ValueError, match="14D"):
         client._extract_robotwin_action(np.arange(7, dtype=np.float32))
+
+
+def test_pi05_aloha_14d_delta_to_abs_and_roundtrip_masks() -> None:
+    """openpi AbsoluteActions: joints relative, grippers absolute; flip mask is ±1."""
+    state = np.arange(14, dtype=np.float32) * 0.1
+    delta = np.ones(14, dtype=np.float32) * 0.05
+    absolute = _delta_to_absolute_actions(delta, state)
+    expected = np.where(_PI05_DELTA_JOINT_MASK, delta + state, delta)
+    np.testing.assert_allclose(absolute, expected, rtol=1e-5)
+    assert not _PI05_DELTA_JOINT_MASK[6] and not _PI05_DELTA_JOINT_MASK[13]
+    assert _PI05_JOINT_FLIP_MASK.shape == (14,)
+    assert set(np.unique(_PI05_JOINT_FLIP_MASK).tolist()) == {-1.0, 1.0}
+
+    # encode(decode(x)) is not identity (gripper nonlinear), but joint flips cancel.
+    env_state = np.linspace(0.02, 0.05, 14).astype(np.float32)
+    pi_state = _adapt_to_pi_decode_state(env_state)
+    assert pi_state.shape == (14,)
+    env_action = _adapt_to_pi_encode_actions(pi_state)
+    assert env_action.shape == (14,)
+
+
+def test_ee6d_action_to_env_is_16d() -> None:
+    """X-VLA 20D ee6d → RoboTwin 16D ee (pos+quat+grip × 2)."""
+    # Interleaved rot6d of I: mat[:, :2].reshape(6) == [1, 0, 0, 1, 0, 0]
+    identity_rot6d = np.asarray([1, 0, 0, 1, 0, 0], dtype=np.float32)
+    raw = np.zeros(20, dtype=np.float32)
+    raw[0:3] = [0.1, 0.2, 0.3]
+    raw[3:9] = identity_rot6d
+    raw[9] = 0.0  # open gripper (<= 0.7 → grip cmd +1)
+    raw[10:13] = [0.4, 0.5, 0.6]
+    raw[13:19] = identity_rot6d
+    raw[19] = 0.9  # closed gripper (> 0.7 → grip cmd -1)
+
+    env_action = _ee6d_action_to_env(raw)
+    assert env_action.shape == (16,)
+    np.testing.assert_allclose(env_action[0:3], [0.1, 0.2, 0.3], rtol=1e-5)
+    np.testing.assert_allclose(env_action[8:11], [0.4, 0.5, 0.6], rtol=1e-5)
+    assert env_action[7] == pytest.approx(1.0)  # open
+    assert env_action[15] == pytest.approx(-1.0)  # closed
 
 
 def test_robotwin_runner_writes_vla_eval_policy_config(tmp_path: pathlib.Path) -> None:
@@ -252,3 +302,96 @@ def test_robotwin_eval_policy_override_round_trip(tmp_path: pathlib.Path) -> Non
         eval_policy_path.read_text(encoding="utf-8")
         == "    st_seed = 100000 * (1 + seed)\n    test_num = 100\n    expert_check = True\n"
     )
+
+
+def test_robotwin_rate_from_result_reads_last_float() -> None:
+    """Official `_result.txt` ends with suc_num/test_num as a float rate."""
+    text = "Timestamp: 2026-07-21 21:45:26\n\nInstruction Type: unseen\n\n0.8\n"
+    assert _robotwin_rate_from_result(text) == pytest.approx(0.8)
+    assert _robotwin_rate_from_result(None) is None
+    assert _robotwin_rate_from_result("") is None
+
+
+def test_parse_official_episode_outcomes_from_ansi_log() -> None:
+    """Per-episode success is inferred from cumulative suc counter + seed."""
+    log = (
+        "Success!\n"
+        "adjust_bottle | policy | demo_clean | ckpt\n"
+        "Success rate: \033[96m1\033[0m/\033[96m1\033[0m => \033[95m100.0%\033[0m, "
+        "current seed: \033[90m100001\033[0m\n"
+        "\n"
+        "Success!\n"
+        "Success rate: 2/2 => 100.0%, current seed: 100002\n"
+        "Fail!\n"
+        "Success rate: 2/3 => 66.7%, current seed: 100006\n"
+        "Success!\n"
+        "Success rate: 3/4 => 75.0%, current seed: 100008\n"
+        "Success!\n"
+        "Success rate: 4/5 => 80.0%, current seed: 100009\n"
+    )
+    eps = _parse_official_episode_outcomes(log)
+    assert len(eps) == 5
+    assert [e["seed"] for e in eps] == [100001, 100002, 100006, 100008, 100009]
+    assert [e["success"] for e in eps] == [1, 1, 0, 1, 1]
+    assert [e["episode_idx"] for e in eps] == [0, 1, 2, 3, 4]
+
+
+def test_build_robotwin_records_expands_per_episode() -> None:
+    """results.jsonl should be 1 row per official episode with 0/1 success."""
+    args = argparse.Namespace(
+        task_name="adjust_bottle",
+        task_config="demo_clean",
+        ckpt_setting="loongforge_xvla_robotwin2",
+        max_steps=300,
+        seed=0,
+        start_seed_override=100001,
+    )
+    log = (
+        "Success rate: 1/1 => 100.0%, current seed: 100001\n"
+        "Success rate: 2/2 => 100.0%, current seed: 100002\n"
+        "Success rate: 3/3 => 100.0%, current seed: 100005\n"
+        "Success rate: 3/4 => 75.0%, current seed: 100006\n"
+        "Success rate: 4/5 => 80.0%, current seed: 100008\n"
+    )
+    result_txt = "Timestamp: x\n\nInstruction Type: unseen\n\n0.8\n"
+    records = _build_robotwin_records(
+        args,
+        returncode=0,
+        artifacts={"result_txt": "/tmp/_result.txt", "official_eval_log": "/tmp/log", "trace_path": None, "videos": []},
+        episode_time_sec=500.0,
+        result_txt=result_txt,
+        log_text=log,
+    )
+    assert len(records) == 5
+    assert sum(int(r["success"]) for r in records) == 4
+    assert all(r["success_rate"] == pytest.approx(0.8) for r in records)
+    assert all(r["n_episodes"] == 5 for r in records)
+    assert records[3]["success"] == 0
+    assert records[3]["failure_reason"] == "not_successful"
+    assert records[3]["seed"] == 100006
+    assert records[3]["episode_id"] == "robotwin/adjust_bottle/demo_clean/seed=100006"
+    assert records[0]["episode_time_sec"] == pytest.approx(100.0)
+
+
+def test_build_robotwin_records_fallback_without_log() -> None:
+    """When log has no episode lines, keep a single row from `_result.txt` rate."""
+    args = argparse.Namespace(
+        task_name="adjust_bottle",
+        task_config="demo_clean",
+        ckpt_setting="loongforge_xvla_robotwin2",
+        max_steps=300,
+        seed=0,
+        start_seed_override=100001,
+    )
+    records = _build_robotwin_records(
+        args,
+        returncode=0,
+        artifacts={},
+        episode_time_sec=10.0,
+        result_txt="0.0\n",
+        log_text="no success rate lines",
+    )
+    assert len(records) == 1
+    assert records[0]["success"] == 0
+    assert records[0]["success_rate"] == pytest.approx(0.0)
+    assert records[0]["seed"] == 100001

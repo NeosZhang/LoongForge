@@ -17,24 +17,36 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from loongforge.embodied.eval.adapters.simplerenv import SIMPLERENV_DEFAULT_MAX_STEPS, SimplerEnvAdapter
+from loongforge.embodied.eval.adapters.simplerenv import (
+    SIMPLERENV_DEFAULT_MAX_STEPS,
+    SimplerEnvAdapter,
+    build_widowx_initial_model_state,
+)
 from loongforge.embodied.eval.metrics.results import append_jsonl, write_suite_summary_csv, write_summary_csv
 from loongforge.embodied.eval.orchestrator.config import load_config
 from loongforge.embodied.eval.transport import PolicyClient
 
 
-def _canonical_to_legacy_payload(canonical_obs: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+def _canonical_to_legacy_payload(
+    canonical_obs: Dict[str, Any],
+    args: argparse.Namespace,
+    state_override: Any = None,
+) -> Dict[str, Any]:
     """Run _canonical_to_legacy_payload."""
-    return {
+    payload = {
         "images": canonical_obs["images"],
         "instruction": canonical_obs["instruction"],
         "episode_id": canonical_obs["meta"]["episode_id"],
         "episode_step": canonical_obs["meta"]["episode_step"],
-        "state": canonical_obs.get("model_state"),
+        "state": state_override if state_override is not None else canonical_obs.get("model_state"),
         "disable_action_cache": args.disable_action_cache,
         "return_action_chunk": args.action_ensemble,
         "cfg_scale": args.cfg_scale,
     }
+    domain_id = getattr(args, "domain_id", None)
+    if domain_id is not None:
+        payload["domain_id"] = domain_id
+    return payload
 
 
 def _vulkan_runtime_env(args: argparse.Namespace) -> Dict[str, str]:
@@ -236,6 +248,11 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
     action_history: deque[np.ndarray] = deque(maxlen=args.action_ensemble_horizon)
     start_time = time.time()
 
+    postprocess_key = getattr(args, "action_postprocess", "") or ""
+    # X-VLA protocol: initial proprio from the env, then closed-loop backfill
+    # with the raw predicted action (official client: proprio[:10] = action[:10]).
+    proprio = build_widowx_initial_model_state(obs) if postprocess_key else None
+
     try:
         for episode_step in range(max_steps):
             canonical_obs = adapter.obs_to_canonical(
@@ -249,15 +266,29 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
             if args.save_replay:
                 _append_replay_frame(adapter, obs, replay_frames)
 
-            response = client.predict_action(**_canonical_to_legacy_payload(canonical_obs, args))
+            response = client.predict_action(
+                **_canonical_to_legacy_payload(canonical_obs, args, state_override=proprio)
+            )
             if not response.get("ok", False):
                 raise RuntimeError(f"Policy error: {response}")
 
-            action_chunk = np.asarray(response["data"]["actions"], dtype=np.float32).reshape(-1, 7)
-            flat_action = action_chunk[0]
-            if args.action_ensemble:
-                flat_action = _ensemble_action(action_history, action_chunk, args.action_ensemble_alpha)
-            env_action = adapter.action_from_canonical({"actions": flat_action})
+            raw_chunk = np.asarray(response["data"]["actions"], dtype=np.float32)
+            if raw_chunk.ndim == 1:
+                raw_chunk = raw_chunk.reshape(1, -1)
+            if postprocess_key:
+                from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
+
+                raw_row = raw_chunk[0]
+                if proprio is not None and raw_row.size >= 10:
+                    proprio[:10] = raw_row[:10]
+                env_action = postprocess_actions(raw_chunk[0:1], postprocess_key)[0].astype(np.float32)
+                flat_action = raw_row
+            else:
+                action_chunk = raw_chunk.reshape(-1, 7)
+                flat_action = action_chunk[0]
+                if args.action_ensemble:
+                    flat_action = _ensemble_action(action_history, action_chunk, args.action_ensemble_alpha)
+                env_action = adapter.action_from_canonical({"actions": flat_action})
             obs, reward, done, truncated, info = env.step(env_action)
             steps += 1
             if args.save_replay:
@@ -345,6 +376,8 @@ def _apply_config(args: argparse.Namespace, config: Dict[str, Any]) -> argparse.
         (benchmark, "action_scale", "action_scale"),
         (benchmark, "rotation_mode", "rotation_mode"),
         (benchmark, "max_steps", "max_steps"),
+        (benchmark, "domain_id", "domain_id"),
+        (benchmark, "action_postprocess", "action_postprocess"),
         (benchmark, "success_settle_steps", "success_settle_steps"),
         (benchmark, "success_settle_gripper", "success_settle_gripper"),
         (benchmark, "robot_init_x", "robot_init_x"),
@@ -391,6 +424,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--control-mode", default="arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos")
     parser.add_argument("--action-scale", type=float, default=1.0)
     parser.add_argument("--rotation-mode", choices=["euler", "axis_angle"], default="euler")
+    parser.add_argument("--domain-id", type=int, default=None)
+    parser.add_argument("--action-postprocess", default="")
     parser.add_argument("--disable-action-cache", action="store_true")
     parser.add_argument("--action-ensemble", action="store_true")
     parser.add_argument("--action-ensemble-horizon", type=int, default=7)

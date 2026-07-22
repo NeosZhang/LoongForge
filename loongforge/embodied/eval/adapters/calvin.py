@@ -14,6 +14,39 @@ from loongforge.embodied.eval.adapters.base import BaseBenchmarkAdapter
 CALVIN_MAX_STEPS_PER_SUBTASK = 360
 
 
+def _euler_to_rot6d_interleaved(euler_xyz: np.ndarray) -> np.ndarray:
+    """Convert intrinsic-xyz Euler angles to interleaved 6D rotation.
+
+    Matches the official X-VLA calvin client ``euler_xyz_to_rotate6D``:
+    ``R.from_euler("xyz", q).as_matrix()[..., :, :2].reshape(6)``.
+    """
+    from scipy.spatial.transform import Rotation
+
+    mat = Rotation.from_euler("xyz", np.asarray(euler_xyz, dtype=np.float64)).as_matrix()
+    return mat[:, :2].reshape(6).astype(np.float32)
+
+
+def _build_model_state(robot_obs: np.ndarray, state_format: str, target_dim: int = 20):
+    """Build the 20D proprio expected by X-VLA on CALVIN.
+
+    Official client layout: [tcp_pos(3), euler->rot6d_interleaved(6),
+    gripper_action > 0 (1)] padded with zeros to ``target_dim``.
+    """
+    if not state_format:
+        return None
+    if state_format != "ee6d":
+        return None
+    if robot_obs.size < 15:
+        return None
+    pos = robot_obs[:3].astype(np.float32)
+    rot6d = _euler_to_rot6d_interleaved(robot_obs[3:6])
+    grip = np.asarray([1.0 if float(robot_obs[-1]) > 0.0 else 0.0], dtype=np.float32)
+    proprio = np.concatenate([pos, rot6d, grip])
+    state = np.zeros(target_dim, dtype=np.float32)
+    state[: proprio.size] = proprio
+    return state
+
+
 def binarize_calvin_gripper(gripper_value: np.ndarray | float) -> np.ndarray:
     """Map model gripper scalar to CALVIN's {-1, +1} action convention."""
     value = float(np.asarray(gripper_value, dtype=np.float32).reshape(-1)[0])
@@ -29,12 +62,14 @@ class CalvinAdapter(BaseBenchmarkAdapter):
         control_hz: int = 30,
         max_steps_per_subtask: int = CALVIN_MAX_STEPS_PER_SUBTASK,
         continuous_gripper: bool = False,
+        state_format: str = "",
     ) -> None:
         """Run __init__."""
         self.robot_setup = robot_setup
         self.control_hz = control_hz
         self.max_steps_per_subtask = max_steps_per_subtask
         self.continuous_gripper = continuous_gripper
+        self.state_format = state_format
 
     def obs_to_canonical(self, env_obs: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Run obs_to_canonical."""
@@ -65,7 +100,7 @@ class CalvinAdapter(BaseBenchmarkAdapter):
                 "frame": "base",
                 "units": {"pos": "m", "rot": "rad"},
             },
-            "model_state": None,
+            "model_state": _build_model_state(robot_obs, self.state_format),
             "meta": {
                 "benchmark": "calvin",
                 "robot_setup": self.robot_setup,

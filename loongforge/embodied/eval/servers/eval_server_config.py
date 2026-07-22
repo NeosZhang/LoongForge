@@ -55,6 +55,15 @@ class EvalServerArgs:
     # Model type (used for registry lookup)
     model_type: str = "pi05"
 
+    # State format expected by the model (e.g. "ee6d", "ee_axis_angle", "")
+    # Adapter uses this to construct model_state in the correct rotation representation.
+    state_format: str = ""
+
+    # How many action steps from a model chunk to keep before replan (eval-side).
+    # 0 = model-factory default (xvla uses 10 to match official clients).
+    # Positive N = truncate to N. Negative = no truncation.
+    chunk_execute_steps: int = 0
+
 
 def parse_eval_server_config(config_path: str) -> tuple[EvalServerArgs, Dict[str, Any]]:
     """Parse an eval YAML config and return (EvalServerArgs, raw_model_dict).

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import pathlib
 import signal
@@ -34,11 +35,7 @@ from loongforge.embodied.eval.metrics import (
 from loongforge.embodied.eval.protocol import PROTOCOL_VERSION
 from loongforge.embodied.eval.transport import PolicyClient
 
-INFERENCE_CONFIG = {
-    "do_sample": False,
-    "use_ddim": True,
-    "num_ddim_steps": 10,
-}
+INFERENCE_CONFIG: dict = {}
 
 
 class StepTimeoutError(TimeoutError):
@@ -126,7 +123,7 @@ def _save_trace(
     return str(trace_path)
 
 
-def _canonical_to_policy_payload(canonical_obs: Dict[str, Any], unnorm_key: Optional[str]) -> Dict[str, Any]:
+def _canonical_to_policy_payload(canonical_obs: Dict[str, Any], domain_id: Optional[int] = None) -> Dict[str, Any]:
     """Run _canonical_to_policy_payload."""
     payload = {
         "images": canonical_obs["images"],
@@ -134,10 +131,9 @@ def _canonical_to_policy_payload(canonical_obs: Dict[str, Any], unnorm_key: Opti
         "episode_id": canonical_obs["meta"]["episode_id"],
         "episode_step": canonical_obs["meta"]["episode_step"],
         "state": canonical_obs.get("model_state"),
-        **INFERENCE_CONFIG,
     }
-    if unnorm_key is not None:
-        payload["unnorm_key"] = unnorm_key
+    if domain_id is not None:
+        payload["domain_id"] = domain_id
     return payload
 
 
@@ -262,11 +258,10 @@ def run_episode(
             obs = env.set_init_state(initial_state)
             reset_time_sec = time.time() - reset_start
 
-            max_steps = (
-                min(SUITE_MAX_STEPS[task_suite_name], args.max_steps)
-                if args.max_steps > 0
-                else SUITE_MAX_STEPS[task_suite_name]
-            )
+            # Explicit benchmark.max_steps takes priority over the suite
+            # default so long-horizon policies (e.g. X-VLA, horizon 800) are
+            # not clamped by SUITE_MAX_STEPS.
+            max_steps = args.max_steps if args.max_steps > 0 else SUITE_MAX_STEPS[task_suite_name]
             done = False
             info: Dict[str, Any] = {}
 
@@ -278,18 +273,31 @@ def run_episode(
                     obs, reward, done, info = _env_step(env, LIBERO_DUMMY_ACTION, args.per_step_timeout_sec)
                     continue
 
+                # OSC absolute vs delta: see _resolve_libero_use_delta().
+                # Default auto: absolute when action_postprocess is set (xvla),
+                # else keep robosuite delta (pi05).
+                if raw_step == args.num_steps_wait:
+                    use_delta = _resolve_libero_use_delta(args)
+                    for robot in env.env.robots:
+                        robot.controller.use_delta = use_delta
+
                 episode_step = raw_step - args.num_steps_wait
+                controller = env.env.robots[0].controller
                 canonical_obs = adapter.obs_to_canonical(
                     obs,
                     {
                         "instruction": task_description,
                         "episode_id": episode_id,
                         "episode_step": episode_step,
+                        "ee_pos": np.asarray(controller.ee_pos, dtype=np.float32),
+                        "ee_ori_mat": np.asarray(controller.ee_ori_mat, dtype=np.float32),
                     },
                 )
                 request_start = time.perf_counter()
                 with _alarm_timeout(args.policy_call_timeout_ms / 1000.0, TimeoutError):
-                    response = client.predict_action(**_canonical_to_policy_payload(canonical_obs, args.unnorm_key))
+                    response = client.predict_action(**_canonical_to_policy_payload(
+                        canonical_obs, domain_id=getattr(args, "domain_id", None)
+                    ))
                 e2e_latency_ms = (time.perf_counter() - request_start) * 1000.0
                 e2e_latencies.append(e2e_latency_ms)
                 if not response.get("ok", False):
@@ -298,7 +306,19 @@ def run_episode(
                 data = response["data"]
                 inference_latency_ms = data.get("inference_latency_ms")
                 inference_latencies.append(inference_latency_ms)
-                flat_action = np.asarray(data["actions"], dtype=np.float32).reshape(-1)[:7]
+                from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
+                raw_chunk = np.asarray(data["actions"], dtype=np.float32)
+                if raw_chunk.ndim == 1:
+                    raw_chunk = raw_chunk.reshape(1, -1)
+                postprocess_key = getattr(args, "action_postprocess", "") or ""
+                # Log raw grip values before postprocess for debugging
+                if postprocess_key and raw_chunk.shape[-1] >= 10:
+                    raw_grip = float(raw_chunk[0, 9])
+                    logging.info("step %d raw grip logit/sigmoid: %.6f", episode_step, raw_grip)
+                processed = postprocess_actions(raw_chunk, postprocess_key)
+                # Absolute targets are executed as-is when use_delta=False;
+                # delta models (pi05) keep the OSC default use_delta=True.
+                flat_action = processed[0]
                 env_action = adapter.action_from_canonical({"actions": flat_action})
                 obs, reward, done, info = _env_step(env, env_action, args.per_step_timeout_sec)
                 steps += 1
@@ -424,10 +444,14 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
 
     task_suite = benchmark.get_benchmark_dict()[args.task_suite_name]()
     n_tasks = task_suite.n_tasks if args.max_tasks <= 0 else min(task_suite.n_tasks, args.max_tasks)
+    # Optional benchmark.task_ids: explicit task id list (e.g. rerun only
+    # low-success tasks); falls back to the first n_tasks tasks.
+    selected_task_ids = [int(t) for t in (getattr(args, "task_ids", None) or [])] or list(range(n_tasks))
     adapter = LiberoAdapter(
         suite_name=args.task_suite_name,
         episodes_per_task=args.episodes_per_task,
         continuous_gripper=getattr(args, "continuous_gripper", False),
+        state_format=getattr(args, "state_format", ""),
     )
     server_manager = getattr(args, "server_manager", None)
     if server_manager is not None:
@@ -437,7 +461,7 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
     start_time = time.time()
 
     try:
-        for task_id in range(n_tasks):
+        for task_id in selected_task_ids:
             task = task_suite.get_task(task_id)
             initial_states = task_suite.get_task_init_states(task_id)
             n_episodes = min(args.episodes_per_task, len(initial_states))
@@ -506,6 +530,27 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
+def _resolve_libero_use_delta(args: Any) -> bool:
+    """Resolve OSC use_delta from benchmark.control_mode (absolute|delta|auto).
+
+    auto (default): absolute when ``action_postprocess`` is set (xvla-style
+    absolute EE), otherwise delta (pi05 / robosuite default). Explicit
+    absolute/delta overrides the inference for models that need postprocess
+    while still using incremental control (or the reverse).
+    """
+    mode = str(getattr(args, "control_mode", "") or "auto").strip().lower()
+    if mode in {"", "auto"}:
+        return not bool(getattr(args, "action_postprocess", "") or "")
+    if mode in {"absolute", "abs", "absolute_ee", "ee_absolute"}:
+        return False
+    if mode in {"delta", "relative", "incremental"}:
+        return True
+    raise ValueError(
+        f"Unknown benchmark.control_mode for LIBERO: {mode!r}. "
+        "Use auto | absolute | delta."
+    )
+
+
 def build_argparser() -> argparse.ArgumentParser:
     """Run build_argparser."""
     parser = argparse.ArgumentParser()
@@ -519,7 +564,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--unnorm-key", default="franka")
     parser.add_argument("--ckpt-path", default="")
-    parser.add_argument("--model-name", default="loongforge-pi05")
+    parser.add_argument("--model-name", default="loongforge")
     parser.add_argument("--save-replay", action="store_true")
     parser.add_argument("--save-trace", action="store_true")
     parser.add_argument("--resume", action="store_true", default=True)
@@ -532,6 +577,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--min-episodes-per-task", type=int, default=1)
     parser.add_argument("--continuous-gripper", action="store_true", default=False,
                         help="Pass raw gripper value directly to LIBERO without binarization")
+    parser.add_argument(
+        "--control-mode",
+        default="auto",
+        choices=["auto", "absolute", "delta"],
+        help="LIBERO OSC: auto (absolute iff action_postprocess set), absolute, or delta",
+    )
     parser.add_argument(
         "--output-dir",
         default="/workspace/LoongForge-VLA/loongforge/embodied/eval/reports/manual/libero/runner",
