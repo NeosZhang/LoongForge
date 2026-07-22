@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
 # Convert DeepSeek-V4 from Megatron Core format back to HF format (BF16 version)
 set -e
 
@@ -20,16 +22,20 @@ PYTHONPATH=$MEGATRON_PATH:$PYTHONPATH \
     --save_platform=huggingface \
     --config_file $MODEL_CONFIG_FILE \
     --convert_file $CONVERT_FILE \
-    --tensor_model_parallel_size=2 \
-    --pipeline_model_parallel_size=1 \
-    --expert_parallel_size=2 \
+    --tensor_model_parallel_size=1 \
+    --pipeline_model_parallel_size=3 \
+    --expert_parallel_size=8 \
     --expert_tensor_parallel_size=1 \
     --megatron_path=$MEGATRON_PATH \
     --load_ckpt_path=$LOAD \
     --save_ckpt_path=$SAVE \
     --safetensors \
-    --max_workers=4 \
-    --moe-grouped-gemm
-
+    --max_workers=32 \
+    --moe-grouped-gemm \
+    --amax_epsilon=1e-12 \
+    --pretrain_as_fp8 \
+    --convert_to_fp8 \
+    --force_pow_2_scales
+    
 echo "=== mcore -> HF conversion completed ==="
 echo "Output: $SAVE"

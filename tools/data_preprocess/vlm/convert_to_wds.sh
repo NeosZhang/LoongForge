@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 # messages_to_wds.sh : convert messages-format JSONL to WebDataset tar shards.
 set -euo pipefail
 

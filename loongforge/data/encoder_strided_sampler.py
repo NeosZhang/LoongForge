@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 """Strided data access for full_hetero_dp encoder.
 
 Provides two implementations:

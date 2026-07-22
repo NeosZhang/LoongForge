@@ -1,4 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/bash
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 set -euo pipefail
 
 show_help() {

@@ -6,7 +6,7 @@ set -x
 MEGATRON_PATH=${MEGATRON_PATH:-"/workspace/Loong-Megatron"}
 export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"/workspace/LoongForge"}
 
-DATA_PATH=${DATA_PATH:-"/mnt/cluster/fuhaohan/qianfan/datasets/128k_tokenized_qianfan_code_data"}
+DATA_PATH=${DATA_PATH:-"/mnt/cluster/qianfan/datasets/128k_tokenized_qianfan_code_data"}
 TOKENIZER_PATH=${TOKENIZER_PATH:-"/mnt/cluster/models/Qwen2.5-32B-Instruct"}
 CHECKPOINT_LOAD_PATH=${CHECKPOINT_LOAD_PATH:-"/mnt/cluster/LoongForge/qwen2.5/Qwen2.5_32B_mcore_tp8pp1"}
 CHECKPOINT_SAVE_PATH=${CHECKPOINT_LOAD_PATH:-"/mnt/cluster/LoongForge/qwen2.5/Qwen2.5_32B_mcore_tp8pp1_saved"}

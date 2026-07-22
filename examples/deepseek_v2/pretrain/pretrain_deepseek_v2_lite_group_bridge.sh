@@ -22,6 +22,8 @@ export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"/workspace/LoongForge"}
 DATA_PATH=${DATA_PATH:-"/workspace/loongforge-ckpt/pile_test/pile-deepseek_text_document"}
 TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/loongforge-ckpt/DeepSeek-V2-Lite"}
 CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/loongforge-ckpt/DeepSeek-V2-Lite"}
+
+SAVE_HF_PATH=${SAVE_HF_PATH:-"/workspace/loongforge-ckpt/DeepSeek-V2-Lite-output"}
 TENSORBOARD_PATH=${TENSORBOARD_PATH:-"/workspace/loongforge-ckpt/tensorboard/deepseek-v2-lite"}
 
 GPUS_PER_NODE=8
@@ -73,15 +75,15 @@ TRAINING_ARGS=(
     --clip-grad 1.0
     --bf16
     --load $CHECKPOINT_PATH
-    --save $CHECKPOINT_PATH
+    # --save $CHECKPOINT_PATH
+    --save-hf true # true or false, default is false, can be omitted
+    --save-hf-path $SAVE_HF_PATH  # If not specified, will save to <save>/release_hf_weights/
     --save-interval 40
     --eval-interval 1000
     --eval-iters 10
     --no-load-optim
     --no-load-rng
     --enable-experimental
-    # --save-hf  # true or false, default is true, can be omitted
-    # --save-hf-path $SAVE_HF_PATH  # If not specified, will save to <save>/release_hf_weights/
 )
 
 MOE_ARGS=(

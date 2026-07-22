@@ -1,4 +1,7 @@
-#! /bin/bash
+#!/bin/bash
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 # WAN2.1 I2V training with Megatron FSDP ZeRO-3.
 
 # CUDA_DEVICE_MAX_CONNECTIONS must be UNSET for FSDP (not set to 1)
