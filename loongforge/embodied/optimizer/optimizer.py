@@ -218,6 +218,35 @@ class _FP32MasterOptimizerAdapter(torch.optim.Optimizer):
         self._optimizer.load_state_dict(state_dict)
         self._refresh_public_optimizer_state()
 
+    def local_checkpoint_state_dict(self):
+        """Return rank-local optimizer state, including fp32 master weights."""
+        return {
+            "optimizer": self._optimizer.state_dict(),
+            "master_params": [
+                master.detach() for _, master in self._owned_pairs
+            ],
+        }
+
+    def load_local_checkpoint_state_dict(self, state_dict):
+        """Restore rank-local optimizer state and fp32 master weights."""
+        master_params = state_dict["master_params"]
+        if len(master_params) != len(self._owned_pairs):
+            raise ValueError(
+                f"Expected {len(self._owned_pairs)} fp32 master parameters, "
+                f"got {len(master_params)}."
+            )
+
+        self._optimizer.load_state_dict(state_dict["optimizer"])
+        with torch.no_grad():
+            for saved_master, (_, master) in zip(master_params, self._owned_pairs):
+                if saved_master.shape != master.shape:
+                    raise ValueError(
+                        "FP32 master parameter shape mismatch: "
+                        f"expected {tuple(master.shape)}, got {tuple(saved_master.shape)}."
+                    )
+                master.copy_(saved_master)
+        self._refresh_public_optimizer_state()
+
 
 def _make_fp32_master_optimizer_class(optimizer_cls):
     """Build a local optimizer class for ZeroRedundancyOptimizer."""

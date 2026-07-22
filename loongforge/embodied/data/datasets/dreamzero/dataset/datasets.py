@@ -64,6 +64,29 @@ def _temporary_transform_rng(seed: int):
         random.setstate(python_rng_state)
 
 
+def _worker_rng_state_dict() -> dict:
+    """Capture transform RNG streams for StatefulDataLoader checkpoints."""
+    return {
+        "torch": torch.random.get_rng_state(),
+        "numpy": np.random.get_state(),
+        "python": random.getstate(),
+    }
+
+
+def _load_worker_rng_state_dict(state_dict: dict) -> None:
+    """Restore transform RNG streams in a StatefulDataLoader worker."""
+    torch.random.set_rng_state(state_dict["torch"])
+    np.random.set_state(_lists_to_tuples(state_dict["numpy"]))
+    random.setstate(_lists_to_tuples(state_dict["python"]))
+
+
+def _lists_to_tuples(value):
+    """Undo torchdata's list normalization for RNG tuple states."""
+    if isinstance(value, list):
+        return tuple(_lists_to_tuples(item) for item in value)
+    return value
+
+
 class DreamZeroLeRobotDataset(
     Dataset,
     _DreamZeroMetaMixin,
@@ -264,6 +287,14 @@ class DreamZeroLeRobotDataset(
             epoch (int): The epoch to set.
         """
         self.epoch = epoch
+
+    def state_dict(self) -> dict:
+        """Capture worker RNG state for exact dataloader resume."""
+        return _worker_rng_state_dict()
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        """Restore worker RNG state after dataloader resume."""
+        _load_worker_rng_state_dict(state_dict)
 
     def __len__(self) -> int:
         """Get the total number of data points in the dataset.
@@ -543,6 +574,14 @@ class DreamZeroLeRobotMixtureDataset(Dataset):
         """
         self.epoch = epoch
         # self.sampled_steps = self.sample_epoch()
+
+    def state_dict(self) -> dict:
+        """Capture worker RNG state for exact dataloader resume."""
+        return _worker_rng_state_dict()
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        """Restore worker RNG state after dataloader resume."""
+        _load_worker_rng_state_dict(state_dict)
 
     def sample_step(self, index: int) -> tuple[DreamZeroLeRobotDataset, int, int]:
         """Sample a single step from the mixture dataset.

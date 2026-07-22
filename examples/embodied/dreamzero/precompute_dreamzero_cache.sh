@@ -28,6 +28,7 @@
 
 set -euo pipefail
 
+# ── Paths ──────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
@@ -37,11 +38,24 @@ DREAMZERO_DATA_ROOT=${DREAMZERO_DATA_ROOT:-"/workspace/dreamzero/data"}
 DREAMZERO_CKPT_ROOT=${DREAMZERO_CKPT_ROOT:-"/workspace/dreamzero/checkpoints"}
 DREAMZERO_CACHE_ROOT=${DREAMZERO_CACHE_ROOT:-"/workspace/dreamzero/cache"}
 
+# ── Model and data ────────────────────────────
 MODEL_NAME=${MODEL_NAME:-dreamzero_full_wan22_5b}
-CONFIG_FILE=${CONFIG_FILE:-"$PROJECT_ROOT/configs/models/embodied/${MODEL_NAME}.yaml"}
+case "$MODEL_NAME" in
+    dreamzero_full_wan22_5b|dreamzero_lora_wan22_5b)
+        DEFAULT_CONFIG_NAME=dreamzero_wan22_5b
+        ;;
+    dreamzero_full_wan21_14b|dreamzero_lora_wan21_14b)
+        DEFAULT_CONFIG_NAME=dreamzero_wan21_14b
+        ;;
+    *)
+        DEFAULT_CONFIG_NAME=$MODEL_NAME
+        ;;
+esac
+CONFIG_FILE=${CONFIG_FILE:-"$PROJECT_ROOT/configs/models/embodied/${DEFAULT_CONFIG_NAME}.yaml"}
 
 export WAN21_CKPT_DIR=${WAN21_CKPT_DIR:-"$DREAMZERO_CKPT_ROOT/Wan2.1-I2V-14B-480P"}
 export WAN22_CKPT_DIR=${WAN22_CKPT_DIR:-"$DREAMZERO_CKPT_ROOT/Wan2.2-TI2V-5B"}
+export DREAMZERO_AGIBOT_CKPT_DIR=${DREAMZERO_AGIBOT_CKPT_DIR:-"$DREAMZERO_CKPT_ROOT/DreamZero-AgiBot"}
 
 case "$MODEL_NAME" in
     *libero*)
@@ -80,12 +94,14 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     exit 2
 fi
 
+# ── Distributed ──────────────────────────────
 GPUS_PER_NODE=${GPUS_PER_NODE:-${NUM_GPUS:-1}}
 NNODES=${NNODES:-${WORLD_SIZE:-1}}
 NODE_RANK=${NODE_RANK:-${RANK:-0}}
 MASTER_ADDR=${MASTER_ADDR:-localhost}
 MASTER_PORT=${MASTER_PORT:-6000}
 
+# ── Cache generation ─────────────────────────
 START_INDEX=${START_INDEX:-0}
 NUM_SAMPLES=${NUM_SAMPLES:-1000000000}
 BATCH_SIZE=${BATCH_SIZE:-8}
@@ -95,8 +111,10 @@ STORAGE_FORMAT=${STORAGE_FORMAT:-tensor_shards}
 TENSOR_SHARD_SIZE=${TENSOR_SHARD_SIZE:-4096}
 DTYPE=${DTYPE:-bf16}
 
+# Fixed per-sample transform seeds make generated features reproducible.
 USE_SAMPLE_TRANSFORM_SEED=${USE_SAMPLE_TRANSFORM_SEED:-1}
 SAMPLE_TRANSFORM_SEED=${SAMPLE_TRANSFORM_SEED:-0}
+# Exclude samples that cannot provide a complete language-conditioned chunk.
 REQUIRE_FULL_LANGUAGE_CHUNKS=${REQUIRE_FULL_LANGUAGE_CHUNKS:-1}
 VALIDATE_CACHE=${VALIDATE_CACHE:-1}
 VALIDATION_SAMPLE_COUNT=${VALIDATION_SAMPLE_COUNT:-8}
@@ -142,6 +160,7 @@ else
     PRECOMPUTE_ARGS+=(--no-require-full-language-chunks)
 fi
 
+# ── Launch ──────────────────────────────────
 CMD=(
     torchrun "${DISTRIBUTED_ARGS[@]}"
     "$LOONGFORGE_PATH/tools/data_preprocess/embodied/dreamzero/precompute_features.py"

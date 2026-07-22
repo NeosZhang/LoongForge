@@ -10,7 +10,8 @@ Supports three formats selected via ``--save-format``:
 * ``pt`` (legacy) — same as above but writes ``pytorch_model.pt``.
 * ``dcp`` — every rank writes its own shard via
   ``torch.distributed.checkpoint`` into ``dcp/``. Avoids rank0 OOM and supports
-  resharding (resume on a different world size).
+  model resharding when resuming on a different world size. Rank-local ZeRO
+  optimizer state requires the original world size.
 
 ``resume_training_state`` auto-detects the format on disk so old checkpoints
 keep working unchanged.
@@ -22,6 +23,9 @@ import logging
 import os
 import random
 import shutil
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
+from enum import Enum
 from typing import Dict, Optional, Tuple
 
 import numpy as np
@@ -50,6 +54,11 @@ logger = logging.getLogger(__name__)
 _DCP_METADATA_FILE = "dcp/.metadata"  # relative to checkpoint step dir
 _SAFETENSORS_FILE = "model.safetensors"
 _PT_FILE = "pytorch_model.pt"
+_ADAPTER_FILE = "adapter_model.safetensors"
+_ADAPTER_CONFIG_FILE = "adapter_config.json"
+_ADAPTER_META_FILE = "adapter_meta.json"
+_ZERO_OPTIMIZER_DIR = "zero_optimizer"
+_ZERO_OPTIMIZER_METADATA_FILE = f"{_ZERO_OPTIMIZER_DIR}/metadata.json"
 _VALID_FORMATS = ("safetensors", "pt", "dcp")
 
 # Module-level state for async DCP save. At most one in-flight save at a time;
@@ -69,21 +78,27 @@ def save_checkpoint(
     training_args,
     epoch: int = 0,
     dataloader_state: Optional[Dict] = None,
+    model_cfg=None,
 ):
-    """Save checkpoint in the format selected by ``training_args.save_format``."""
+    """Save a full checkpoint or a consolidated LoRA adapter checkpoint."""
     # Make sure any previous async save has finalized before we touch a new
     # ``steps_{N}`` dir or stage another state-dict snapshot.
     flush_pending_save(ctx)
 
     path = os.path.join(checkpoint_dir, f"steps_{step}")
-    save_format = training_args.save_format
+    use_lora = bool(training_args.use_lora)
+    save_format = "safetensors" if use_lora else training_args.save_format
     async_save = (
         save_format == "dcp"
         and training_args.async_save
         and hasattr(dcp, "async_save")
     )
     if training_args.async_save and not async_save and ctx.is_main:
-        if save_format != "dcp":
+        if use_lora:
+            logger.warning(
+                "--async-save ignored: LoRA checkpoints use adapter safetensors."
+            )
+        elif save_format != "dcp":
             logger.warning("--async-save ignored: only effective with --save-format=dcp.")
         elif not hasattr(dcp, "async_save"):
             logger.warning(
@@ -100,6 +115,7 @@ def save_checkpoint(
         "epoch": epoch,
         "ckpt_format": save_format,
         "world_size": ctx.world_size,
+        "use_lora": use_lora,
     }
 
     if save_format == "dcp":
@@ -111,7 +127,7 @@ def save_checkpoint(
         future = None
         _save_legacy(
             model, optimizer, scheduler, path, ctx, training_args, epoch,
-            dataloader_state, save_format,
+            dataloader_state, save_format, model_cfg=model_cfg,
         )
 
     if future is not None:
@@ -247,9 +263,9 @@ def get_latest_checkpoint(
 
     Validates the latest ``steps_N`` only — no fallback to older dirs. A
     checkpoint is considered resumable if either:
-      * ``dcp/.metadata`` exists (dcp format), or
-      * ``training_state.pt`` exists (legacy format, when
-        ``require_training_state`` is true)
+      * DCP optimizer state exists in ``dcp/``,
+      * rank-local ZeRO optimizer state exists in ``zero_optimizer/``, or
+      * ``training_state.pt`` exists (legacy format)
     plus ``resume_meta.json``.
     """
     if not os.path.isdir(checkpoint_dir):
@@ -272,11 +288,17 @@ def get_latest_checkpoint(
         os.path.exists(os.path.join(ckpt_dir, _DCP_METADATA_FILE))
         and _dcp_has_key(dcp_dir, "optim")
     )
+    has_zero_training_state = os.path.exists(
+        os.path.join(ckpt_dir, _ZERO_OPTIMIZER_METADATA_FILE)
+    )
     has_training_state = os.path.exists(os.path.join(ckpt_dir, "training_state.pt"))
-    if require_training_state and not (has_dcp_training_state or has_training_state):
+    if require_training_state and not (
+        has_dcp_training_state or has_zero_training_state or has_training_state
+    ):
         raise FileNotFoundError(
             f"No resumable training state in {ckpt_dir}: expected optimizer state "
-            f"in dcp/ or training_state.pt. Re-save with --save-training-state."
+            f"in dcp/, {_ZERO_OPTIMIZER_DIR}/, or training_state.pt. "
+            f"Re-save with --save-training-state."
         )
 
     with open(meta_path) as f:
@@ -344,15 +366,64 @@ def detect_checkpoint_format(path: str) -> str:
     raise FileNotFoundError(f"No recognizable checkpoint in {path}")
 
 
+def is_lora_adapter_checkpoint(path: str) -> bool:
+    """Return whether a checkpoint directory contains a LoRA adapter."""
+    return os.path.isfile(adapter_file_path(path)) and os.path.isfile(
+        os.path.join(path, _ADAPTER_CONFIG_FILE)
+    )
+
+
+def read_adapter_meta(path: str) -> Optional[dict]:
+    """Read adapter metadata, returning ``None`` when it is absent."""
+    meta_path = os.path.join(path, _ADAPTER_META_FILE)
+    if not os.path.exists(meta_path):
+        return None
+    with open(meta_path, encoding="utf-8") as file:
+        return json.load(file)
+
+
+def adapter_file_path(path: str) -> str:
+    """Return the canonical adapter safetensors path."""
+    return os.path.join(path, _ADAPTER_FILE)
+
+
 def _save_legacy(
     model, optimizer, scheduler, path, ctx, training_args, epoch,
-    dataloader_state, save_format,
+    dataloader_state, save_format, model_cfg=None,
 ):
-    """Original rank0-consolidated save path. Bit-equivalent to prior behavior."""
-    state_dict = _get_full_state_dict(model, ctx)
+    """Save a rank0-consolidated full model or trainable LoRA tensors."""
+    use_lora = bool(training_args.use_lora)
+    state_dict = _get_full_state_dict(
+        model,
+        ctx,
+        ignore_frozen_params=use_lora,
+        cpu_offload=use_lora,
+    )
 
     if ctx.is_main:
-        if save_format == "safetensors":
+        if use_lora:
+            from loongforge.embodied.train.lora import (
+                get_adapter_state_dict,
+                save_adapter_config,
+            )
+
+            adapter_state = get_adapter_state_dict(
+                state_dict,
+                unwrap_model(model),
+            )
+            _save_state_dict_safetensors(
+                adapter_state,
+                adapter_file_path(path),
+                metadata={"format": "pt"},
+            )
+            save_adapter_config(unwrap_model(model), path)
+            _write_adapter_meta(path, training_args, model_cfg)
+            logger.info(
+                "Saved LoRA adapter with %d tensors to %s",
+                len(adapter_state),
+                adapter_file_path(path),
+            )
+        elif save_format == "safetensors":
             torch.cuda.empty_cache()
             gc.collect()
             _save_state_dict_safetensors(state_dict, os.path.join(path, "model.safetensors"))
@@ -368,6 +439,76 @@ def _save_legacy(
         )
 
 
+def _write_adapter_meta(path: str, training_args, model_cfg) -> None:
+    """Persist LoongForge metadata alongside the standard PEFT adapter."""
+    from loongforge.embodied.train.lora import adapter_meta
+
+    with open(
+        os.path.join(path, _ADAPTER_META_FILE),
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(adapter_meta(training_args, model_cfg), file, indent=2)
+
+    if model_cfg is None:
+        return
+    config_payload = _config_to_json_value(model_cfg)
+    if not isinstance(config_payload, dict):
+        return
+    with open(
+        os.path.join(path, "model_config.json"),
+        "w",
+        encoding="utf-8",
+    ) as file:
+        json.dump(config_payload, file, indent=2)
+
+
+def _config_to_json_value(value):
+    """Convert config values to JSON data without ``deepcopy`` side effects."""
+    if is_dataclass(value):
+        return {
+            field.name: _config_to_json_value(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {
+            str(key): _config_to_json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_config_to_json_value(item) for item in value]
+    if isinstance(value, Enum):
+        return _config_to_json_value(value.value)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
+def _fill_missing_optimizer_state(optim_state_dict: dict) -> tuple[dict, int]:
+    """Add empty state for parameters not updated before a legacy save."""
+    state = optim_state_dict.get("state")
+    param_groups = optim_state_dict.get("param_groups")
+    if not isinstance(state, dict) or not isinstance(param_groups, list):
+        return optim_state_dict, 0
+    if state and all(isinstance(key, int) for key in state):
+        return optim_state_dict, 0
+
+    param_names = {
+        param_name
+        for param_group in param_groups
+        for param_name in param_group.get("params", [])
+    }
+    missing = param_names.difference(state)
+    if not missing:
+        return optim_state_dict, 0
+
+    patched_state = dict(state)
+    patched_state.update({param_name: {} for param_name in missing})
+    patched = dict(optim_state_dict)
+    patched["state"] = patched_state
+    return patched, len(missing)
+
+
 def _resume_legacy(model, optimizer, scheduler, checkpoint_path, ctx, restore_rng):
     """Legacy resume — load training_state.pt and dispatch optim state via FSDP API."""
     state_file = os.path.join(checkpoint_path, "training_state.pt")
@@ -381,11 +522,23 @@ def _resume_legacy(model, optimizer, scheduler, checkpoint_path, ctx, restore_rn
 
     if isinstance(model, FSDPModule):
         options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+        optim_state, missing_state_count = _fill_missing_optimizer_state(
+            state["optimizer"]
+        )
+        # ``get_state_dict`` returns the canonical state/param_groups mapping
+        # for one optimizer. Wrapping it by optimizer index makes current DCP
+        # interpret it as flattened state and fail during unflattening.
         set_state_dict(
             model, optimizers=[optimizer],
-            model_state_dict={}, optim_state_dict={0: state["optimizer"]},
+            model_state_dict={}, optim_state_dict=optim_state,
             options=options,
         )
+        if missing_state_count and ctx.is_main:
+            logger.info(
+                "Initialized empty optimizer state for %d parameters absent "
+                "from the checkpoint",
+                missing_state_count,
+            )
     else:
         optimizer.load_state_dict(state["optimizer"])
     if ctx.is_main:
@@ -430,15 +583,16 @@ def _save_dcp(
     process exit (handled by ``save_checkpoint`` / ``flush_pending_save``).
     """
     save_training_state = training_args.save_training_state
-    optimizers = [optimizer] if save_training_state else []
+    save_local_zero_state = save_training_state and _is_zero_optimizer(optimizer)
+    optimizers = [optimizer] if save_training_state and not save_local_zero_state else []
 
     options = StateDictOptions(full_state_dict=False, cpu_offload=False)
-    if save_training_state:
-        model_sd, optim_sd = get_state_dict(model, optimizers=optimizers, options=options)
-        state = {"model": model_sd, "optim": optim_sd}
-    else:
-        model_sd, _ = get_state_dict(model, optimizers=[], options=options)
-        state = {"model": model_sd}
+    model_sd, optim_sd = get_state_dict(
+        model, optimizers=optimizers, options=options
+    )
+    state = {"model": model_sd}
+    if optimizers:
+        state["optim"] = optim_sd
 
     dcp_dir = os.path.join(path, "dcp")
     if ctx.is_main:
@@ -453,6 +607,8 @@ def _save_dcp(
         if ctx.is_main and scheduler is not None:
             torch.save(scheduler.state_dict(), os.path.join(path, "scheduler.pt"))
         _save_aux_per_rank(path, ctx, dataloader_state)
+        if save_local_zero_state:
+            _save_zero_optimizer_state(path, optimizer, ctx)
 
     writer = dcp.FileSystemWriter(dcp_dir)
     if async_save:
@@ -468,7 +624,7 @@ def _save_dcp(
 def _resume_dcp(model, optimizer, scheduler, checkpoint_path, ctx, restore_rng):
     """Sharded resume: each rank reads its own DCP shard (with reshard support).
 
-    Model and optimizer are loaded in two separate ``dcp.load`` calls:
+    Model and standard optimizer state are loaded in separate ``dcp.load`` calls:
 
     * **Model** uses the default planner — schema mismatches are real bugs and
       should fail loudly.
@@ -480,12 +636,23 @@ def _resume_dcp(model, optimizer, scheduler, checkpoint_path, ctx, restore_rng):
       initialized values (zero momentum / step=0), which is mathematically
       equivalent to "this param has not been optimized yet". Any hard failure
       raises rather than silently degrading to a fresh optimizer.
+
+    ZeRO optimizer state uses same-world-size rank-local files because calling
+    its global ``state_dict`` would first consolidate every shard onto one rank.
     """
     dcp_dir = os.path.join(checkpoint_path, "dcp")
     if not os.path.exists(os.path.join(checkpoint_path, _DCP_METADATA_FILE)):
         raise FileNotFoundError(f"No dcp/ metadata in {checkpoint_path}")
 
     has_optim = _dcp_has_key(dcp_dir, "optim")
+    has_local_zero_optim = os.path.exists(
+        os.path.join(checkpoint_path, _ZERO_OPTIMIZER_METADATA_FILE)
+    )
+    if has_local_zero_optim and not _is_zero_optimizer(optimizer):
+        raise RuntimeError(
+            "Checkpoint contains rank-local ZeRO optimizer state, but the current "
+            "optimizer is not a ZeroRedundancyOptimizer."
+        )
     optimizers = [optimizer] if has_optim else []
 
     options = StateDictOptions(full_state_dict=False, cpu_offload=False)
@@ -525,10 +692,16 @@ def _resume_dcp(model, optimizer, scheduler, checkpoint_path, ctx, restore_rng):
                 f"Failed to restore optimizer state from DCP checkpoint {checkpoint_path}; "
                 "refusing to continue with a fresh optimizer during --resume."
             ) from e
+    elif has_local_zero_optim:
+        _load_zero_optimizer_state(checkpoint_path, optimizer, ctx)
+        if ctx.is_main:
+            logger.info("optimizer resumed from rank-local ZeRO state")
 
     sched_path = os.path.join(checkpoint_path, "scheduler.pt")
     if scheduler is not None and os.path.exists(sched_path):
         scheduler.load_state_dict(torch.load(sched_path, map_location="cpu", weights_only=False))
+        if has_local_zero_optim:
+            _restore_zero_optimizer_lrs(optimizer, scheduler.get_last_lr())
         if ctx.is_main:
             logger.info("scheduler resumed successfully")
 
@@ -640,7 +813,7 @@ def _load_rank_rng(checkpoint_path, ctx) -> Optional[dict]:
     f = os.path.join(checkpoint_path, "rng", f"rng_rank{ctx.rank}.pt")
     if not os.path.exists(f):
         return None
-    return torch.load(f, map_location="cpu", weights_only=True)
+    return torch.load(f, map_location="cpu", weights_only=False)
 
 
 def _load_rank_dataloader(checkpoint_path, ctx) -> dict:
@@ -661,10 +834,20 @@ def _gather_rng_for_deferred(rng_local, ctx):
     return out
 
 
-def _get_full_state_dict(model: nn.Module, ctx: DistributedContext) -> dict:
+def _get_full_state_dict(
+    model: nn.Module,
+    ctx: DistributedContext,
+    *,
+    ignore_frozen_params: bool = False,
+    cpu_offload: bool = False,
+) -> dict:
     """Get full state dict handling FSDP1/FSDP2/DDP."""
     if isinstance(model, FSDPModule):
-        options = StateDictOptions(full_state_dict=True, cpu_offload=False)
+        options = StateDictOptions(
+            full_state_dict=True,
+            cpu_offload=cpu_offload,
+            ignore_frozen_params=ignore_frozen_params,
+        )
         model_sd, _ = get_state_dict(model, optimizers=[], options=options)
         return model_sd
     else:
@@ -677,6 +860,144 @@ def _is_zero_optimizer(optimizer) -> bool:
     return isinstance(optimizer, ZeroRedundancyOptimizer) or getattr(
         optimizer, "_is_multi_dtype_zero_optimizer", False
     )
+
+
+def _zero_optimizer_children(optimizer) -> list:
+    """Return the ZeRO optimizers represented by an optimizer wrapper."""
+    from torch.distributed.optim import ZeroRedundancyOptimizer
+
+    if isinstance(optimizer, ZeroRedundancyOptimizer):
+        return [optimizer]
+    if getattr(optimizer, "_is_multi_dtype_zero_optimizer", False):
+        children = optimizer._optimizers
+        if all(isinstance(child, ZeroRedundancyOptimizer) for child in children):
+            return children
+    raise TypeError(f"Unsupported ZeRO optimizer type: {type(optimizer).__name__}")
+
+
+def _local_optimizer_state_dict(optimizer) -> dict:
+    """Build a complete checkpoint state for one rank-local optimizer."""
+    factory = getattr(optimizer, "local_checkpoint_state_dict", None)
+    return factory() if factory is not None else optimizer.state_dict()
+
+
+def _load_local_optimizer_state_dict(optimizer, state_dict: dict) -> None:
+    """Restore a complete checkpoint state for one rank-local optimizer."""
+    loader = getattr(optimizer, "load_local_checkpoint_state_dict", None)
+    if loader is not None:
+        loader(state_dict)
+    else:
+        optimizer.load_state_dict(state_dict)
+
+
+def _save_zero_optimizer_state(path, optimizer, ctx) -> None:
+    """Save each ZeRO rank's local optimizer shard without consolidation."""
+    state_dir = os.path.join(path, _ZERO_OPTIMIZER_DIR)
+    if ctx.is_main:
+        os.makedirs(state_dir, exist_ok=True)
+    ctx.barrier()
+
+    children = _zero_optimizer_children(optimizer)
+    local_state = []
+    for child in children:
+        # LR schedulers update ZeRO's public groups. The rank-local optimizer
+        # can retain the previous step's LR until the next ZeRO update, so
+        # checkpoint the public options that the next update will consume.
+        _copy_param_group_options(child.param_groups, child.optim.param_groups)
+        local_state.append(_local_optimizer_state_dict(child.optim))
+    torch.save(
+        local_state,
+        os.path.join(state_dir, f"rank_{ctx.rank}.pt"),
+    )
+    ctx.barrier()
+
+    if ctx.is_main:
+        with open(
+            os.path.join(path, _ZERO_OPTIMIZER_METADATA_FILE),
+            "w",
+            encoding="utf-8",
+        ) as file:
+            json.dump(
+                {
+                    "format_version": 1,
+                    "world_size": ctx.world_size,
+                    "optimizer_count": len(children),
+                },
+                file,
+                indent=2,
+            )
+    ctx.barrier()
+
+
+def _load_zero_optimizer_state(checkpoint_path, optimizer, ctx) -> None:
+    """Load the ZeRO optimizer shard owned by the current rank."""
+    metadata_path = os.path.join(
+        checkpoint_path, _ZERO_OPTIMIZER_METADATA_FILE
+    )
+    with open(metadata_path, encoding="utf-8") as file:
+        metadata = json.load(file)
+    format_version = int(metadata["format_version"])
+    if format_version != 1:
+        raise RuntimeError(
+            f"Unsupported rank-local ZeRO checkpoint version: {format_version}."
+        )
+    saved_world_size = int(metadata["world_size"])
+    if saved_world_size != ctx.world_size:
+        raise RuntimeError(
+            "Rank-local ZeRO optimizer state requires the original world size: "
+            f"checkpoint={saved_world_size}, current={ctx.world_size}."
+        )
+
+    children = _zero_optimizer_children(optimizer)
+    expected_count = int(metadata["optimizer_count"])
+    if expected_count != len(children):
+        raise RuntimeError(
+            "ZeRO optimizer shard count mismatch: "
+            f"checkpoint={expected_count}, current={len(children)}."
+        )
+
+    rank_path = os.path.join(
+        checkpoint_path, _ZERO_OPTIMIZER_DIR, f"rank_{ctx.rank}.pt"
+    )
+    if not os.path.exists(rank_path):
+        raise FileNotFoundError(
+            f"ZeRO optimizer state for rank {ctx.rank} not found: {rank_path}"
+        )
+    local_state = torch.load(rank_path, map_location="cpu", weights_only=False)
+    if len(local_state) != len(children):
+        raise RuntimeError(
+            "ZeRO optimizer state count mismatch in rank file: "
+            f"checkpoint={len(local_state)}, current={len(children)}."
+        )
+    for child, state_dict in zip(children, local_state):
+        _load_local_optimizer_state_dict(child.optim, state_dict)
+        _copy_param_group_options(child.optim.param_groups, child.param_groups)
+
+
+def _restore_zero_optimizer_lrs(optimizer, last_lrs) -> None:
+    """Restore scheduler-owned LRs on ZeRO's public and local param groups."""
+    if len(last_lrs) != len(optimizer.param_groups):
+        raise RuntimeError(
+            "Scheduler LR count does not match ZeRO parameter groups: "
+            f"scheduler={len(last_lrs)}, optimizer={len(optimizer.param_groups)}."
+        )
+    for param_group, lr in zip(optimizer.param_groups, last_lrs):
+        param_group["lr"] = lr
+    for child in _zero_optimizer_children(optimizer):
+        _copy_param_group_options(child.param_groups, child.optim.param_groups)
+
+
+def _copy_param_group_options(source_groups, target_groups) -> None:
+    """Copy optimizer options without replacing parameter lists."""
+    if len(source_groups) != len(target_groups):
+        raise RuntimeError(
+            "Optimizer parameter-group count mismatch: "
+            f"source={len(source_groups)}, target={len(target_groups)}."
+        )
+    for source, target in zip(source_groups, target_groups):
+        for key, value in source.items():
+            if key != "params":
+                target[key] = value
 
 
 def _save_training_state(
@@ -728,7 +1049,11 @@ def _save_training_state(
         )
 
 
-def _save_state_dict_safetensors(state_dict: dict, filepath: str):
+def _save_state_dict_safetensors(
+    state_dict: dict,
+    filepath: str,
+    metadata: Optional[dict[str, str]] = None,
+):
     """Save state dict with safetensors, creating fresh tensors to avoid storage issues."""
     clean_sd = {}
     for k, v in state_dict.items():
@@ -736,7 +1061,7 @@ def _save_state_dict_safetensors(state_dict: dict, filepath: str):
             v = v.full_tensor()
         clean_sd[k] = v.detach().cpu().clone()
 
-    save_file(clean_sd, filepath)
+    save_file(clean_sd, filepath, metadata=metadata)
 
 
 def _resolve_file(checkpoint_path: str) -> str:

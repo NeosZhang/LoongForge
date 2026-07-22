@@ -20,6 +20,7 @@
 
 set -euo pipefail
 
+# ── Paths and model ────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
@@ -37,9 +38,9 @@ export WAN21_CKPT_DIR=${WAN21_CKPT_DIR:-"$DREAMZERO_CKPT_ROOT/Wan2.1-I2V-14B-480
 export WAN22_CKPT_DIR=${WAN22_CKPT_DIR:-"$DREAMZERO_CKPT_ROOT/Wan2.2-TI2V-5B"}
 TOKENIZER_PATH=${TOKENIZER_PATH:-"$WAN22_CKPT_DIR/google/umt5-xxl"}
 
-CACHE_DIR=${CACHE_DIR:-}
-CACHE_MANIFEST=${CACHE_MANIFEST:-}
-SAMPLE_TRANSFORM_SEED=${SAMPLE_TRANSFORM_SEED:-0}
+# ── Activation checkpointing ───────────────────────
+# An empty module-pattern value disables activation checkpointing. Skip modules
+# are exact qualified module keys excluded from the selected pattern.
 ACTIVATION_CHECKPOINT_MODULE_PATTERNS=${ACTIVATION_CHECKPOINT_MODULE_PATTERNS-"action_head.model.blocks.*"}
 ACTIVATION_CHECKPOINT_SKIP_MODULES=${ACTIVATION_CHECKPOINT_SKIP_MODULES-"action_head.model.blocks.3,action_head.model.blocks.29"}
 ACTIVATION_CHECKPOINT_ARGS=()
@@ -53,8 +54,14 @@ if [[ -n "$ACTIVATION_CHECKPOINT_SKIP_MODULES" ]]; then
         --activation-checkpoint-skip-modules "$ACTIVATION_CHECKPOINT_SKIP_MODULES"
     )
 fi
+
+# ── Feature cache ─────────────────────────────
 CACHE_ARGS=()
 CACHE_DESCRIPTION="disabled (online features)"
+CACHE_DIR=${CACHE_DIR:-}
+CACHE_MANIFEST=${CACHE_MANIFEST:-}
+# Must match the transform seed recorded in the cache manifest.
+SAMPLE_TRANSFORM_SEED=${SAMPLE_TRANSFORM_SEED:-0}
 if [[ -n "$CACHE_DIR" ]]; then
     CACHE_MANIFEST=${CACHE_MANIFEST:-"$CACHE_DIR/manifest.json"}
     if [[ ! -f "$CACHE_MANIFEST" ]]; then
@@ -74,6 +81,7 @@ if [[ -n "$CACHE_DIR" ]]; then
     CACHE_DESCRIPTION="$CACHE_DIR"
 fi
 
+# ── Distributed and batch sizing ────────────────────
 GPUS_PER_NODE=${GPUS_PER_NODE:-${NUM_GPUS:-8}}
 NNODES=${NNODES:-${WORLD_SIZE:-1}}
 NODE_RANK=${NODE_RANK:-${RANK:-0}}
@@ -89,9 +97,11 @@ if (( GLOBAL_BATCH_SIZE % LOCAL_BATCH_SIZE != 0 )); then
 fi
 GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-$((GLOBAL_BATCH_SIZE / LOCAL_BATCH_SIZE))}
 
+# ── Training schedule ──────────────────────────
 TRAIN_ITERS=${TRAIN_ITERS:-200000}
 LR_WARMUP_ITERS=${LR_WARMUP_ITERS:-$(((TRAIN_ITERS + 19) / 20))}
 
+# ── Launch ──────────────────────────────────
 DISTRIBUTED_ARGS=(
     --nproc_per_node "$GPUS_PER_NODE"
     --nnodes "$NNODES"

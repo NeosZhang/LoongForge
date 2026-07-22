@@ -22,6 +22,11 @@ from loongforge.embodied.distributed.checkpoint import (
     resume_training_state,
 )
 from loongforge.embodied.distributed.parallel import wrap_model
+from loongforge.embodied.train.lora import (
+    apply_lora,
+    is_lora_enabled,
+    load_adapter_into_model,
+)
 from loongforge.embodied.train.utils.logging import TrainingLogger, StageTimers, log_effective_config
 from loongforge.embodied.train.utils.utils import (
     log_stage,
@@ -88,6 +93,7 @@ class BaseTrainer(ABC):
         self._data_iters: Dict[str, Any] = {}
         self._resume_dataloader_state: Dict[str, Dict[str, Any]] = {}
         self._resume_rng_per_rank = None
+        self._lora_resume_adapter_path: Optional[str] = None
 
         # The primary loader "vla" mirrors self.current_epoch for checkpoint/log display.
         self._epochs: Dict[str, int] = {}
@@ -189,6 +195,8 @@ class BaseTrainer(ABC):
                     self._load_pretrained(training_args.pretrained_checkpoint)
         else:
             logger.info("No pretrained weights or resume checkpoint found. Using random initialization.")
+
+        self.model = self._apply_lora_before_wrap(self.model)
 
         # 6. Freeze modules
         self._freeze_modules(training_args.freeze_modules)
@@ -604,6 +612,27 @@ class BaseTrainer(ABC):
     def _configure_backend_precision(self):
         """Hook for model-specific backend precision controls."""
         pass
+
+    def _apply_lora_before_wrap(self, model: nn.Module) -> nn.Module:
+        """Apply generic LoRA injection before distributed wrapping."""
+        if not is_lora_enabled(self.training_args):
+            return model
+
+        resuming_adapter = self._lora_resume_adapter_path is not None
+        with log_stage(
+            "lora",
+            start_msg="applying LoRA" + (" (resume)" if resuming_adapter else ""),
+            end_msg="LoRA applied in {elapsed}",
+        ):
+            model = apply_lora(
+                model,
+                self.training_args,
+                require_base=not resuming_adapter,
+                adapter_path=self._lora_resume_adapter_path,
+            )
+            if resuming_adapter:
+                load_adapter_into_model(model, self._lora_resume_adapter_path)
+        return model
 
     def _on_after_data_iterators_initialized(self):
         """Hook after dataloader iterators are initialized."""

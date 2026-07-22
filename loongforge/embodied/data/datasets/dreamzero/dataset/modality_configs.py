@@ -154,7 +154,7 @@ def build_agibot_modality_configs(
     state_horizon: int = 1,
     max_chunk_size: int = 1,
 ) -> Dict[str, ModalityConfig]:
-    """AGIBot — 32d state, 22d action, 3 cameras."""
+    """AGIBot — 20d state, 22d action, 3 cameras."""
     return {
         "video": ModalityConfig(
             delta_indices=_ranges(num_video_frames),
