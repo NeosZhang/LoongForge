@@ -46,7 +46,7 @@ DEVICE="${DEVICE:-cuda}"
 DTYPE="${DTYPE:-bfloat16}"
 
 PYTHONPATH="$LOONGFORGE_PATH:${PYTHONPATH:-}" \
-  python "$LOONGFORGE_PATH/loongforge/embodied/data/transforms/fastwam/precompute_text_embeds.py" \
+  python "$LOONGFORGE_PATH/loongforge/embodied/data/datasets/fastwam/transforms/precompute_text_embeds.py" \
     --dataset-root "$DATASET_PATH" \
     --output-dir "$TEXT_EMBEDDING_CACHE_DIR" \
     --model-id "$MODEL_ID" \

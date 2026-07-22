@@ -52,6 +52,7 @@ LR_ARGS=(
 
 DATA_ARGS=(
   --dataset-format lerobot_datasets
+  --dataset-strategy fastwam
   --dataset-path "$DATASET_PATH"
   --robot-type libero_franka
   --per-device-batch-size 1
