@@ -91,6 +91,9 @@ class _PI05InternalConfig:
     gradient_checkpointing: bool = False
     compile_model: bool = False
     compile_mode: str = "max-autotune"
+    compile_scope: str = "backbone"
+    compile_fullgraph: bool = True
+    compile_dynamic: bool = False
     freeze_vision_encoder: bool = False
     train_expert_only: bool = False
     random_fallback_cpu: bool = False
@@ -396,6 +399,12 @@ class PaliGemmaWithExpertModel(nn.Module):
         self._text_hidden_size = vlm_config_hf.text_config.hidden_size
         self._num_hidden_layers = vlm_config_hf.text_config.num_hidden_layers
 
+        # Attribute hooks — external code (PI05Pytorch._apply_compile_scope) may
+        # replace these with torch.compile'd wrappers to shrink compile units and
+        # improve DDP backward/allreduce overlap.  See forward() below.
+        self._layer_fn = _compute_layer_complete
+        self._final_norms_fn = self._final_norms_impl
+
         if not self._is_on_meta_device():
             self.to_bfloat16_for_selected_params(precision)
         self._set_requires_grad()
@@ -468,6 +477,18 @@ class PaliGemmaWithExpertModel(nn.Module):
         """Embed language tokens through PaliGemma language model."""
         return self.paligemma.model.language_model.embed_tokens(tokens)
 
+    def _final_norms_impl(self, inputs_embeds, adarms_cond):
+        """Apply final layernorm to each stream's hidden states.
+
+        Promoted from an inline closure so torch.compile can wrap it (see
+        PI05Pytorch._apply_compile_scope for the "multi_group" scope).
+        """
+        models = [self.paligemma.model.language_model, self.gemma_expert.model]
+        return [
+            layernorm_forward(models[i].norm, h, adarms_cond[i])[0]
+            for i, h in enumerate(inputs_embeds)
+        ]
+
     def forward(self, attention_mask=None, position_ids=None,
                 past_key_values=None, inputs_embeds=None,
                 use_cache=None, adarms_cond=None):
@@ -489,7 +510,6 @@ class PaliGemmaWithExpertModel(nn.Module):
             )
             return [None, suffix_output.last_hidden_state], None
         else:
-            models = [self.paligemma.model.language_model, self.gemma_expert.model]
             use_gc = (
                 (hasattr(self.gemma_expert.model, "gradient_checkpointing") and
                  self.gemma_expert.model.gradient_checkpointing and self.training)
@@ -497,29 +517,25 @@ class PaliGemmaWithExpertModel(nn.Module):
             )
             for layer_idx in range(self._num_hidden_layers):
                 if use_gc:
+                    # compile-inside-checkpoint: self._layer_fn may be a
+                    # torch.compile'd wrapper (see _apply_compile_scope).
                     inputs_embeds = torch.utils.checkpoint.checkpoint(
-                        _compute_layer_complete, layer_idx, inputs_embeds, attention_mask,
+                        self._layer_fn, layer_idx, inputs_embeds, attention_mask,
                         position_ids, adarms_cond,
                         use_reentrant=False, preserve_rng_state=False,
                         paligemma=self.paligemma, gemma_expert=self.gemma_expert,
                     )
                 else:
-                    inputs_embeds = _compute_layer_complete(
+                    inputs_embeds = self._layer_fn(
                         layer_idx, inputs_embeds, attention_mask, position_ids, adarms_cond,
                         paligemma=self.paligemma, gemma_expert=self.gemma_expert,
                     )
 
-            def _final_norms(inputs_embeds, adarms_cond):
-                return [
-                    layernorm_forward(models[i].norm, h, adarms_cond[i])[0]
-                    for i, h in enumerate(inputs_embeds)
-                ]
-
             outputs_embeds = (
                 torch.utils.checkpoint.checkpoint(
-                    _final_norms, inputs_embeds, adarms_cond,
+                    self._final_norms_fn, inputs_embeds, adarms_cond,
                     use_reentrant=False, preserve_rng_state=False,
-                ) if use_gc else _final_norms(inputs_embeds, adarms_cond)
+                ) if use_gc else self._final_norms_fn(inputs_embeds, adarms_cond)
             )
             return outputs_embeds, None
 
@@ -564,14 +580,96 @@ class PI05Pytorch(nn.Module):
         self.gradient_checkpointing_enabled = False
         torch.set_float32_matmul_precision("high")
 
-        if config.compile_model:
-            compile_mode = config.compile_mode
+        self._apply_compile_scope(config)
+
+    def _apply_compile_scope(self, config: "_PI05InternalConfig"):
+        """Dispatch torch.compile onto backbone sub-functions per `compile_scope`.
+
+        Scopes (only reached when compile_model=True):
+          - "backbone"     : legacy single compile over PaliGemmaWithExpertModel.forward.
+          - "per_layer"    : compile only _compute_layer_complete; forward stays eager.
+          - "multi_group"  : per_layer + final_norms + action-head bundles.
+
+        Rationale: shrinking the compile unit lets Inductor emit one backward
+        Function per layer, so grads become ready and can be all-reduced while
+        subsequent layers are still computing backward -> better DDP overlap.
+        """
+        if not config.compile_model:
+            return
+
+        scope = config.compile_scope
+        mode = config.compile_mode
+        dynamic = config.compile_dynamic
+
+        if scope == "backbone":
+            # Preserve historical behavior exactly (fullgraph=True by default).
             self.paligemma_with_expert.forward = torch.compile(
                 self.paligemma_with_expert.forward,
-                mode=compile_mode,
-                fullgraph=True,
+                mode=mode,
+                fullgraph=config.compile_fullgraph,
+                dynamic=dynamic,
             )
-            logging.info("PI05 torch.compile enabled (mode=%s, fullgraph=True)", compile_mode)
+            logging.info(
+                "PI05 torch.compile: scope=backbone mode=%s fullgraph=%s dynamic=%s",
+                mode, config.compile_fullgraph, dynamic,
+            )
+            return
+
+        # per_layer / multi_group both compile _layer_fn.  fullgraph=True is
+        # forced on these small sub-graphs (their Python control flow is static;
+        # see the plan for justification).
+        self.paligemma_with_expert._layer_fn = torch.compile(
+            _compute_layer_complete,
+            mode=mode,
+            fullgraph=True,
+            dynamic=dynamic,
+        )
+
+        if scope == "per_layer":
+            logging.info(
+                "PI05 torch.compile: scope=per_layer mode=%s dynamic=%s",
+                mode, dynamic,
+            )
+            return
+
+        if scope == "multi_group":
+            self.paligemma_with_expert._final_norms_fn = torch.compile(
+                self.paligemma_with_expert._final_norms_impl,
+                mode=mode,
+                fullgraph=True,
+                dynamic=dynamic,
+            )
+
+            # Action-head bundles: closed-over Linear modules keep parameters
+            # visible to DDP; only the compiled callable wraps the tensor ops.
+            action_in_proj = self.action_in_proj
+            time_mlp_in = self.time_mlp_in
+            time_mlp_out = self.time_mlp_out
+            action_out_proj = self.action_out_proj
+
+            def _action_in_bundle(noisy_actions, time_emb):
+                action_emb = action_in_proj(noisy_actions)
+                adarms_cond = F.silu(time_mlp_out(F.silu(time_mlp_in(time_emb))))
+                return action_emb, adarms_cond
+
+            def _action_out_bundle(suffix_out):
+                out = suffix_out.to(dtype=action_out_proj.weight.dtype)
+                return action_out_proj(out)
+
+            self._action_in_bundle_fn = torch.compile(
+                _action_in_bundle, mode=mode, fullgraph=True, dynamic=dynamic,
+            )
+            self._action_out_bundle_fn = torch.compile(
+                _action_out_bundle, mode=mode, fullgraph=True, dynamic=dynamic,
+            )
+            logging.info(
+                "PI05 torch.compile: scope=multi_group mode=%s dynamic=%s",
+                mode, dynamic,
+            )
+            return
+
+        # Unreachable — validated in PI05Policy.__init__.
+        raise ValueError(f"Unknown compile_scope: {scope!r}")
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for all sub-models."""
@@ -648,11 +746,17 @@ class PI05Pytorch(nn.Module):
             device=torch.device("cpu") if self.config.random_fallback_cpu else timestep.device,
         ).to(timestep.device).type(dtype=timestep.dtype)
 
-        action_emb = self._apply_checkpoint(self.action_in_proj, noisy_actions)
+        if hasattr(self, "_action_in_bundle_fn"):
+            # multi_group scope: compiled fused (action_in_proj + time_mlp).
+            # We deliberately skip _apply_checkpoint here — the bundle is small
+            # and always cheap to keep in the autograd tape.
+            action_emb, adarms_cond = self._action_in_bundle_fn(noisy_actions, time_emb)
+        else:
+            action_emb = self._apply_checkpoint(self.action_in_proj, noisy_actions)
 
-        def _time_mlp(t):
-            return F.silu(self.time_mlp_out(F.silu(self.time_mlp_in(t))))
-        adarms_cond = self._apply_checkpoint(_time_mlp, time_emb)
+            def _time_mlp(t):
+                return F.silu(self.time_mlp_out(F.silu(self.time_mlp_in(t))))
+            adarms_cond = self._apply_checkpoint(_time_mlp, time_emb)
 
         bsize, action_time_dim = action_emb.shape[:2]
         pad_masks = torch.ones(bsize, action_time_dim, dtype=torch.bool, device=timestep.device)
@@ -695,8 +799,12 @@ class PI05Pytorch(nn.Module):
             return suffix_out
 
         suffix_out = self._apply_checkpoint(_fwd, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond)
-        suffix_out = suffix_out[:, -self.config.chunk_size:].to(dtype=self.action_out_proj.weight.dtype)
-        v_t = self._apply_checkpoint(self.action_out_proj, suffix_out)
+        suffix_out = suffix_out[:, -self.config.chunk_size:]
+        if hasattr(self, "_action_out_bundle_fn"):
+            v_t = self._action_out_bundle_fn(suffix_out)
+        else:
+            suffix_out = suffix_out.to(dtype=self.action_out_proj.weight.dtype)
+            v_t = self._apply_checkpoint(self.action_out_proj, suffix_out)
         return F.mse_loss(u_t, v_t, reduction="none")
 
     @torch.no_grad()
@@ -800,6 +908,13 @@ class PI05Policy(nn.Module):
         super().__init__()
         self.config = config
 
+        _VALID_COMPILE_SCOPES = ("backbone", "multi_group", "per_layer")
+        if config.compile_scope not in _VALID_COMPILE_SCOPES:
+            raise ValueError(
+                f"Invalid compile_scope={config.compile_scope!r}; "
+                f"expected one of {_VALID_COMPILE_SCOPES}"
+            )
+
         pi05_cfg = _PI05InternalConfig(
             chunk_size=config.action_horizon,
             n_action_steps=config.action_horizon,
@@ -810,6 +925,9 @@ class PI05Policy(nn.Module):
             gradient_checkpointing=config.gradient_checkpointing,
             compile_model=config.compile_model,
             compile_mode=config.compile_mode,
+            compile_scope=config.compile_scope,
+            compile_fullgraph=config.compile_fullgraph,
+            compile_dynamic=config.compile_dynamic,
         )
         self.model = PI05Pytorch(pi05_cfg)
         if config.gradient_checkpointing:

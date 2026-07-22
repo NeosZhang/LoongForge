@@ -67,3 +67,10 @@ class Pi05ModelConfig:
     gradient_checkpointing: bool = False
     compile_model: bool = False
     compile_mode: str = "max-autotune"
+    # Granularity of torch.compile inside PI05Pytorch.  Ignored when compile_model=False.
+    #   "backbone"     — legacy behavior: single compile over PaliGemmaWithExpertModel.forward
+    #   "multi_group"  — per-layer + final_norms + action-head bundle (recommended for DDP overlap)
+    #   "per_layer"    — only per-layer _compute_layer_complete, everything else eager
+    compile_scope: str = "backbone"
+    compile_fullgraph: bool = True
+    compile_dynamic: bool = False

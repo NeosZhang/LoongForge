@@ -14,6 +14,14 @@ model:
   gradient_checkpointing: false
   compile_model: true
   compile_mode: max-autotune
+  # torch.compile granularity 
+  # Ignored when compile_model=false.
+  #   backbone     (default) single compile over PaliGemmaWithExpertModel.forward — legacy behavior.
+  #   multi_group  per-layer + final_norms + action-head bundle.
+  #   per_layer    only per-layer _compute_layer_complete is compiled; everything else eager.
+  compile_scope: multi_group
+  # compile_fullgraph: true    # only applies to scope=backbone; sub-graphs force fullgraph=true.
+  # compile_dynamic: false
 
 data:
   image_size: 224
