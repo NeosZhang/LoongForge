@@ -1,11 +1,21 @@
+# pi0.5 LIBERO task-success (internal one-click).
+# Verified: libero_object + /ssd1/sunyuehang/pi05_libero_finetuned_v044
+#
+# Optional overrides (edit in place):
+#   suite: libero_object | libero_spatial | libero_goal | libero_10
+#   max_tasks / episodes_per_task: multi-task / multi-episode
+#   max_steps: raise for harder suites
+#   run.save_trace / run.save_replay: false to save disk
+
 benchmark:
   name: libero
-  suite: libero_object
-  max_tasks: 1
-  episodes_per_task: 1
+  suite: libero_object  # optional: libero_spatial | libero_goal | libero_10
+  max_tasks: 1          # optional: larger / omit for more tasks
+  episodes_per_task: 1  # optional: e.g. 5 for regression
   max_steps: 300
   num_steps_wait: 10
   continuous_gripper: true
+  # control_mode: auto  # LIBERO OSC: auto|absolute|delta (auto=delta when no action_postprocess)
 
 model:
   backend: loongforge

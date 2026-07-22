@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Internal one-click: CALVIN link smoke (random_init; not task-success).
 
 set -euo pipefail
 
 REPO_ROOT=${REPO_ROOT:-/workspace/LoongForge-VLA}
-EVAL_ROOT=${EVAL_ROOT:-${REPO_ROOT}/loongforge/embodied/eval}
 EXAMPLE_EVAL_ROOT=${EXAMPLE_EVAL_ROOT:-${REPO_ROOT}/examples/embodied/pi05/eval}
 CONFIG=${CONFIG:-${EXAMPLE_EVAL_ROOT}/configs/calvin/smoke_internal.yaml}
 if [[ "${CONFIG}" != /* ]]; then

@@ -103,6 +103,15 @@ class ManiSkillAdapter(BaseBenchmarkAdapter):
         qpos = _to_numpy(agent_state.get("qpos", [])).astype(np.float32).reshape(-1)
         qvel = _to_numpy(agent_state.get("qvel", [])).astype(np.float32).reshape(-1)
 
+        # Panda qpos is 9D (7 arm + 2 finger). RLinf/openpi ManiSkill stats use 8D:
+        # 7 arm joints + single gripper width (mean of the two finger joints).
+        if qpos.size >= 9:
+            model_state = np.concatenate([qpos[:7], np.array([float(qpos[7:9].mean())], dtype=np.float32)])
+        elif qpos.size:
+            model_state = qpos
+        else:
+            model_state = None
+
         state: Dict[str, Any] = {
             "eef_pos": None,
             "eef_rot_axis_angle": None,
@@ -124,7 +133,7 @@ class ManiSkillAdapter(BaseBenchmarkAdapter):
                 "head": None,
             },
             "state": state,
-            "model_state": None,
+            "model_state": model_state.tolist() if model_state is not None else None,
             "meta": {
                 "benchmark": "maniskill",
                 "robot_setup": self.robot_uid,

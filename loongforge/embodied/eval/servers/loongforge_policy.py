@@ -92,6 +92,7 @@ class GenericPredictActionPolicy:
             state=state,
             dataset_stats=self._dataset_stats,
             action_dim=int(self._metadata["action_dim"]),
+            **kwargs,
         )
         inference_latency_ms = (time.perf_counter() - start_time) * 1000.0
         if not disable_action_cache:
@@ -116,11 +117,18 @@ class GenericPredictActionPolicy:
             raise ValueError("images.primary or images.head is required for predict_action inference")
         image_input = [np.asarray(primary)]
 
+        left = images.get("left")
+        right = images.get("right")
+        if left is not None and right is not None:
+            # Bimanual benchmarks (RoboTwin): official X-VLA client sends
+            # image0=head, image1=left, image2=right.
+            image_input.append(np.asarray(left))
+            image_input.append(np.asarray(right))
+            return image_input
+
         wrist = images.get("wrist")
         if wrist is None:
-            wrist = images.get("right")
-        if wrist is None:
-            wrist = images.get("left")
+            wrist = right if right is not None else left
         if wrist is not None:
             image_input.append(np.asarray(wrist))
         return image_input

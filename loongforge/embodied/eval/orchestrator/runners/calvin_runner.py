@@ -67,18 +67,25 @@ class _AlarmTimeout:
         return False
 
 
-def _canonical_to_policy_payload(canonical_obs: Dict[str, Any], unnorm_key: Optional[str]) -> Dict[str, Any]:
+def _canonical_to_policy_payload(
+    canonical_obs: Dict[str, Any],
+    unnorm_key: Optional[str],
+    domain_id: Optional[int] = None,
+    state_override: Optional[Any] = None,
+) -> Dict[str, Any]:
     """Run _canonical_to_policy_payload."""
     payload = {
         "images": canonical_obs["images"],
         "instruction": canonical_obs["instruction"],
         "episode_id": canonical_obs["meta"]["episode_id"],
         "episode_step": canonical_obs["meta"]["episode_step"],
-        "state": canonical_obs.get("model_state"),
+        "state": state_override if state_override is not None else canonical_obs.get("model_state"),
         **INFERENCE_CONFIG,
     }
     if unnorm_key is not None:
         payload["unnorm_key"] = unnorm_key
+    if domain_id is not None:
+        payload["domain_id"] = domain_id
     return payload
 
 
@@ -335,6 +342,10 @@ def run_sequence(
                 start_info = env.get_info()
                 client.reset(f"{episode_id}/subtask={subtask_idx}")
                 subtask_success = False
+                # Official X-VLA calvin client: proprio starts from the current
+                # observation and is then backfilled with the raw predicted
+                # action (closed-loop: proprio[:10] = action[:10]).
+                proprio = None
 
                 for step in range(args.max_steps_per_subtask):
                     if args.save_replay:
@@ -349,7 +360,14 @@ def run_sequence(
                     )
                     request_start = time.perf_counter()
                     with _AlarmTimeout(args.policy_call_timeout_ms / 1000.0, TimeoutError):
-                        response = client.predict_action(**_canonical_to_policy_payload(canonical_obs, args.unnorm_key))
+                        response = client.predict_action(
+                            **_canonical_to_policy_payload(
+                                canonical_obs,
+                                args.unnorm_key,
+                                domain_id=getattr(args, "domain_id", None),
+                                state_override=proprio,
+                            )
+                        )
                     e2e_latency_ms = (time.perf_counter() - request_start) * 1000.0
                     e2e_latencies.append(e2e_latency_ms)
                     if not response.get("ok", False):
@@ -358,10 +376,39 @@ def run_sequence(
                     data = response["data"]
                     inference_latency_ms = data.get("inference_latency_ms")
                     inference_latencies.append(inference_latency_ms)
-                    flat_action = np.asarray(data["actions"], dtype=np.float32).reshape(-1)[:7]
-                    env_action = adapter.action_from_canonical({"actions": flat_action})
-                    if not env_action.flags.writeable:
-                        env_action = np.array(env_action, copy=True)
+                    postprocess_key = getattr(args, "action_postprocess", "") or ""
+                    raw_chunk = np.asarray(data["actions"], dtype=np.float32)
+                    if raw_chunk.ndim == 1:
+                        raw_chunk = raw_chunk.reshape(1, -1)
+                    if postprocess_key and raw_chunk.shape[-1] >= 10:
+                        if proprio is None:
+                            base_state = canonical_obs.get("model_state")
+                            proprio = (
+                                np.array(base_state, dtype=np.float32)
+                                if base_state is not None
+                                else np.zeros(20, dtype=np.float32)
+                            )
+                        proprio[:10] = raw_chunk[0, :10]
+                    if postprocess_key:
+                        # Absolute-pose models (X-VLA ee6d): decode to
+                        # pos(3)+quat(4)+grip(1) and step the env with the
+                        # (pos, orn, gripper) tuple accepted by calvin_env
+                        # robot.apply_action (len==3 -> absolute mode),
+                        # matching the official calvin client.
+                        from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
+
+                        processed = postprocess_actions(raw_chunk, postprocess_key)
+                        flat_action = processed[0]
+                        env_action = (
+                            np.array(flat_action[:3], dtype=np.float64),
+                            np.array(flat_action[3:7], dtype=np.float64),
+                            int(flat_action[7]),
+                        )
+                    else:
+                        flat_action = raw_chunk.reshape(-1)[:7]
+                        env_action = adapter.action_from_canonical({"actions": flat_action})
+                        if not env_action.flags.writeable:
+                            env_action = np.array(env_action, copy=True)
 
                     with _AlarmTimeout(args.per_step_timeout_sec, StepTimeoutError):
                         obs, _, _, current_info = env.step(env_action)
@@ -378,7 +425,9 @@ def run_sequence(
                                 "step": step,
                                 "request_id": data.get("request_id"),
                                 "raw_action": flat_action.tolist(),
-                                "env_action": env_action.tolist(),
+                                "env_action": [np.asarray(part).tolist() for part in env_action]
+                                if isinstance(env_action, tuple)
+                                else np.asarray(env_action).tolist(),
                                 "inference_latency_ms": inference_latency_ms,
                                 "e2e_latency_ms": e2e_latency_ms,
                                 "chunk_cache_hit": inference_latency_ms is None,
@@ -498,6 +547,7 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
         control_hz=args.control_hz,
         max_steps_per_subtask=args.max_steps_per_subtask,
         continuous_gripper=args.continuous_gripper,
+        state_format=getattr(args, "state_format", ""),
     )
     task_oracle, val_annotations = _load_task_oracle(args.calvin_config_path)
     env = _make_env(args.dataset_path)

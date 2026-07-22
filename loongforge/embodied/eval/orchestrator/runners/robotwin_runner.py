@@ -9,17 +9,26 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
 from loongforge.embodied.eval.metrics.results import append_jsonl, write_suite_summary_csv, write_summary_csv
 from loongforge.embodied.eval.orchestrator.config import load_config
+
+# Official eval_policy.py prints (ANSI-colored):
+#   Success rate: {suc}/{test_num} => {pct}%, current seed: {now_seed}
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+_SUCCESS_RATE_LINE_RE = re.compile(
+    r"Success rate:\s*(\d+)\s*/\s*(\d+)\s*=>.*?current seed:\s*(\d+)",
+    re.IGNORECASE,
+)
 
 
 def _write_deploy_policy(args: argparse.Namespace, path: pathlib.Path) -> None:
@@ -42,6 +51,7 @@ def _write_deploy_policy(args: argparse.Namespace, path: pathlib.Path) -> None:
         "disable_action_cache": args.disable_action_cache,
         "return_action_chunk": args.return_action_chunk,
         "action_bridge": getattr(args, "action_bridge", "strict_14d"),
+        "domain_id": getattr(args, "domain_id", None),
         "trace_path": str(_robotwin_artifact_dir(args) / "trace.json"),
     }
     if args.disable_eval_video_log:
@@ -316,7 +326,9 @@ def _apply_config(args: argparse.Namespace, config: Dict[str, object]) -> argpar
         (benchmark, "test_num", "test_num_override"),
         (benchmark, "episodes_per_task", "test_num_override"),
         (benchmark, "disable_expert_check", "disable_expert_check"),
-        (model, "ckpt_path", "policy_ckpt_path"),
+        (benchmark, "domain_id", "domain_id"),
+        (benchmark, "action_bridge", "action_bridge"),
+        (server, "ckpt_path", "policy_ckpt_path"),
         (model, "unnorm_key", "unnorm_key"),
         (model, "action_mode", "action_mode"),
         (model, "robotwin_action_bridge", "action_bridge"),
@@ -345,15 +357,135 @@ def _apply_config(args: argparse.Namespace, config: Dict[str, object]) -> argpar
     return args
 
 
-def _robotwin_success_from_result(result_txt: Optional[str]) -> int:
-    """Run _robotwin_success_from_result."""
+def _robotwin_rate_from_result(result_txt: Optional[str]) -> Optional[float]:
+    """Parse official `_result.txt` last numeric line as success rate in [0, 1]."""
     if not result_txt:
-        return 0
-    try:
-        value = float(str(result_txt).strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        return 0
-    return int(value > 0.0)
+        return None
+    for line in reversed(str(result_txt).strip().splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            return float(line)
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_official_episode_outcomes(log_text: str) -> List[Dict[str, Any]]:
+    """Parse per-episode outcomes from official eval_policy log.
+
+    Official loop prints after each valid episode:
+      Success rate: {suc}/{test_num} => {pct}%, current seed: {now_seed}
+
+    Episode success is inferred from the cumulative counter delta
+    (suc increases by 1 on success, stays flat on fail).
+    """
+    episodes: List[Dict[str, Any]] = []
+    prev_suc = 0
+    for raw_line in str(log_text or "").splitlines():
+        line = _ANSI_RE.sub("", raw_line)
+        match = _SUCCESS_RATE_LINE_RE.search(line)
+        if not match:
+            continue
+        suc = int(match.group(1))
+        test_num = int(match.group(2))
+        seed = int(match.group(3))
+        success = 1 if suc > prev_suc else 0
+        prev_suc = suc
+        episodes.append(
+            {
+                "episode_idx": len(episodes),
+                "seed": seed,
+                "success": success,
+                "cum_suc": suc,
+                "cum_test_num": test_num,
+            }
+        )
+    return episodes
+
+
+def _build_robotwin_records(
+    args: argparse.Namespace,
+    returncode: int,
+    artifacts: Dict[str, object],
+    episode_time_sec: float,
+    result_txt: Optional[str],
+    log_text: str,
+) -> List[Dict[str, Any]]:
+    """Build per-episode records aligned with LIBERO/SimplerEnv (1 ep = 1 row).
+
+    Prefer official log episode lines; fall back to a single row from `_result.txt`
+    rate when the log cannot be parsed (keeps smoke/partial runs usable).
+    """
+    official_rate = _robotwin_rate_from_result(result_txt)
+    episodes = _parse_official_episode_outcomes(log_text)
+    n_eps = len(episodes)
+    # Wall-clock is for the whole official subprocess; split evenly when multi-ep.
+    per_ep_time = float(episode_time_sec) / n_eps if n_eps > 0 else float(episode_time_sec)
+    common = {
+        "benchmark": "robotwin",
+        "task_suite": args.task_name,
+        "task_id": 0,
+        "task_description": args.task_name.replace("_", " "),
+        "task_config": args.task_config,
+        "ckpt_setting": args.ckpt_setting,
+        "steps": int(args.max_steps),
+        "returncode": int(returncode),
+        "result_path": artifacts.get("result_txt"),
+        "official_eval_log": artifacts.get("official_eval_log"),
+        "trace_path": artifacts.get("trace_path"),
+        "videos": artifacts.get("videos", []),
+    }
+
+    if episodes:
+        successes = sum(int(ep["success"]) for ep in episodes)
+        rate = successes / n_eps
+        # Prefer official _result.txt rate when present (canonical RoboTwin metric).
+        if official_rate is not None:
+            rate = float(official_rate)
+        records: List[Dict[str, Any]] = []
+        for ep in episodes:
+            success = int(ep["success"])
+            seed = int(ep["seed"])
+            records.append(
+                {
+                    **common,
+                    "episode_idx": int(ep["episode_idx"]),
+                    "episode_id": (
+                        f"robotwin/{args.task_name}/{args.task_config}/seed={seed}"
+                    ),
+                    "seed": seed,
+                    "success": success,
+                    "success_rate": rate,
+                    "n_episodes": n_eps,
+                    "episode_time_sec": per_ep_time,
+                    "failure_reason": None if success else "not_successful",
+                }
+            )
+        return records
+
+    # Fallback: no parseable episodes — one synthetic row (legacy-compatible shape).
+    if official_rate is not None:
+        success = int(official_rate > 0.0)
+        rate = float(official_rate)
+    else:
+        success = 0
+        rate = 0.0
+    seed = int(getattr(args, "start_seed_override", None) or args.seed)
+    return [
+        {
+            **common,
+            "episode_idx": 0,
+            "episode_id": f"robotwin/{args.task_name}/{args.task_config}/seed={seed}",
+            "seed": seed,
+            "success": success,
+            "success_rate": rate,
+            "n_episodes": 1,
+            "episode_time_sec": float(episode_time_sec),
+            "failure_reason": None if success else "not_successful",
+        }
+    ]
 
 
 def _write_standard_outputs(
@@ -362,37 +494,29 @@ def _write_standard_outputs(
     artifacts: Dict[str, object],
     episode_time_sec: float,
 ) -> None:
-    """Run _write_standard_outputs."""
+    """Write per-episode results.jsonl + summary CSVs (LIBERO-style aggregation)."""
     result_txt = None
     result_path = artifacts.get("result_txt")
     if result_path:
         path = pathlib.Path(str(result_path))
         if path.is_file():
             result_txt = path.read_text(encoding="utf-8")
-    success = _robotwin_success_from_result(result_txt)
-    record = {
-        "benchmark": "robotwin",
-        "task_suite": args.task_name,
-        "task_id": 0,
-        "episode_idx": 0,
-        "episode_id": f"robotwin/{args.task_name}/{args.task_config}/seed={args.seed}",
-        "task_description": args.task_name.replace("_", " "),
-        "task_config": args.task_config,
-        "ckpt_setting": args.ckpt_setting,
-        "success": success,
-        "steps": int(args.max_steps),
-        "episode_time_sec": episode_time_sec,
-        "failure_reason": None if success else "not_successful",
-        "returncode": int(returncode),
-        "result_path": artifacts.get("result_txt"),
-        "official_eval_log": artifacts.get("official_eval_log"),
-        "trace_path": artifacts.get("trace_path"),
-        "videos": artifacts.get("videos", []),
-    }
+
+    log_text = ""
+    log_path = artifacts.get("official_eval_log")
+    if log_path:
+        lp = pathlib.Path(str(log_path))
+        if lp.is_file():
+            log_text = lp.read_text(encoding="utf-8", errors="replace")
+
+    records = _build_robotwin_records(
+        args, returncode, artifacts, episode_time_sec, result_txt, log_text
+    )
     output_dir = pathlib.Path(args.output_dir)
-    append_jsonl(output_dir / "results.jsonl", record)
-    write_summary_csv(output_dir / "summary.csv", [record])
-    write_suite_summary_csv(output_dir / "suite_summary.csv", [record])
+    for record in records:
+        append_jsonl(output_dir / "results.jsonl", record)
+    write_summary_csv(output_dir / "summary.csv", records)
+    write_suite_summary_csv(output_dir / "suite_summary.csv", records)
 
 
 def run_evaluation(args: argparse.Namespace) -> int:
@@ -509,7 +633,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=10093)
     parser.add_argument("--unnorm-key", default=None)
     parser.add_argument("--action-mode", choices=["abs", "delta", "rel"], default="abs")
-    parser.add_argument("--action-bridge", choices=["strict_14d", "duplicate_7d"], default="strict_14d")
+    # action_bridge / domain_id: YAML only (benchmark.action_bridge, benchmark.domain_id)
     parser.add_argument("--no-action-reorder", action="store_true")
     parser.add_argument("--max-steps", type=int, default=400)
     parser.add_argument("--step-limit-override", type=int, default=None)
@@ -538,7 +662,7 @@ def main() -> None:
     if args.config:
         args = _apply_config(args, load_config(args.config))
     if not args.policy_ckpt_path:
-        raise SystemExit("policy checkpoint must be set by model.ckpt_path in YAML")
+        raise SystemExit("policy checkpoint must be set by server.ckpt_path in YAML")
     if not args.task_name:
         raise SystemExit("task name must be set by benchmark.task_name in YAML")
     raise SystemExit(run_evaluation(args))

@@ -84,7 +84,7 @@ def main() -> None:
     if server_args.loongforge_root:
         os.chdir(server_args.loongforge_root)
     if not server_args.ckpt_path and not server_args.random_init:
-        raise SystemExit("checkpoint must be set by model.ckpt_path in YAML unless model.random_init is true")
+        raise SystemExit("checkpoint must be set by server.ckpt_path in YAML unless server.random_init is true")
 
     logging.basicConfig(level=logging.INFO, force=True)
     model_spec = build_model_spec(server_args, raw_model_dict)

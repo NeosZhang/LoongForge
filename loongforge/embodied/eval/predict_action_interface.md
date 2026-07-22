@@ -1,142 +1,152 @@
 # Predict Action Interface
 
-本文档说明 LoongForge embodied eval 中面向新模型接入的统一 `predict_action()` 接口，以及 eval 侧如何校验模型接口和 action 输出。
+**Audience:** model owners implementing `predict_action()` for LoongForge embodied offline eval.
 
-## 1. 目标
+This document is the **contract** between a model and the eval stack. For YAML / runners / verified scores, see [`user_guide_en.md`](user_guide_en.md). For action-space / absolute-vs-delta / bridge semantics (pi05 vs xvla), see [`model_integration_guide.md`](model_integration_guide.md).
 
-当 benchmark runner 已经接入完成后，新模型不应该再复制一份完整的 `LoongForgeXXXPolicy`。推荐方式是：
+**Source of truth for helpers:** `loongforge/embodied/eval/servers/predict_action_interface.py`.
 
-1. 模型自身实现统一 `predict_action()` 接口。
-2. eval 侧新增一个轻量 model factory，负责 import、config、checkpoint、device/dtype 和 metadata。
-3. server 使用 `GenericPredictActionPolicy` 复用统一 RPC、cache、latency、dataset stats、action shape 校验和 action dim 裁剪逻辑。
+---
 
-当前 PI05 路径已经按这个模式接入：
+## 1. What you implement vs what eval owns
+
+| Layer | Owner | Responsibility |
+|-------|--------|----------------|
+| `predict_action(...)` | **Model** | Inference; optional **state norm** / **action unnorm** using `dataset_stats`; return a numeric action chunk |
+| Model factory | Eval `factories/` | Import, config, ckpt / `random_init`, device/dtype, wrap into a `predict_action` callable |
+| `GenericPredictActionPolicy` | Eval server | RPC, image packing, action-chunk cache, latency, shape check, **dim truncate** to `action_dim` |
+| `action_postprocess` / RoboTwin `action_bridge` | Eval runner / bridge | Convert model space → **env** action (e.g. 20D ee6d → 7D LIBERO); **not** dataset q99 unnorm |
+
+Do **not** put LIBERO / RoboTwin / SimplerEnv environment special-cases inside training-tree `predict_action`. Prefer a named eval postprocess / bridge when the model action space differs from the env.
+
+---
+
+## 2. Recommended integration path
+
+After benchmark runners exist, do **not** fork a full `LoongForgeXXXPolicy`. Prefer:
+
+1. Model exposes a unified `predict_action()`.
+2. Eval adds a thin factory (`@register_factory("<model_type>")`) that loads the model and returns a `PredictActionModelSpec`.
+3. Server uses `GenericPredictActionPolicy` for RPC / cache / stats path / shape checks.
+
+Reference paths already in-tree:
 
 ```text
 loongforge_server.py
   -> PI05ModelFactory.build(...)
   -> GenericPredictActionPolicy(...)
   -> PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)
+
+loongforge_server.py
+  -> XVLAModelFactory.build(...)
+  -> GenericPredictActionPolicy(...)
+  -> wrapper.predict_action(images, instructions, state=None, dataset_stats=None, domain_id=..., **kwargs)
 ```
 
-## 2. 接口定义
+Two signature styles are supported:
 
-新模型需要暴露一个 callable：
+- **Fixed signature** (pi05-style): no `**kwargs`. Extra runner keywords are **silently dropped**.
+- **`**kwargs` / extra params** (xvla-style): model-specific fields such as `domain_id` are passed through.
+
+---
+
+## 3. Required signature
 
 ```python
-def predict_action(images, instructions, state=None, dataset_stats=None):
+def predict_action(images, instructions, state=None, dataset_stats=None, **kwargs):
+    """Return env-ready or postprocess-ready actions as float array."""
     ...
 ```
 
-参数含义：
+### 3.1 Parameters
 
-- `images`：batch 后的图像输入。generic policy 会从 canonical image views 中提取 `primary`（或 `head`）作为主视角，以及 `wrist`（或 `right`/`left`）作为腕部视角，最多构成 `[primary, wrist]` 的列表传给模型。若 benchmark 只有一个视角，则只传 `[primary]`。
-- `instructions`：batch 后的语言指令列表。
-- `state`：可选模型状态输入，来自 adapter 产出的 `model_state`。当前 PI05 smoke 路径默认传 `None`。
-- `dataset_stats`：可选 dataset statistics，由 eval 侧加载后透传给模型；模型如需 state 归一化、action 反归一化或其他模型私有后处理，应在自己的 `predict_action()` 内部消费。
+| Arg | Type (typical) | Meaning |
+|-----|----------------|---------|
+| `images` | nested list of `uint8` HWC arrays | Batched views. Generic policy packs from canonical views: prefer `primary`/`head`; if both `left` and `right` exist (e.g. RoboTwin) → `[primary, left, right]`; else optional single wrist → `[primary, wrist]`; single-view → `[primary]`. |
+| `instructions` | `list[str]` | Batched language instructions. |
+| `state` | `None` or numeric vector / array | **Model-ready** proprio from adapter `model_state` (not the structured `state` dict). |
+| `dataset_stats` | `dict` or `None` | Loaded by eval from `server.dataset_statistics_path` and **passed through**. Use inside the model for state norm / action unnorm if your training pipeline requires it. |
+| extra kwargs | e.g. `domain_id` | Only if the signature accepts them (explicit name or `**kwargs`). YAML `benchmark.domain_id` is injected by the runner into the RPC payload. |
 
-注意：接口参数名保持 `state`，因为这是模型 `predict_action()` 的通用语义；adapter 侧字段叫 `model_state`，表示“准备传给模型的 state”。runner 会做如下转换：
+### 3.2 Kwarg filtering (`_filter_supported_kwargs`)
+
+`call_predict_action` inspects the signature before calling you:
+
+- Signature has `**kwargs` → all extra keywords are forwarded.
+- Fixed signature → only declared parameters are kept. Runner fields such as `do_sample`, `use_ddim`, `num_ddim_steps`, `cfg_scale`, or bridge-only `meta` are dropped without error.
+
+Declare a parameter (or use `**kwargs`) if the model must consume it.
+
+### 3.3 Name mapping: `model_state` → `state`
+
+Adapters keep two fields:
+
+- `canonical_obs["state"]` — structured, for trace / debug.
+- `canonical_obs["model_state"]` — numeric (or `None`), for the model.
+
+Runners send:
 
 ```python
 payload = {
     "images": canonical_obs["images"],
     "instruction": canonical_obs["instruction"],
-    "state": canonical_obs.get("model_state"),
+    "state": canonical_obs.get("model_state"),  # may be None
 }
 ```
 
-链路是：
-
 ```text
-adapter.model_state -> RPC payload.state -> predict_action(state=...)
+adapter.model_state  ->  RPC payload.state  ->  predict_action(state=...)
 ```
 
-## 3. 校验位置
+---
 
-接口校验代码位于：
+## 4. Validation helpers (eval code)
 
 ```text
 loongforge/embodied/eval/servers/predict_action_interface.py
 ```
 
-核心对象和函数：
+| API | Role |
+|-----|------|
+| `PredictActionModel` | Protocol |
+| `validate_predict_action_model(model)` | Signature check before call |
+| `call_predict_action(model, images, instructions, state, dataset_stats, action_dim, **kwargs)` | Validate, call, reshape / truncate |
+| `postprocess_actions(actions, key)` | Optional **eval-side** env conversion after the server returns actions |
+
+`GenericPredictActionPolicy` always goes through `call_predict_action`.
+
+### 4.1 What `validate_predict_action_model` checks
+
+- `predict_action` exists and is callable.
+- Required parameters: `images`, `instructions`.
+- Optional parameters `state` and `dataset_stats` must be acceptable (named args or `**kwargs`).
+
+**Invalid:**
 
 ```python
-class PredictActionModel(Protocol):
-    def predict_action(
-        self,
-        images: Any,
-        instructions: Any,
-        state: Optional[Any] = None,
-        dataset_stats: Optional[Dict[str, Any]] = None,
-    ) -> Any:
-        ...
-```
-
-```python
-def validate_predict_action_model(model: Any) -> None:
+def predict_action(self, images):  # missing instructions; cannot take state/dataset_stats
     ...
 ```
 
+**Valid:**
+
 ```python
-def call_predict_action(
-    model: PredictActionModel,
-    images: Any,
-    instructions: Any,
-    state: Optional[Any],
-    dataset_stats: Optional[Dict[str, Any]],
-    action_dim: int,
-) -> np.ndarray:
+def predict_action(self, images, instructions, state=None, dataset_stats=None):
+    ...
+
+def predict_action(self, images, instructions, **kwargs):
+    state = kwargs.get("state")
+    dataset_stats = kwargs.get("dataset_stats")
     ...
 ```
 
-`GenericPredictActionPolicy` 会通过 `call_predict_action()` 调用模型，因此只要新模型走 generic policy 路径，就会自动经过接口校验和 action 输出校验。
+---
 
-## 4. validate_predict_action_model 检查什么
+## 5. Action output contract
 
-`validate_predict_action_model(model)` 会检查：
+### 5.1 Allowed shapes
 
-- `model.predict_action` 是否存在。
-- `model.predict_action` 是否 callable。
-- 是否包含必需参数：
-  - `images`
-  - `instructions`
-- 是否可以接收 eval 侧会传入的可选 keyword：
-  - `state`
-  - `dataset_stats`
-- 如果模型接口使用 `**kwargs`，则允许它接收这些可选参数。
-
-错误示例：
-
-```python
-class BadModel:
-    def predict_action(self, images):
-        ...
-```
-
-该接口缺少 `instructions`，并且不能接收 `state` / `dataset_stats`，eval 会在调用前抛出 `TypeError`。
-
-可接受示例：
-
-```python
-class GoodModel:
-    def predict_action(self, images, instructions, state=None, dataset_stats=None):
-        ...
-```
-
-也可以使用 `**kwargs` 兼容额外参数：
-
-```python
-class KwargsModel:
-    def predict_action(self, images, instructions, **kwargs):
-        state = kwargs.get("state")
-        dataset_stats = kwargs.get("dataset_stats")
-        ...
-```
-
-## 5. action 输出要求
-
-模型 `predict_action()` 可以返回以下 shape：
+Model may return:
 
 ```text
 [D]
@@ -144,185 +154,273 @@ class KwargsModel:
 [B, H, D]
 ```
 
-`call_predict_action()` 会统一规整为：
+`call_predict_action` normalizes to:
 
 ```text
 [H, action_dim]
 ```
 
-规整规则：
+Rules:
 
-- `[D]` 会 reshape 成 `[1, D]`。
-- `[H, D]` 原样作为 action chunk。
-- `[B, H, D]` 会 reshape 成 `[-1, D]`，用于当前单请求 action chunk 处理。
-- 其他维度会报 `ValueError`。
-- 如果输出最后一维小于 `action_dim`，会报 `ValueError`。
-- 如果输出最后一维大于 `action_dim`，会裁剪到前 `action_dim` 维。
+| Input shape | Behavior |
+|-------------|----------|
+| `[D]` | → `[1, D]` |
+| `[H, D]` | kept as chunk |
+| `[B, H, D]` | → `[-1, D]` (single-request path) |
+| other ndim | `ValueError` |
+| last dim `< action_dim` | `ValueError` |
+| last dim `> action_dim` | **truncate** to first `action_dim` columns |
 
-`GenericPredictActionPolicy` 不再在模型外部执行 action 反归一化。模型 `predict_action()` 应返回当前 eval action adapter 可消费的动作；如果模型输出是 normalized action，应在 `predict_action()` 内部根据模型配置的 normalization mode 使用 `dataset_stats` 完成对应反归一化。例如 PI05 当前 `ACTION` 使用 quantile normalization，因此需要 `dataset_stats["action"].q01/q99`；其他 LeRobot 风格模型可能使用 `mean/std` 或 `min/max`。
+`action_dim` comes from model / YAML config (e.g. 7 single-arm, 14 RoboTwin joints, 20 xvla ee6d). Truncation is **not** a substitute for correct action semantics.
 
-例如 benchmark 需要 7D action：
+### 5.2 Normalization / unnormalization (model-owned)
+
+Eval does **not** apply q01/q99, mean/std, or min/max outside the model.
+
+- If the network emits **normalized** actions, unnormalize **inside** `predict_action` using `dataset_stats` (and your training norm mode).
+- Example: pi05 ACTION quantile norm → use `dataset_stats["action"].q01` / `.q99` (or the project’s equivalent structure).
+- Other LeRobot-style models may use mean/std or min/max.
+
+Return values should be in the **model action space** that either:
+
+1. Matches the env after dim truncate (e.g. pi05 LIBERO 7D), or  
+2. Is converted by eval via `benchmark.action_postprocess` / RoboTwin `action_bridge` (e.g. xvla 20D ee6d).
+
+### 5.3 Eval-side postprocess (not part of `predict_action`)
+
+After the server returns a chunk, runners may call:
 
 ```python
-actions = model.predict_action(...)
-# actions shape: [50, 32]
+postprocess_actions(raw_chunk, key)  # key from YAML benchmark.action_postprocess
 ```
 
-则 eval 会返回：
+Registered keys (see `ACTION_POSTPROCESS_REGISTRY`):
 
-```python
-actions[:, :7]
-# shape: [50, 7]
-```
+| Key | Typical use |
+|-----|-------------|
+| `ee6d_to_axis_angle` | xvla × LIBERO (20D → 7D pos + axis-angle + grip) |
+| `ee6d_to_simpler_abs_euler` | xvla × SimplerEnv WidowX |
+| `ee6d_to_calvin_abs` | xvla × CALVIN absolute pose |
+| `ee6d_to_euler` / `ee6d_to_quat` | other EE variants |
 
-## 6. model_state 和 state 的关系
+RoboTwin does **not** use this registry for formal protocols; it uses `bridges/robotwin_policy.py` modes (`pi05_aloha_14d`, `ee6d_dual`, …) selected by YAML `benchmark.action_bridge`.
 
-benchmark adapter 可以保留结构化状态：
+---
+
+## 6. `state` / `model_state` expectations
+
+Structured adapter state is for logging. Only `model_state` reaches the model.
+
+**Do not** pass a nested dict as `state` into `predict_action` unless the model explicitly documents that layout. Prefer a flat `float32` vector aligned with training `observation.state`.
+
+### 6.1 Current practice (pi05 / xvla)
+
+| Setup | Typical `model_state` |
+|-------|------------------------|
+| pi05 × LIBERO / CALVIN / SimplerEnv | Often `None` unless YAML / adapter builds a training-aligned vector |
+| pi05 / xvla × ManiSkill (PickCube) | Numeric from Panda qpos: **8D** when raw qpos is 9D (7 arm + mean of 2 finger joints); full joint list stays in structured `state` |
+| pi05 × RoboTwin (`pi05_aloha_14d`) | 14D joint vector from adapter; **bridge** applies openpi `adapt_to_pi` before the RPC state is finalized for the model path |
+| xvla + `server.state_format: ee6d` | 20D ee6d proprio (per arm: pos3 + rot6d6 + grip1; single-arm padded). Layout must match the official client (column packing / interleaved rot6d as documented for that benchmark). |
+
+If you need proprio:
+
+1. Align dim, order, units, frame, gripper convention with training data and `dataset_stats["observation.state"]` when used.
+2. Have the **adapter** emit numeric `model_state`; do not “clean” benchmark-native dicts inside the factory.
+
+Example of a correct numeric handoff:
 
 ```python
 canonical_obs = {
-    "state": {
-        "eef_pos": [...],
-        "eef_rot_axis_angle": [...],
-        "gripper": ...,
-        "frame": "base",
-        "units": {"pos": "m", "rot": "rad"},
-    },
-    "model_state": None,
+    "state": {"eef_pos": [...], "gripper": ..., "frame": "base", ...},  # debug only
+    "model_state": np.asarray([...], dtype=np.float32),  # what the model sees
 }
+# -> predict_action(..., state=model_state)
 ```
 
-含义：
+---
 
-- `state`：benchmark/adapter/debug/trace 使用的结构化状态。
-- `model_state`：真正准备传给模型 `predict_action(state=...)` 的状态。
+## 7. Warmup
 
-当前 PI05 路径下，LIBERO、CALVIN、SimplerEnv、RoboTwin、ManiSkill 默认：
+Before the health endpoint is marked ready, the server may call once:
 
 ```python
-"model_state": None
+predict_action(
+    images=[[np.zeros((224, 224, 3), dtype=np.uint8)]],
+    instructions=["warmup"],
+    state=None,
+    dataset_stats=None,
+)
 ```
 
-原因是 PI05 可以接收数值 state，但它要求该 state 与训练时的 `observation.state` 在维度、顺序、单位、坐标系、gripper 表示和 `dataset_stats["observation.state"]` 上一致。当前 benchmark adapter 的结构化 dict 不能直接当作 PI05 state 传入。
+Failures are logged as warnings, but the call must not corrupt model weights or leave the process unusable. Prefer lazy imports that complete safely on first call.
 
-如果未来某个模型需要状态输入，adapter 应显式产出模型可接受的数值状态：
+---
 
-```python
-canonical_obs = {
-    "state": {
-        "eef_pos": [0.12, -0.03, 0.45],
-        "eef_rot_axis_angle": [0.01, 0.02, 0.03],
-        "gripper": 0.04,
-        "frame": "base",
-        "units": {"pos": "m", "rot": "rad"},
-    },
-    "model_state": [0.12, -0.03, 0.45, 0.01, 0.02, 0.03, 0.04],
-}
-```
+## 8. Local interface check (no benchmark)
 
-此时模型实际收到：
+### 8.1 Mock (signature + `call_predict_action` only)
 
-```python
-predict_action(..., state=[0.12, -0.03, 0.45, 0.01, 0.02, 0.03, 0.04])
-```
-
-## 7. 本地接口验证示例
-
-模型开发者可以先不启动 benchmark 或 policy server，只在模型环境中直接验证接口签名和 action 输出 shape。
-
-下面示例用一个最小 mock model 演示验证方式：
+No GPU / weights required. Use this to verify the eval helpers before a full model load.
 
 ```bash
 cd /workspace/LoongForge-VLA
 PYTHONPATH=/workspace/LoongForge-VLA python - <<'PY'
 import numpy as np
-
 from loongforge.embodied.eval.servers.predict_action_interface import (
     call_predict_action,
     validate_predict_action_model,
 )
 
-class MyModel:
-    def predict_action(self, images, instructions, state=None, dataset_stats=None):
-        batch_size = len(instructions)
-        horizon = 4
-        action_dim = 7
-        return np.zeros((batch_size, horizon, action_dim), dtype=np.float32)
+class FixedSigModel:
+    """pi05-style: extra kwargs are filtered out."""
 
-model = MyModel()
-validate_predict_action_model(model)
-actions = call_predict_action(
-    model,
-    images=[[np.zeros((224, 224, 3), dtype=np.uint8)]],
-    instructions=["pick up the cube"],
-    state=None,
-    dataset_stats=None,
-    action_dim=7,
-)
-print(actions.shape)
+    def predict_action(self, images, instructions, state=None, dataset_stats=None):
+        return np.zeros((len(instructions), 4, 7), dtype=np.float32)
+
+class KwargsModel:
+    """xvla-style: domain_id is forwarded."""
+
+    def predict_action(self, images, instructions, state=None, dataset_stats=None, **kwargs):
+        assert kwargs.get("domain_id") == 6
+        return np.zeros((4, 20), dtype=np.float32)
+
+images = [[np.zeros((224, 224, 3), dtype=np.uint8)]]
+common = dict(instructions=["pick up the cube"], state=None, dataset_stats=None)
+
+m = FixedSigModel()
+validate_predict_action_model(m)
+print(call_predict_action(m, images=images, action_dim=7, do_sample=False, cfg_scale=1.5, **common).shape)
+
+m = KwargsModel()
+validate_predict_action_model(m)
+print(call_predict_action(m, images=images, action_dim=20, domain_id=6, **common).shape)
 PY
 ```
 
-期望输出：
+Expected:
 
 ```text
 (4, 7)
+(4, 20)
 ```
 
-接入真实模型时，将 `MyModel()` 替换成对应 model factory/loader 构造出的模型实例即可。这个检查只验证统一接口和 action shape；完整 eval 链路仍需要通过 YAML 启动 benchmark runner 和 policy server 做 smoke test。
+### 8.2 Real pi05 / xvla (`predict_action` via factory)
 
-## 8. 新模型接入检查清单
+Use the model factory (same path as the policy server). Prefer `server.random_init: true` for a **contract** check without domain weights; point `tokenizer_path` / Florence processor path at any complete checkpoint tree the model can load from.
 
-接入新模型时至少确认：
+**Images layout** matches `GenericPredictActionPolicy`: batch outer list, per-sample view list (LIBERO-style two views shown).
 
-- 模型暴露 callable `predict_action(images, instructions, state=None, dataset_stats=None)`。
-- `validate_predict_action_model(model)` 可以通过。
-- `predict_action()` 返回 `[D]`、`[H, D]` 或 `[B, H, D]`。
-- 输出最后一维至少为目标 benchmark 的 `action_dim`。
-- `model.action_dim` 与 benchmark action adapter 期望一致，例如单臂 7D、RoboTwin 双臂 14D。
-- 如果使用 `model_state`，其语义、维度、顺序和 `dataset_stats["observation.state"]` 必须与模型训练数据一致。
-- model factory 只处理模型私有加载逻辑，不清理 benchmark-native dict state。
-- benchmark-native observation/state 结构应在 adapter/payload 层处理。
-- `predict_action()` 能接受 warmup 调用：`predict_action(images=[[zeros_224x224]], instructions=["warmup"], state=None, dataset_stats=None)`。server 在 health 启动前会执行一次此调用以触发所有延迟 import，异常会被 warning 忽略但不应导致模型状态损坏。
+```bash
+cd /workspace/LoongForge-VLA
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/workspace/LoongForge-VLA \
+  /path/to/loongforge/bin/python - <<'PY'
+import numpy as np
+from loongforge.embodied.eval.servers.predict_action_interface import (
+    call_predict_action,
+    validate_predict_action_model,
+)
+from loongforge.embodied.eval.servers.eval_server_config import EvalServerArgs
+from loongforge.embodied.eval.factories.pi05_factory import PI05ModelFactory
+from loongforge.embodied.eval.factories.xvla_factory import XVLAModelFactory
+from loongforge.embodied.model.pi05.model_configuration_pi05 import Pi05ModelConfig
+from loongforge.embodied.model.xvla.model_configuration_xvla import XvlaModelConfig
 
-## 9. 常见错误
+img = np.zeros((224, 224, 3), dtype=np.uint8)
+images = [[img, img]]  # one batch item, two views
+instructions = ["pick up the cube"]
 
-### 缺少 predict_action
+# --- pi05 (fixed signature; extra kwargs dropped) ---
+pi05 = PI05ModelFactory.build(
+    Pi05ModelConfig(action_dim=7, state_dim=8, action_horizon=50, max_action_dim=32, max_state_dim=32),
+    EvalServerArgs(
+        random_init=True,
+        tokenizer_path="/path/to/paligemma-3b-pt-224",  # required even for random_init
+        device="cuda",
+        loongforge_root="/workspace/LoongForge-VLA",
+    ),
+).model
+validate_predict_action_model(pi05)
+out = call_predict_action(
+    pi05, images=images, instructions=instructions, state=None, dataset_stats=None,
+    action_dim=7, do_sample=False, cfg_scale=1.5, domain_id=3,  # last three ignored
+)
+print("pi05", out.shape)  # e.g. (50, 7) for action_horizon=50
 
-```text
-TypeError: model must expose a callable predict_action(images, instructions, state, dataset_stats)
+# --- xvla (domain_id coerced by factory wrapper) ---
+# tokenizer_path must be a full X-VLA tree (Florence processor + tokenizer files).
+xvla = XVLAModelFactory.build(
+    XvlaModelConfig(action_mode="ee6d", num_actions=30, action_horizon=30, max_action_dim=20, real_action_dim=20),
+    EvalServerArgs(
+        random_init=True,
+        tokenizer_path="/path/to/xvla-libero",  # or any full X-VLA dir
+        device="cuda",
+        loongforge_root="/workspace/LoongForge-VLA",
+        state_format="ee6d",
+    ),
+).model
+validate_predict_action_model(xvla)
+out = call_predict_action(
+    xvla, images=images, instructions=instructions,
+    state=np.zeros(20, dtype=np.float32), dataset_stats=None,
+    action_dim=20, domain_id=3,
+)
+print("xvla", out.shape)  # e.g. (30, 20); raw model is often [1, H, 20]
+PY
 ```
 
-说明模型没有提供 eval 需要的统一入口。
+Notes from real runs:
 
-### 缺少必需参数
+| Model | Raw `predict_action` | After `call_predict_action` |
+|-------|----------------------|-----------------------------|
+| pi05 | `[B, action_horizon, max_action_dim]` e.g. `(1, 50, 32)` | truncate last dim → `(50, 7)` |
+| xvla | `[B, num_actions, real_action_dim]` e.g. `(1, 30, 20)` | reshape + keep dim → `(30, 20)` |
 
-```text
-TypeError: model.predict_action is missing required parameters: ['instructions']
-```
+- pi05 **needs** `tokenizer_path` even under `random_init` (PaliGemma tokenize).
+- xvla **needs** a valid Florence processor/tokenizer dir (`tokenizer_path`); empty path fails HF load.
+- xvla factory wraps `domain_id` int → `LongTensor` on device; pass YAML-style int in `call_predict_action(..., domain_id=3)`.
+- `EvalServerArgs` has **no** `processor_path` field — use `tokenizer_path` only (factory sets `model._processor_path` from it).
+- Full correctness (unnorm stats, abs/delta, postprocess) still needs a YAML smoke / task-success run (`user_guide_en.md`).
 
-说明接口签名不满足要求。
+---
 
-### 不能接收 state 或 dataset_stats
+## 9. Checklist for model owners
 
-```text
-TypeError: model.predict_action cannot accept eval keyword parameters: ['state']
-```
+Interface layer:
 
-说明模型接口没有声明 `state`，也没有 `**kwargs`。
+- [ ] Callable `predict_action(images, instructions, state=None, dataset_stats=None)` (optional extra kwargs if needed).
+- [ ] `validate_predict_action_model(model)` passes.
+- [ ] Returns `[D]`, `[H, D]`, or `[B, H, D]` with last dim ≥ configured `action_dim`.
+- [ ] Unnormalization (if any) lives **inside** `predict_action`; eval only passes `dataset_stats`.
+- [ ] Warmup call is safe.
+- [ ] Factory loads weights / tokenizer / processor; does not rewrite benchmark dict observations.
 
-### action shape 不支持
+Semantics (see `model_integration_guide.md`):
 
-```text
-ValueError: model.predict_action returned unsupported action shape: (...)
-```
+- [ ] `action_dim` / horizon match the target benchmark protocol (7 / 14 / 20, …).
+- [ ] Absolute vs delta control matches training; do not invent env-side “delta = abs − current” for axis-angle without a real protocol.
+- [ ] If output space ≠ env space, coordinate an eval `action_postprocess` or RoboTwin `action_bridge` key—do not hardcode env names in the model.
+- [ ] `domain_id` / `state_format` / stats paths match the official inference config for that domain weight.
 
-说明模型输出不是 `[D]`、`[H, D]` 或 `[B, H, D]`。
+---
 
-### action_dim 不够
+## 10. Common errors
 
-```text
-ValueError: model.predict_action returned action dim X, expected at least Y
-```
+| Error | Cause |
+|-------|--------|
+| `TypeError: model must expose a callable predict_action(...)` | Missing method |
+| `TypeError: ... missing required parameters: ['instructions']` | Bad signature |
+| `TypeError: ... cannot accept eval keyword parameters: ['state']` | No `state` and no `**kwargs` |
+| `ValueError: ... unsupported action shape` | Not `[D]` / `[H,D]` / `[B,H,D]` |
+| `ValueError: ... action dim X, expected at least Y` | Output narrower than `action_dim` |
+| Env steps but success stays 0 | Often control mode (abs vs delta), wrong postprocess/bridge, or wrong unnorm—not a missing `predict_action` |
 
-说明模型输出维度小于 benchmark 需要的 action 维度。
+---
+
+## 11. Related docs
+
+| Doc | Use |
+|-----|-----|
+| [`user_guide_en.md`](user_guide_en.md) | Run eval, YAML, verified scores (canonical) |
+| [`model_integration_guide.md`](model_integration_guide.md) | Semantic checklist (pi05 vs xvla) |
+| [`benchmark_envs.md`](benchmark_envs.md) | Per-benchmark observation / action notes |
+| `servers/predict_action_interface.py` | Implementation of this contract + postprocess registry |

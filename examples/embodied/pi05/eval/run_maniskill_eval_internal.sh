@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Copyright 2026 The LoongForge Authors.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Internal one-click: ManiSkill link smoke (random_init; not task-success).
 
 set -euo pipefail
 
 REPO_ROOT=${REPO_ROOT:-/workspace/LoongForge-VLA}
 EXAMPLE_EVAL_ROOT=${EXAMPLE_EVAL_ROOT:-${REPO_ROOT}/examples/embodied/pi05/eval}
-CONFIG=${CONFIG:-${EXAMPLE_EVAL_ROOT}/configs/maniskill/pick_cube_20step_internal.yaml}
+CONFIG=${CONFIG:-${EXAMPLE_EVAL_ROOT}/configs/maniskill/pick_cube_smoke_internal.yaml}
 if [[ "${CONFIG}" != /* ]]; then
   CONFIG=${REPO_ROOT}/${CONFIG}
 fi

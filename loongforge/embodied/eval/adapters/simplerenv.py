@@ -68,6 +68,31 @@ def _extract_agent_state(env_obs: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+def build_widowx_initial_model_state(env_obs: Dict[str, Any], target_dim: int = 20) -> Optional[np.ndarray]:
+    """Build the initial 20D proprio used by the official X-VLA WidowX client.
+
+    Official layout: [ee_pos_wrt_base(3), 1, 0, 0, 1, 0, 0 (identity rot6d,
+    interleaved), 0 (gripper)] padded with zeros to ``target_dim``. Subsequent
+    steps overwrite the first 10 dims with the last consumed action
+    (closed-loop backfill handled by the runner).
+    """
+    try:
+        from sapien.core import Pose
+
+        agent = env_obs["agent"]
+        extra = env_obs["extra"]
+        base_pose = np.asarray(agent["base_pose"], dtype=np.float64).reshape(-1)
+        tcp_pose = np.asarray(extra["tcp_pose"], dtype=np.float64).reshape(-1)
+        ee_pose_wrt_base = Pose(p=base_pose[:3], q=base_pose[3:]).inv() * Pose(p=tcp_pose[:3], q=tcp_pose[3:])
+        pos = np.asarray(ee_pose_wrt_base.p, dtype=np.float32)
+    except Exception:
+        return None
+    proprio = np.concatenate([pos, np.array([1, 0, 0, 1, 0, 0, 0], dtype=np.float32)])
+    state = np.zeros(target_dim, dtype=np.float32)
+    state[: proprio.size] = proprio
+    return state
+
+
 class SimplerEnvAdapter(BaseBenchmarkAdapter):
     """Provide SimplerEnvAdapter behavior."""
 

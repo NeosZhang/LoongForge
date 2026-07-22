@@ -79,7 +79,7 @@ class RoboTwinAdapter(BaseBenchmarkAdapter):
                 "frame": "base",
                 "units": {"joint": "normalized"},
             },
-            "model_state": None,
+            "model_state": joint.copy(),
             "meta": {
                 "benchmark": "robotwin",
                 "robot_setup": self.robot_setup,
