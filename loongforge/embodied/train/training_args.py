@@ -14,9 +14,12 @@ Usage rules (must follow)
    - a default supplied there creates a second source of truth and hides the real one;
    - a misspelled field should raise ``AttributeError`` immediately, not silently return
      a fallback.
-3. To add or change a generic parameter, edit only this dataclass
-   (one authoritative definition); the CLI flags, ``--help``, and the parameter
-   summary are all generated from this dataclass by reflection.
+3. To add or change a generic parameter, edit only the matching concern-scoped
+   ``_XxxArgs`` mixin dataclass (still one authoritative definition per field);
+   ``TrainingArgs`` aggregates the mixins via multiple inheritance and stays a
+   single flat frozen dataclass, so the CLI flags, ``--help``, and the parameter
+   summary are all generated from it by reflection and attribute access stays
+   flat (``training_args.lr_base``).
 
 Boundary: model-structure switches (freeze_vision_encoder, train_expert_only,
 compile_model, ...) live in the per-model ModelConfig (YAML model:). Generic
@@ -132,12 +135,18 @@ def parse_module_key_patterns(
 
 # ---------------------------------------------------------------------------
 # TrainingArgs - single source of truth for generic training params
+#
+# The parameters are split into concern-scoped mixin dataclasses (_XxxArgs)
+# below; ``TrainingArgs`` aggregates them via multiple inheritance and remains a
+# single flat frozen dataclass. Attribute access stays flat
+# (``training_args.lr_base``) and the CLI/serialization behavior is unchanged.
+# To add or change a generic parameter, edit the matching _XxxArgs mixin.
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class TrainingArgs:
-    """Generic training args (single source of truth). Frozen after construction."""
+class _ModelRoutingArgs:
+    """Model routing: which YAML / trainer / tokenizer to select."""
 
     # ── Model routing (which YAML / trainer / tokenizer) ──
     model_name: Optional[str] = field(
@@ -172,7 +181,11 @@ class TrainingArgs:
         },
     )
 
-    # ── Basic Training ──
+
+@dataclass(frozen=True)
+class _BasicTrainingArgs:
+    """Basic training loop control, seeding, and output directory."""
+
     train_iters: int = field(
         default=150000,
         metadata={
@@ -230,7 +243,31 @@ class TrainingArgs:
                     "optimizer iteration is counted as spiked/skipped."
         },
     )
-    # ── Learning Rate ──
+    manual_gc: bool = field(
+        default=False,
+        metadata={
+            "help": "Disable automatic Python GC and collect explicitly after optimizer steps."
+        },
+    )
+    manual_gc_interval: int = field(
+        default=0,
+        metadata={
+            "help": "Manual GC cadence in steps when --manual-gc is enabled; "
+                    "0 disables periodic collection."
+        },
+    )
+    check_for_nan_in_loss_and_grad: bool = field(
+        default=True,
+        metadata={
+            "help": "Run host-side NaN/Inf checks on loss and gradients each step."
+        },
+    )
+
+
+@dataclass(frozen=True)
+class _LearningRateArgs:
+    """Learning rate, LR groups, and LR schedules (see diagrams below)."""
+
     lr_base: float = field(
         default=2.5e-5,
         metadata={
@@ -477,14 +514,12 @@ class TrainingArgs:
                     "Only used when --lr-decay-style=cosine_with_restarts."
         },
     )
-    init_on_meta: bool = field(
-        default=False,
-        metadata={"help": "Allocate all params on 'meta' device."
-                          "Then weights are loaded into the sharded DTensors."
-        }
-    )
 
-    # ── Optimizer ──
+
+@dataclass(frozen=True)
+class _OptimizerArgs:
+    """Optimizer selection, gradient clipping, and weight decay."""
+
     optimizer: str = field(
         default="AdamW",
         metadata={
@@ -532,7 +567,11 @@ class TrainingArgs:
         },
     )
 
-    # ── Data loading control (cross-model; per-model processing lives in DataConfig) ──
+
+@dataclass(frozen=True)
+class _DataArgs:
+    """Data loading control (cross-model; per-model processing lives in DataConfig)."""
+
     dataset_format: str = field(
         default="lerobot_datasets",
         metadata={
@@ -646,7 +685,11 @@ class TrainingArgs:
         },
     )
 
-    # ── Checkpoint ──
+
+@dataclass(frozen=True)
+class _CheckpointArgs:
+    """Checkpoint save/resume format and state."""
+
     pretrained_checkpoint: Optional[str] = field(
         default=None,
         metadata={
@@ -684,7 +727,11 @@ class TrainingArgs:
         },
     )
 
-    # ── Freeze ──
+
+@dataclass(frozen=True)
+class _FreezeArgs:
+    """Parameter freezing by module path prefix."""
+
     freeze_modules: str = field(
         default="",
         metadata={
@@ -693,7 +740,11 @@ class TrainingArgs:
         },
     )
 
-    # ── Logging ──
+
+@dataclass(frozen=True)
+class _LoggingArgs:
+    """Logging cadence, GC control, W&B, and TensorBoard."""
+
     log_interval: int = field(
         default=1,
         metadata={
@@ -719,19 +770,6 @@ class TrainingArgs:
         metadata={
             "help": "Ranks whose loss is logged; -1 logs the all-reduced mean "
                     "across ranks."
-        },
-    )
-    manual_gc: bool = field(
-        default=False,
-        metadata={
-            "help": "Disable automatic Python GC and collect explicitly after optimizer steps."
-        },
-    )
-    manual_gc_interval: int = field(
-        default=0,
-        metadata={
-            "help": "Manual GC cadence in steps when --manual-gc is enabled; "
-                    "0 disables periodic collection."
         },
     )
     wandb_project: str = field(
@@ -760,7 +798,11 @@ class TrainingArgs:
         },
     )
 
-    # ── Profiler ──
+
+@dataclass(frozen=True)
+class _ProfilerArgs:
+    """torch.profiler / Nsight profiling capture window."""
+
     use_pytorch_profiler: bool = field(
         default=False,
         metadata={"help": "Enable torch.profiler to capture CPU/GPU op traces."},
@@ -788,7 +830,11 @@ class TrainingArgs:
         metadata={"help": "Directory to write profiler traces to."},
     )
 
-    # ── CUDA Graph ──
+
+@dataclass(frozen=True)
+class _CudaGraphArgs:
+    """CUDA graph capture and manual gradient all-reduce."""
+
     cuda_graph_impl: str = field(
         default="none",
         metadata={
@@ -849,12 +895,12 @@ class TrainingArgs:
                     "(bf16 halves comm volume).",
         },
     )
-    check_for_nan_in_loss_and_grad: bool = field(
-        default=True,
-        metadata={
-            "help": "Run host-side NaN/Inf checks on loss and gradients each step."
-        },
-    )
+
+
+@dataclass(frozen=True)
+class _ActivationCheckpointArgs:
+    """activation-checkpoint module selection."""
+
     activation_checkpoint_module_patterns: Optional[str] = field(
         default=None,
         metadata={
@@ -871,7 +917,18 @@ class TrainingArgs:
         },
     )
 
-    # ── Distributed ──
+
+@dataclass(frozen=True)
+class _DistributedArgs:
+    """Parallelism strategy (FSDP/DDP), dtype, ZeRO, and meta-device init."""
+
+    init_on_meta: bool = field(
+        default=False,
+        metadata={"help": "Allocate all params on 'meta' device."
+                          "Then weights are loaded into the sharded DTensors."
+        }
+    )
+
     distributed_strategy: str = field(
         default="fsdp",
         metadata={
@@ -1094,6 +1151,37 @@ class TrainingArgs:
                     "master parameters and broadcasts updated model shards after each step.",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# TrainingArgs - aggregate of the grouped mixins (single flat frozen dataclass)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TrainingArgs(
+    _ModelRoutingArgs,
+    _BasicTrainingArgs,
+    _LearningRateArgs,
+    _OptimizerArgs,
+    _DataArgs,
+    _CheckpointArgs,
+    _FreezeArgs,
+    _LoggingArgs,
+    _ProfilerArgs,
+    _CudaGraphArgs,
+    _ActivationCheckpointArgs,
+    _DistributedArgs,
+):
+    """Generic training args (single source of truth). Frozen after construction.
+
+    The field definitions live in the concern-scoped ``_XxxArgs`` mixins above;
+    this class only aggregates them via multiple inheritance. At runtime it is
+    still a single flat frozen dataclass, so access stays flat
+    (``training_args.lr_base``) and ``dataclasses.fields(TrainingArgs)`` /
+    ``OmegaConf.structured(TrainingArgs)`` see every field at the top level.
+    To add or change a generic parameter, edit the matching ``_XxxArgs`` mixin.
+    """
 
 
 # ---------------------------------------------------------------------------
