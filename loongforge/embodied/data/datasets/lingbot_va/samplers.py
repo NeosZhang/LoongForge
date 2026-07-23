@@ -18,6 +18,7 @@ from torch.utils.data import Sampler
 
 from loongforge.embodied.data.datasets.sampler_builder import (
     SamplerBuilderContext,
+    default_sampler_builder,
     register_sampler_builder,
 )
 
@@ -145,7 +146,11 @@ def build_lingbot_va_distributed_sampler(context: SamplerBuilderContext):
     training_args = context.training_args
     ctx = context.ctx
     if not feature_enabled("LINGBOT_BALANCED_SAMPLER"):
-        return None
+        # Preserve the public distributed sampler semantics when the LingBot
+        # rank-balancing optimization is disabled.  Returning None would make
+        # each rank create an independent random sampler and diverge from the
+        # community baseline's DistributedSampler partitioning.
+        return default_sampler_builder(context)
 
     balance_group_size = max(1, int(training_args.gradient_accumulation_steps))
     return _LingBotBalancedDistributedSampler(

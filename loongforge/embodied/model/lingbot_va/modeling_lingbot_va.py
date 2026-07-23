@@ -6,6 +6,7 @@
 
 """Embodied training adapter for the native PyTorch LingBot-VA backend."""
 
+import hashlib
 import os
 from typing import Dict
 
@@ -17,12 +18,12 @@ from einops import rearrange
 from loongforge.embodied.model.registry import register_model
 
 from .checkpoint import load_sharded_safetensors
-from .runtime import (
+from .modules.flow_match import (
     LingBotVAFlowMatchScheduler,
     get_mesh_id,
     sample_timestep_id,
 )
-from .wan_model import WanAttention, WanTransformer3DModel
+from .modules.wan_model import WanAttention, WanTransformer3DModel
 
 
 def _reference_rotary(x: torch.Tensor, frequencies: torch.Tensor):
@@ -32,6 +33,32 @@ def _reference_rotary(x: torch.Tensor, frequencies: torch.Tensor):
 
 def _cfg_get(cfg, key, default=None):
     return cfg.get(key, default) if hasattr(cfg, "get") else getattr(cfg, key, default)
+
+
+def _fixed_rng_seed(microbatch: int) -> int:
+    return 42 + microbatch
+
+
+def _rng_diag_enabled() -> bool:
+    return os.environ.get("LINGBOT_RNG_DIAG", "0") == "1"
+
+
+def _rng_digest(state: torch.Tensor) -> str:
+    return hashlib.sha256(state.cpu().numpy().tobytes()).hexdigest()[:16]
+
+
+def _rng_diag(side: str, phase: str, microbatch: int) -> None:
+    if not _rng_diag_enabled() or int(os.environ.get("RANK", "0")) != 0:
+        return
+    cpu = _rng_digest(torch.get_rng_state())
+    cuda = "none"
+    if torch.cuda.is_available():
+        cuda = _rng_digest(torch.cuda.get_rng_state())
+    print(
+        f"[lingbot-rng] side={side} phase={phase} microbatch={microbatch} "
+        f"initial_seed={torch.initial_seed()} cpu={cpu} cuda={cuda}",
+        flush=True,
+    )
 
 
 def _build_scheduler(cfg, shift_key: str, default_shift: float):
@@ -75,7 +102,6 @@ class LingBotVAEmbodiedModel(nn.Module):
             attn_mode="flex" if use_flex else "torch",
             recompute_granularity=_cfg_get(cfg, "recompute_granularity", None),
         )
-        self._microbatch_counter = 0
 
     @classmethod
     def from_pretrained(cls, cfg):
@@ -100,11 +126,15 @@ class LingBotVAEmbodiedModel(nn.Module):
         return self._loss(input_dict, self.model(input_dict))
 
     def _prepare_input_dict(self, batch: Dict[str, torch.Tensor]):
-        seed = 42 + self._microbatch_counter
+        # Keep model-side stochastic inputs reproducible across launchers by
+        # using the same per-microbatch RNG protocol as the baseline patch.
+        microbatch = getattr(self, "_rng_diag_counter", 0)
+        self._rng_diag_counter = microbatch + 1
+        seed = _fixed_rng_seed(microbatch)
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
-        self._microbatch_counter += 1
+        _rng_diag("loongforge", "before_prepare", microbatch)
         latent_dict = self._add_noise(
             batch["latents"],
             self.latent_scheduler,
@@ -135,6 +165,7 @@ class LingBotVAEmbodiedModel(nn.Module):
             "chunk_size": chunk_size,
             "window_size": window_size,
         }
+        _rng_diag("loongforge", "after_prepare", microbatch)
         return result
 
     def _add_noise(

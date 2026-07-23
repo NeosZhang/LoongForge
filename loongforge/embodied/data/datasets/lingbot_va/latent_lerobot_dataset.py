@@ -634,9 +634,10 @@ def _find_lerobot_repos(config: LingBotVALatentDatasetConfig) -> List[str]:
         The computed result.
     """
     max_repos = int(os.getenv("LINGBOT_VA_MAX_REPOS", 0))
-    cached = _load_or_build_repo_discovery_cache(config, max_repos)
-    if cached:
-        return cached
+    if feature_enabled("LINGBOT_REPO_DISCOVERY_CACHE"):
+        cached = _load_or_build_repo_discovery_cache(config, max_repos)
+        if cached is not None:
+            return cached
     return _scan_lerobot_repos(config, max_repos)
 
 
@@ -653,10 +654,11 @@ def _scan_lerobot_repos(
         The computed result.
     """
     repos = []
+    # Keep the community baseline's native filesystem order for no-replay
+    # per-step comparisons. Do not sort os.walk() directories here.
     for root, _, files in os.walk(config.dataset_path):
         if config.metadata_filename in files and root.endswith("meta"):
             repos.append(str(Path(root).parent))
-    repos.sort()
     return repos[:max_repos] if max_repos > 0 else repos
 
 
@@ -685,11 +687,11 @@ def _load_or_build_repo_discovery_cache(
         / f"{safe_dataset}.{config.metadata_filename}.max{max_repos}.repo_list.json"
     )
     signature = {
-        "version": 2,
+        "version": 3,
         "dataset_path": str(dataset_path),
         "metadata_filename": config.metadata_filename,
         "max_repos": max_repos,
-        "ordering": "sorted",
+        "ordering": "os.walk",
     }
     cached = _read_repo_discovery_cache(cache_path, signature)
     if cached is not None:
@@ -749,13 +751,6 @@ def _read_repo_discovery_cache(cache_path: Path, signature: Dict[str, Any]):
             repos = [str(repo) for repo in cached.get("repos", [])]
             if cached_signature == signature:
                 return repos
-            # Version 2 only added an explicit sorted-order marker; version 1
-            # caches were already sorted and remain semantically equivalent.
-            legacy_keys = ("dataset_path", "metadata_filename", "max_repos")
-            if cached_signature.get("version") == 1 and all(
-                cached_signature.get(key) == signature.get(key) for key in legacy_keys
-            ):
-                return sorted(repos)
         except Exception:
             pass
     return None

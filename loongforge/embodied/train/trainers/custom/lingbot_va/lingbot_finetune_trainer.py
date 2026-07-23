@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Tuple
 
 import torch
@@ -33,6 +34,9 @@ class LingBotFinetuneTrainer(FinetuneTrainer):
     """
 
     def __init__(self, training_args, model_cfg, data_cfg):
+        # Match the community baseline's DistributedSampler/DataLoader epoch
+        # boundary; LingBot must retain the final padded distributed sample.
+        training_args = replace(training_args, batch_drop_last=False)
         self._lingbot_training_diagnostics = LingBotTrainingDiagnostics()
         self._lingbot_post_step_reshard_hook = None
         super().__init__(training_args, model_cfg, data_cfg)
@@ -42,7 +46,7 @@ class LingBotFinetuneTrainer(FinetuneTrainer):
             raise RuntimeError(
                 "LingBot native nested FSDP2 requires embodied FSDP strategy"
             )
-        from loongforge.embodied.model.lingbot_va.torch_fsdp2 import (
+        from loongforge.embodied.model.lingbot_va.lingbot_fsdp2_adapter import (
             wrap_lingbot_torch_nested_fsdp2,
         )
 
@@ -56,7 +60,7 @@ class LingBotFinetuneTrainer(FinetuneTrainer):
                 "LingBot native nested FSDP2 requires embodied FSDP strategy"
             )
 
-        from loongforge.embodied.model.lingbot_va.fsdp2_lingbot_setup import (
+        from loongforge.embodied.model.lingbot_va.lingbot_fsdp2_adapter import (
             apply_lingbot_fsdp2_tuning,
             register_lingbot_post_step_reshard,
         )
@@ -76,7 +80,7 @@ class LingBotFinetuneTrainer(FinetuneTrainer):
 
     def _clip_gradients(self, max_norm: float) -> float:
         """Clip RAB=false gradients through the LingBot DTensor helper."""
-        from loongforge.embodied.model.lingbot_va.fsdp2_lingbot_setup import (
+        from loongforge.embodied.model.lingbot_va.lingbot_fsdp2_adapter import (
             clip_lingbot_optimizer_gradients,
         )
 
@@ -84,7 +88,7 @@ class LingBotFinetuneTrainer(FinetuneTrainer):
 
     def _clean_nan_gradients(self) -> None:
         """Clean the optimizer-owned DTensor gradients used by LingBot."""
-        from loongforge.embodied.model.lingbot_va.fsdp2_lingbot_setup import (
+        from loongforge.embodied.model.lingbot_va.lingbot_fsdp2_adapter import (
             clean_lingbot_optimizer_gradients,
         )
 
