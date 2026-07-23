@@ -107,6 +107,14 @@ class Gr00tN1d7ActionHead(nn.Module):
             torch.tensor(float(config.noise_beta_beta), dtype=torch.float32, device="cpu"),
         )
         self.num_timestep_buckets = config.num_timestep_buckets
+        self._split_noise_buf = None
+        self._split_time_buf = None
+        self._split_state_dropout_buf = None
+        self._split_supports_state_dropout_buf = True
+        self._split_record_shape = False
+        self._split_actions_shape = None
+        self._split_actions_device = None
+        self._split_actions_dtype = None
         self.set_trainable_parameters(
             config.tune_projector,
             config.tune_diffusion_model,
@@ -163,8 +171,12 @@ class Gr00tN1d7ActionHead(nn.Module):
         backbone_features = backbone_output["backbone_features"]
         backbone_features = self.vlln(backbone_features)
         backbone_features = self.vl_self_attention(backbone_features)
-        backbone_output["backbone_features"] = backbone_features
-        return backbone_output
+        return BatchFeature(
+            data={
+                **dict(backbone_output),
+                "backbone_features": backbone_features,
+            }
+        )
 
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """Compute masked flow-matching MSE loss."""
@@ -188,15 +200,30 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         state_features = self.state_encoder(state, embodiment_id)
         if self.training and self.state_dropout_prob > 0:
-            do_dropout = (
-                torch.rand(state_features.shape[0], device=state_features.device)
-                < self.state_dropout_prob
-            )
+            split_dropout = self._split_state_dropout_buf
+            if split_dropout is None:
+                do_dropout = (
+                    torch.rand(state_features.shape[0], device=state_features.device)
+                    < self.state_dropout_prob
+                )
+            else:
+                _ = torch.rand(state_features.shape[0], device=state_features.device)
+                do_dropout = split_dropout
             state_features = state_features * (1 - do_dropout[:, None, None].to(state_features.dtype))
 
-        noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
-        t = t[:, None, None]
+        split_noise = self._split_noise_buf
+        if split_noise is None:
+            if self._split_record_shape:
+                self._split_actions_shape = actions.shape
+                self._split_actions_device = actions.device
+                self._split_actions_dtype = actions.dtype
+            noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
+            t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
+            t = t[:, None, None]
+        else:
+            _ = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
+            noise = split_noise
+            t = self._split_time_buf[:, None, None]
         noisy_trajectory = (1 - t) * noise + t * actions
         velocity = actions - noise
 
@@ -208,7 +235,6 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         sa_embs = torch.cat((state_features, action_features), dim=1)
         vl_attn_mask = backbone_output.backbone_attention_mask
-
         if self.config.use_alternate_vl_dit:
             model_output, _ = self.model(
                 hidden_states=sa_embs,

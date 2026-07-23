@@ -33,6 +33,8 @@ class GrootN1d7PreparedBatch(PreparedBatch):
     attention_mask: torch.Tensor = None
     pixel_values: Any = None
     image_grid_thw: torch.Tensor = None
+    mm_token_type_ids: Optional[torch.Tensor] = None
+    position_ids: Optional[torch.Tensor] = None
     state: torch.Tensor = None
     actions: torch.Tensor = None
     action_mask: torch.Tensor = None
@@ -46,6 +48,8 @@ class GrootN1d7PreparedBatch(PreparedBatch):
             "attention_mask": self.attention_mask,
             "pixel_values": self.pixel_values,
             "image_grid_thw": self.image_grid_thw,
+            "mm_token_type_ids": self.mm_token_type_ids,
+            "position_ids": self.position_ids,
             "state": self.state,
             "action": self.actions,
             "action_mask": self.action_mask,
@@ -192,6 +196,8 @@ class GrootN1d7Preprocessor(BasePreprocessor):
             attention_mask=processed.get("attention_mask"),
             pixel_values=processed.get("pixel_values"),
             image_grid_thw=processed.get("image_grid_thw"),
+            mm_token_type_ids=processed.get("mm_token_type_ids"),
+            position_ids=processed.get("position_ids"),
             state=processed.get("state"),
             actions=action,
             action_mask=action_mask,

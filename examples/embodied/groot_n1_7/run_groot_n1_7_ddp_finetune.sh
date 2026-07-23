@@ -19,7 +19,7 @@ export NCCL_ALGO="${NCCL_ALGO:-Ring}"
 export NVTE_ALLOW_NONDETERMINISTIC_ALGO="${NVTE_ALLOW_NONDETERMINISTIC_ALGO:-0}"
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-8}"
 
-export LOONGFORGE_PATH="${LOONGFORGE_PATH:-/workspace/LoongForge}"
+export LOONGFORGE_PATH="${LOONGFORGE_PATH:-/workspace/LoongForge/}"
 export COSMOS_LOCAL_PATH="${COSMOS_LOCAL_PATH:-/workspace/huggingface.co/nvidia/Cosmos-Reason2-2B/}"
 export TOKENIZER_PATH="${TOKENIZER_PATH:-$COSMOS_LOCAL_PATH}"
 
@@ -63,7 +63,7 @@ DATA_ARGS=(
 
 # ── Training params ───────────────────────────────────────────
 TRAINING_ARGS=(
-    --trainer-type FinetuneTrainer
+    --trainer-type GrootN1d7Trainer
     --train-iters 100
     --per-device-batch-size 4
     --gradient-accumulation-steps 1
@@ -73,7 +73,8 @@ TRAINING_ARGS=(
     --lr-decay-style cosine_with_min_lr
     --lr-warmup-iters 5
     --min-lr 0.0
-    --optimizer AdamW
+    #--optimizer AdamW
+    --optimizer TEFusedAdamW
     --clip-grad 1.0
     --weight-decay 1.0e-5
     --weight-decay-grouping bias_norm
@@ -82,7 +83,16 @@ TRAINING_ARGS=(
     --adam-eps 1e-8
     --save-interval 200
     --pretrained-checkpoint "$CHECKPOINT_PATH"
-    --deterministic-mode
+    #--deterministic-mode
+    --cuda-graph-impl local
+    --cuda-graph-scope per_microbatch
+    --cuda-graph-warmup-steps 3
+    --cuda-graph-pad-length 0
+    --no-cuda-graph-ddp-sync-in-graph
+    --cuda-graph-grad-sync-bucket-mb 400
+    --cuda-graph-grad-sync-impl coalesced
+    --cuda-graph-grad-sync-dtype bf16
+    --no-check-for-nan-in-loss-and-grad
 )
 
 # ── Distributed training ──────────────────────────────────────
@@ -91,7 +101,8 @@ DISTRIBUTED_TRAINING_ARGS=(
     --dtype bfloat16
     --ddp-bucket-cap-mb 100
     --no-ddp-find-unused-parameters
-    #--dataloader-seed-workers
+    --ddp-static-graph
+    # --dataloader-seed-workers
 )
 
 # ── Logging params ────────────────────────────────────────────

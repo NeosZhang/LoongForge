@@ -155,6 +155,90 @@ def _patch_qwen3vl_output_projection_dtypes(model: torch.nn.Module) -> int:
     return patched
 
 
+def _patch_qwen3vl_skip_unused_lm_head() -> bool:
+    """Allow GR00T to call Qwen top-level forward without unused logits projection."""
+    try:
+        from transformers.models.qwen3_vl import modeling_qwen3_vl as qwen_mod
+    except ImportError:
+        return False
+
+    cls = getattr(qwen_mod, "Qwen3VLForConditionalGeneration", None)
+    output_cls = getattr(qwen_mod, "Qwen3VLCausalLMOutputWithPast", None)
+    if cls is None or output_cls is None:
+        return False
+    if cls.forward.__dict__.get("_loongforge_skip_lm_head_compat", False):
+        return False
+
+    original_forward = cls.forward
+
+    def forward_compat(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values=None,
+        inputs_embeds: torch.FloatTensor | None = None,
+        labels: torch.LongTensor | None = None,
+        pixel_values: torch.Tensor | None = None,
+        pixel_values_videos: torch.FloatTensor | None = None,
+        image_grid_thw: torch.LongTensor | None = None,
+        video_grid_thw: torch.LongTensor | None = None,
+        mm_token_type_ids: torch.IntTensor | None = None,
+        cache_position: torch.LongTensor | None = None,
+        logits_to_keep=0,
+        loongforge_skip_lm_head: bool = False,
+        **kwargs,
+    ):
+        if not loongforge_skip_lm_head or labels is not None:
+            return original_forward(
+                self,
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                pixel_values=pixel_values,
+                pixel_values_videos=pixel_values_videos,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                mm_token_type_ids=mm_token_type_ids,
+                cache_position=cache_position,
+                logits_to_keep=logits_to_keep,
+                **kwargs,
+            )
+
+        outputs = self.model(
+            input_ids=input_ids,
+            pixel_values=pixel_values,
+            pixel_values_videos=pixel_values_videos,
+            image_grid_thw=image_grid_thw,
+            video_grid_thw=video_grid_thw,
+            position_ids=position_ids,
+            attention_mask=attention_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            cache_position=cache_position,
+            mm_token_type_ids=mm_token_type_ids,
+            **kwargs,
+        )
+        hidden_states = outputs[0]
+        logits = hidden_states.new_empty((*hidden_states.shape[:-1], 0))
+        return output_cls(
+            loss=None,
+            logits=logits,
+            past_key_values=getattr(outputs, "past_key_values", None),
+            hidden_states=(hidden_states,),
+            attentions=getattr(outputs, "attentions", None),
+            rope_deltas=getattr(outputs, "rope_deltas", None),
+        )
+
+    forward_compat._loongforge_skip_lm_head_compat = True
+    forward_compat._loongforge_original = original_forward
+    cls.forward = forward_compat
+    return True
+
+
 def _is_gated_repo_error(exc: BaseException) -> bool:
     current: BaseException | None = exc
     for _ in range(10):
@@ -233,23 +317,26 @@ def _forward_has_explicit_arg(model: torch.nn.Module, arg_name: str) -> bool:
 
 def _build_mm_token_type_ids(config, input_ids: torch.Tensor) -> torch.Tensor | None:
     token_type_ids = torch.zeros(input_ids.shape, dtype=torch.int32, device=input_ids.device)
-    has_multimodal_tokens = False
 
     image_token_id = config.image_token_id
     if image_token_id is not None:
         image_mask = input_ids == image_token_id
-        if bool(image_mask.any().item()):
-            token_type_ids.masked_fill_(image_mask, 1)
-            has_multimodal_tokens = True
+        token_type_ids = torch.where(
+            image_mask,
+            torch.ones((), dtype=token_type_ids.dtype, device=token_type_ids.device),
+            token_type_ids,
+        )
 
     video_token_id = config.video_token_id
     if video_token_id is not None:
         video_mask = input_ids == video_token_id
-        if bool(video_mask.any().item()):
-            token_type_ids.masked_fill_(video_mask, 2)
-            has_multimodal_tokens = True
+        token_type_ids = torch.where(
+            video_mask,
+            torch.full((), 2, dtype=token_type_ids.dtype, device=token_type_ids.device),
+            token_type_ids,
+        )
 
-    return token_type_ids if has_multimodal_tokens else None
+    return token_type_ids
 
 
 def _build_qwen3vl_compat_position_ids(
@@ -423,6 +510,13 @@ class Qwen3Backbone(torch.nn.Module):
                     p.data = p.data.to(torch.float32)
                     logger.debug(f"Casting trainable parameter {n} to fp32")
 
+        self._skip_lm_head_enabled = str(os.environ.get("GROOT_QWEN_SKIP_LM_HEAD", "")).lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        if self._skip_lm_head_enabled and _patch_qwen3vl_skip_unused_lm_head():
+            logger.info("Patched Qwen3-VL top-level forward to skip unused lm_head logits in GR00T training.")
         self._reset_rotary_inv_freq()
         if str(os.environ.get("GROOT_QWEN_CHANNELS_LAST_3D", "")).lower() in {"1", "true", "yes"}:
             self._apply_vision_patch_embed_channels_last()
@@ -566,14 +660,47 @@ class Qwen3Backbone(torch.nn.Module):
         """Wrap a raw batch in a BatchFeature for the backbone."""
         return BatchFeature(data=batch)
 
+    def prepare_cuda_graph_batch(self, batch) -> None:
+        """Precompute Qwen dynamic position metadata before CUDA graph capture."""
+        if not self._supports_mm_token_type_ids:
+            return
+        if getattr(batch, "position_ids", None) is not None:
+            return
+        if getattr(batch, "mm_token_type_ids", None) is not None:
+            return
+
+        input_ids = getattr(batch, "input_ids", None)
+        image_grid_thw = getattr(batch, "image_grid_thw", None)
+        attention_mask = getattr(batch, "attention_mask", None)
+        if input_ids is None or image_grid_thw is None or attention_mask is None:
+            return
+
+        with torch.no_grad():
+            mm_token_type_ids = _build_mm_token_type_ids(self.model.config, input_ids)
+            position_ids = _build_qwen3vl_compat_position_ids(
+                self.model,
+                input_ids,
+                mm_token_type_ids,
+                image_grid_thw,
+                attention_mask,
+            )
+        if position_ids is None:
+            batch.mm_token_type_ids = mm_token_type_ids
+        else:
+            batch.position_ids = position_ids
+
     def forward(self, vl_input: BatchFeature) -> BatchFeature:
         """Run the backbone and return the last hidden state plus masks."""
         self.set_frozen_modules_to_eval_mode()
         keys_to_use = ["input_ids", "attention_mask", "pixel_values", "image_grid_thw"]
-        vl_input = {k: vl_input[k] for k in keys_to_use}
+        source_input = vl_input
+        vl_input = {k: source_input[k] for k in keys_to_use}
+        for optional_key in ("position_ids", "mm_token_type_ids"):
+            if optional_key in source_input and source_input[optional_key] is not None:
+                vl_input[optional_key] = source_input[optional_key]
         if self._supports_mm_token_type_ids:
-            mm_token_type_ids = _build_mm_token_type_ids(self.model.config, vl_input["input_ids"])
-            if mm_token_type_ids is not None:
+            if "position_ids" not in vl_input and "mm_token_type_ids" not in vl_input:
+                mm_token_type_ids = _build_mm_token_type_ids(self.model.config, vl_input["input_ids"])
                 position_ids = _build_qwen3vl_compat_position_ids(
                     self.model,
                     vl_input["input_ids"],
@@ -585,7 +712,15 @@ class Qwen3Backbone(torch.nn.Module):
                     vl_input["mm_token_type_ids"] = mm_token_type_ids
                 else:
                     vl_input["position_ids"] = position_ids
-        outputs = self.model(**vl_input, output_hidden_states=True)
+        if self._skip_lm_head_enabled:
+            outputs = self.model(
+                **vl_input,
+                output_hidden_states=False,
+                logits_to_keep=0,
+                loongforge_skip_lm_head=True,
+            )
+        else:
+            outputs = self.model(**vl_input, output_hidden_states=True)
         outputs = outputs.hidden_states[-1].to(torch.float32)
         image_mask = vl_input["input_ids"] == self.model.config.image_token_id
         attention_mask = vl_input["attention_mask"] == 1
