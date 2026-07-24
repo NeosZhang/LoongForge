@@ -53,7 +53,7 @@
 
 ## 🔥 最新动态
 
-- **[2026/07]** 🤖 发布 **LoongForge-Embodied** 子模块，提供主流 **VLA** 与 **WAM** 模型的训练支持。
+- **[2026/07]** 🤖 发布 **[LoongForge-Embodied](./loongforge/embodied)** 子系统，提供主流 **VLA** 与 **WAM** 模型的训练支持。
 - **[2026/07]** ✨ 新增 **DeepSeek v4 flash / DeepSeek v4 pro** 训练支持。
 - **[2026/05]** ⚡ **Wan 2.2** 训练 **加速 116%**，并新增 CP（上下文并行）与数据 packing 策略支持。
 - **[2026/05]** ✨ 新增 **Kimi K2.5 / K2.6** 训练支持，并支持 **INT4 / NVFP4** PTQ 量化能力。
@@ -120,17 +120,16 @@
 
 > <sup>§</sup> 受测试台规模限制，**DeepSeek-V3.2** 在减层配置下单独验证 —— LoongForge 的 **DSA CUDA Kernel 优化** 相对 Megatron-LM 仍带来 **~5× 加速**，并可支持 **64K 序列长度**（基线在 8K 以上即 OOM）。<br>
 > 数据反映测量时对应基线与 LoongForge 的实现（详见 **测量版本** 列），后续可能随实现演进而变化。<br>
-> 硬件覆盖（当前为 A800）将在后续版本中持续扩展。<br>
 </details>
 
 ## 🌟 基于 LoongForge 训练
 
 基于 LoongForge 或其前身 AIAK-Training-LLM 训练的开源模型：
 
-- [LLaVA-OneVision-2.0](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2) —— 新一代多模态模型，配套全新的 VideoCaption 和 Spatial 数据集。[[paper](https://arxiv.org/abs/2605.25979)]
-- [Innovator-VL](https://github.com/InnovatorLM/Innovator-VL/tree/main) —— 面向高级推理的科学多模态大模型。[[paper](https://arxiv.org/abs/2601.19325)]
-- [LLaVA-OneVision-1.5](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2/tree/1.5) —— 面向多模态训练民主化的全开源框架。[[paper](https://arxiv.org/abs/2509.23661)]
-- [Qianfan-VL](https://github.com/baidubce/Qianfan-VL) —— 面向企业的领域增强视觉-语言模型，参数量覆盖 3B ~ 70B。[[paper](https://arxiv.org/abs/2509.18189)]
+- [LLaVA-OneVision-2.0](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2) —— 新一代多模态模型，配套全新的 VideoCaption 和 Spatial 数据集。
+- [Innovator-VL](https://github.com/InnovatorLM/Innovator-VL/tree/main) —— 面向高级推理的科学多模态大模型。
+- [LLaVA-OneVision-1.5](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2/tree/1.5) —— 面向多模态训练民主化的全开源框架。
+- [Qianfan-VL](https://github.com/baidubce/Qianfan-VL) —— 面向企业的领域增强视觉-语言模型，参数量覆盖 3B ~ 70B。
 
 <a id="models"></a>
 ## 🏛️ 支持的模型
