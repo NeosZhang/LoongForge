@@ -18,22 +18,28 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 # ──────────────────────────── EDIT ME ────────────────────────────
-# Each row: (model, type, baseline, config, speedup, marker)
-# - Sort manually: largest speedup at TOP for visual impact.
+# Each row: (model, type, baseline, config, speedup, marker, measured)
+# - Grouped by category (embodied first, then LLM/VLM), sorted by speedup within each group.
 # - marker: "" or one of the footnote symbols ("§", "*", etc.)
+# - measured: the version/branch the row was benchmarked on (shown per bar).
 ROWS = [
-    ("DeepSeek-V3.2 Lite", "MoE + DSA", "Megatron-LM", "Reduced layers · GBS 128 · 8K",      5.04, "§"),
-    ("GR00T N1.6",         "VLA",       "LeRobot",     "8 × A800 · GBS 128 · 224×224",       2.31, ""),
-    ("Pi 0.5",             "VLA",       "OpenPI",      "8 × A800 · GBS 112 · 224×224",       1.65, ""),
-    ("Qwen3-VL-30B-A3B",   "VLM",       "VeOmni",      "32 × A800 · GBS 128 · 32K",          1.45, ""),
-    ("Qwen3-30B-A3B",      "MoE",       "Megatron-LM", "32 × A800 · GBS 1024 · 32K",         1.16, ""),
+    ("DreamZero",          "WAM",       "DreamZero",   "DROID · Wan2.2-5B Full",         2.67, "",  "main · 2026-07"),
+    ("GR00T N1.6",         "VLA",       "LeRobot",     "GBS 96 · 224×224",               2.31, "",  "main · 2026-07"),
+    ("Pi 0.5",             "VLA",       "OpenPI",      "GBS 96 · 224×224×2",             2.23, "",  "main · 2026-07"),
+    ("LingBot VA",         "WAM",       "LingBot-VA",  "LIBERO",                         1.80, "",  "main · 2026-07"),
+    ("X-VLA",              "VLA",       "X-VLA",       "GBS 288",                        1.60, "",  "main · 2026-07"),
+    ("DeepSeek-V3.2 Lite", "MoE + DSA", "Megatron-LM", "Reduced layers · GBS 128 · 8K",  5.04, "§", "v0.1.1"),
+    ("Qwen3-VL-30B-A3B",   "VLM",       "VeOmni",      "GBS 128 · 32K",                  1.45, "",  "v0.1.1"),
+    ("Qwen3-30B-A3B",      "MoE",       "Megatron-LM", "GBS 1024 · 32K",                 1.16, "",  "v0.1.1"),
 ]
 
-VERSION_TAG = "v0.1.1"
+# Per-bar measurement version is rendered under each row (see `measured`),
+# so no single global stamp is used. Set to a string to force a global tag.
+VERSION_TAG = ""
 
 FOOTNOTES = [
     "§  DeepSeek-V3.2 was validated on a reduced-layer setup; LoongForge's DSA kernels still deliver ~5× speedup and reach 64K sequence (baseline OOMs beyond 8K).",
-    "†  Numbers reflect baseline and LoongForge versions at measurement time, and may evolve as implementations change.",
+    "†  Each row shows the version/branch it was measured on; numbers reflect baseline and LoongForge versions at measurement time and may evolve as implementations change.",
 ]
 
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "benchmark_speedup.png")
@@ -48,6 +54,7 @@ COLOR_FOOTNOTE_1 = "#2E3338"   # darker for primary footnote
 COLOR_FOOTNOTE_2 = "#5A6068"   # mid for secondary footnote
 COLOR_GREY_LITE  = "#CCCCCC"
 COLOR_TEXT       = "#1A1A1A"
+COLOR_TEXT_DIM   = "#A0A6AE"   # lighter — used for older (v0.1.1) model names
 
 # ────────────────────────────── PLOT ─────────────────────────────
 def main():
@@ -67,13 +74,13 @@ def main():
             color=COLOR_BASELINE, edgecolor="white", linewidth=0.5, zorder=3)
 
     # Speedup numbers
-    for i, (_, _, _, _, sp, _) in enumerate(ROWS):
+    for i, (_, _, _, _, sp, _, _) in enumerate(ROWS):
         ax.text(sp + 0.10, y[i] - height / 2, f"{sp:.2f}×",
                 va="center", ha="left", fontsize=12,
                 fontweight="bold", color=COLOR_NUM)
 
     # Baseline labels (small, grey) — append † superscript referencing the 2nd footnote
-    for i, (_, _, baseline, _, _, _) in enumerate(ROWS):
+    for i, (_, _, baseline, _, _, _, _) in enumerate(ROWS):
         ax.text(1.0 + 0.10, y[i] + height / 2,
                 f"1.00×  ({baseline}$^{{\\dagger}}$)",
                 va="center", ha="left", fontsize=9, color=COLOR_GREY_DARK)
@@ -89,11 +96,26 @@ def main():
     ax.set_yticklabels([_label(r) for r in ROWS],
                        fontsize=11, fontweight="bold", color=COLOR_TEXT)
 
-    # Secondary y-line: config, italic grey
-    for i, (_, _, _, config, _, _) in enumerate(ROWS):
-        ax.annotate(config,
+    # Secondary y-line: config (grey italic) + a colored version badge, both on
+    # one line so they clearly attach to this row. main → brand purple, v0.1.1 → grey.
+    for i, r in enumerate(ROWS):
+        config, measured = r[3], r[6]
+        is_main = "main" in measured
+        # Light tinted chips (not solid purple) so the badge reads as a tag and
+        # doesn't visually compete with the purple bars.
+        badge_fc = "#EDE9FE" if is_main else "#EDEFF2"   # lavender vs grey tint
+        badge_tc = COLOR_TEXT if is_main else COLOR_GREY_DARK
+        # version badge: right-aligned nearest the axis
+        ax.annotate(measured,
                     xy=(0, y[i]), xycoords=("axes fraction", "data"),
                     xytext=(-6, -14), textcoords="offset points",
+                    ha="right", va="center",
+                    fontsize=7.8, fontweight="bold", color=badge_tc,
+                    bbox=dict(boxstyle="round,pad=0.25", fc=badge_fc, ec="none"))
+        # config: to the left of the badge
+        ax.annotate(config,
+                    xy=(0, y[i]), xycoords=("axes fraction", "data"),
+                    xytext=(-104, -14), textcoords="offset points",
                     ha="right", va="center",
                     fontsize=8.5, color=COLOR_GREY_MID, style="italic")
 
@@ -130,9 +152,10 @@ def main():
         fig.text(-0.02, base_y - i * step, fn,
                  fontsize=8.6, color=color, ha="left")
 
-    # Version tag (top-right)
-    fig.text(0.98, 0.965, VERSION_TAG, fontsize=9,
-             color=COLOR_GREY_MID, ha="right", va="top", style="italic")
+    # Version tag (top-right) — only if set
+    if VERSION_TAG:
+        fig.text(0.98, 0.965, VERSION_TAG, fontsize=9,
+                 color=COLOR_GREY_MID, ha="right", va="top", style="italic")
 
     plt.savefig(OUTPUT_PATH, dpi=180, bbox_inches="tight",
                 pad_inches=0.08, facecolor="white")

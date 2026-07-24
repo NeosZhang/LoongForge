@@ -25,14 +25,14 @@
 </p>
 
 <p align="center">
-  <b>🚀 Up to 5.04× training speedup</b> &nbsp;·&nbsp;
+  <b>🚀 Significant training speedups</b> &nbsp;·&nbsp;
   <b>🌐 Native NVIDIA GPU & Kunlun XPU support</b>
 </p>
 
 <p align="center">
   <a href="#quickstart"><b>📖 Quick Start</b></a>
   &nbsp;·&nbsp;
-  <a href="#benchmark"><b>📊 Benchmark</b></a>
+  <a href="#performance"><b>📊 Performance</b></a>
   &nbsp;·&nbsp;
   <a href="#models"><b>🤖 Supported Models</b></a>
   &nbsp;·&nbsp;
@@ -45,12 +45,15 @@
 
 > 🐉 LoongForge is part of Baidu Baige's **Loong** open-source series — named after the traditional Chinese **loong boat (龙舟)**, a symbol of coordinated power and forward momentum.
 
-**LoongForge** is a unified training framework for **LLMs, VLMs, diffusion, and embodied models**, covering **pre-training**, **continued pre-training**, and **SFT**. Its core LLM/VLM/diffusion stacks are built upon Megatron-LM with deep systemic enhancements across **model coverage**, **training performance**, and **hardware support**, while embodied models are trained on a dedicated torch-native stack — together delivering **significant speedups over mainstream open-source baselines**.
+**LoongForge** is a unified training framework for **LLMs, VLMs, diffusion, and embodied models**, covering **pre-training**, **continued pre-training**, and **SFT**. Its primary goal is to provide broad coverage of mainstream open-source models while delivering efficient, high-throughput training.
+
+Since training requirements vary across model scenarios, LoongForge builds on multiple distributed backends. LLM/VLM/diffusion run on **Megatron-LM**, while embodied models use a **torch-native DDP/FSDP** stack. Each is deeply optimized to outperform mainstream open-source baselines.
 
 Before going open-source, LoongForge was developed as **AIAK-Training-LLM**, Baidu Baige's training acceleration stack. It has supported production training for enterprise customers across **Education**, **Computer Vision**, and **Embodied AI**, typically delivering **30%~50% speedup over customer baselines**, with the largest production runs reaching **5,000+ XPUs**.
 
 ## 🔥 Latest News
 
+- **[2026/07]** 🤖 Released the **LoongForge-Embodied** submodule, delivering training support for mainstream **VLA** and **WAM** models.
 - **[2026/07]** ✨ Added training support for **DeepSeek v4 flash / DeepSeek v4 pro**.
 - **[2026/05]** ⚡ Accelerated **Wan 2.2** training by **116%**, and added CP and data packing support.
 - **[2026/05]** ✨ Added training support for **Kimi K2.5 / K2.6**, and introduced **INT4 / NVFP4** PTQ.
@@ -58,8 +61,8 @@ Before going open-source, LoongForge was developed as **AIAK-Training-LLM**, Bai
 - **[2026/05]** 🌟 Powered the training and public release of **LLaVA-OneVision-2.0**.
 - **[2026/05]** 🤖 Expanded VLA coverage with **GR00T N1.6**; **60%+ speedup** on Pi0.5 and GR00T training. [[blog](https://baidu-baige.github.io/LoongForge/blog/2026-06-loongforge-groot-n16-acceleration.html)]
 - **[2026/04]** 🧩 Added training support for **MiniMax-M2.7** on both NVIDIA GPU and Kunlun XPU.
-- **[2026/04]** 🚀 LoongForge source code publicly available on GitHub. [[blog]](https://baidu-baige.github.io/LoongForge/blog/2026-04-announcing-loongforge.html)
-- **[2025/10]** 🌟 Powered the training and public release of **LLaVA-OneVision-1.5** under **AIAK-Training-LLM**, the predecessor of LoongForge. [[blog]](https://baidu-baige.github.io/LoongForge/blog/2025-10-llava-onevision-case-study.html)
+- **[2026/04]** 🚀 LoongForge source code publicly available on GitHub. [[blog](https://baidu-baige.github.io/LoongForge/blog/2026-04-announcing-loongforge.html)]
+- **[2025/10]** 🌟 Powered the training and public release of **LLaVA-OneVision-1.5** under **AIAK-Training-LLM**, the predecessor of LoongForge. [[blog](https://baidu-baige.github.io/LoongForge/blog/2025-10-llava-onevision-case-study.html)]
 
 <a id="quickstart"></a>
 ## ⚡ Quick Start
@@ -71,7 +74,7 @@ See the full documentation for installation, tutorials, and advanced usage — [
 - **Kunlun XPU**: [Installation Guide](https://loongforge.readthedocs.io/en/latest/kunlun_tutorial/install_p800.html)
 
 **2. Launch your first training run** — follow a tutorial for your target hardware and modality:
-- **NVIDIA GPU**: [LLM](https://loongforge.readthedocs.io/en/latest/llm_tutorial/quick_start_llm_pretrain.html) · [VLM](https://loongforge.readthedocs.io/en/latest/vlm_tutorial/quick_start_vlm_pretrain.html) · [VLA](https://loongforge.readthedocs.io/en/latest/vla_tutorial/quick_start_pi05_training.html) · [Diffusion (WAN)](https://loongforge.readthedocs.io/en/latest/wan_tutorial/quick_start_wan_training.html)
+- **NVIDIA GPU**: [LLM](https://loongforge.readthedocs.io/en/latest/llm_tutorial/quick_start_llm_pretrain.html) · [VLM](https://loongforge.readthedocs.io/en/latest/vlm_tutorial/quick_start_vlm_pretrain.html) · VLA & WAM (docs being updated) · [Diffusion](https://loongforge.readthedocs.io/en/latest/wan_tutorial/quick_start_wan_training.html)
 - **Kunlun XPU**: [Kunlun XPU Tutorials](https://loongforge.readthedocs.io/en/latest/kunlun_tutorial/README.html)
 
 **3. Explore** — browse [`configs/models/`](./configs/models) and [`examples/`](./examples) / [`examples_xpu/`](./examples_xpu) for ready-to-run scripts.
@@ -88,51 +91,55 @@ See the full documentation for installation, tutorials, and advanced usage — [
 * **🔧 Custom Fused Operators** — Fused kernels like **FusedDSA** for DSA-style models — TileLang version open-sourced, high-performance CUDA version available on Baidu Baige platform.
 * **🔁 Flexible Checkpointing** — Offline bidirectional **Megatron ↔ HuggingFace** conversion plus native online HF load/save — no format barriers across your workflow.
 * **🧰 Versatile Pipelines & Data Tools** — Out-of-the-box **Pretrain / MidTrain / SFT / LoRA**, with built-in dataset format conversion and sequence packing.
+* **🤖 Embodied Model Training** — A dedicated **torch-native DDP/FSDP** subsystem for **VLA and world-action (WAM)** models (e.g. Pi0.5, GR00T N1.6, FastWAM), decoupled from the Megatron core, with flexible **DDP / ZeRO-1 / FSDP / HSDP** strategies.
 * **🌐 Heterogeneous Hardware** — Native support for **NVIDIA GPUs** and **Kunlun XPUs** via a minimally-intrusive plugin design.
 
 > 📖 Deep-dive: [LLM features](https://loongforge.readthedocs.io/en/latest/llm_tutorial/features_index.html) · [VLM features](https://loongforge.readthedocs.io/en/latest/vlm_tutorial/features_index.html)
 
-<a id="benchmark"></a>
-## 📊 Benchmark
+<a id="performance"></a>
+## 📊 Performance
 
-Measured on **v0.1.1** across LLM, VLM, VLA and DIT workloads against mainstream open-source training baselines:
+Training speedups over mainstream open-source baselines. Each row is tagged with the version it was measured on, and refreshed per-model as the stack evolves:
 
 <img alt="LoongForge Benchmark Speedup" src="docs/assets/images/benchmark_speedup.png" />
 
 <details>
-<summary><b>📋 Detailed configurations & footnotes</b></summary>
+<summary><b>📋 Details</b></summary>
 
 <br>
 
-| Model | Type | Baseline | Configuration | Speedup |
+| Model | Type | Baseline | Speedup | Measured |
 |---|---|---|---|---|
-| Qwen3-30B-A3B | MoE | Megatron-LM<sup>†</sup> | 32 × A800<sup>‡</sup> · GBS 1024 · 32K | **1.16×** |
-| DeepSeek-V3.2 Lite <sup>§</sup> | MoE + DSA | Megatron-LM<sup>†</sup> | Reduced-layer · GBS 128 · 8K | **5.04×** |
-| Qwen3-VL-30B-A3B | VLM | VeOmni<sup>†</sup> | 32 × A800<sup>‡</sup> · GBS 128 · 32K | **1.45×** |
-| GR00T N1.6 | VLA | LeRobot<sup>†</sup> | 8 × A800<sup>‡</sup> · GBS 128 · 224×224 | **2.31×** |
-| Pi0.5 | VLA | OpenPI<sup>†</sup> | 8 × A800<sup>‡</sup> · GBS 112 · 224×224 | **1.65×** |
+| DreamZero (DROID Wan2.2-5B Full) | WAM | DreamZero | **2.67×** | main · 2026-07 |
+| GR00T N1.6 | VLA | LeRobot | **2.31×** | main · 2026-07 |
+| Pi0.5 | VLA | OpenPI | **2.23×** | main · 2026-07 |
+| LingBot VA | WAM | LingBot-VA | **1.80×** | main · 2026-07 |
+| X-VLA | VLA | X-VLA | **1.6×** | main · 2026-07 |
+| DeepSeek-V3.2 Lite <sup>§</sup> | MoE + DSA | Megatron-LM | **5.04×** | v0.1.1 |
+| Qwen3-VL-30B-A3B | VLM | VeOmni | **1.45×** | v0.1.1 |
+| Qwen3-30B-A3B | MoE | Megatron-LM | **1.16×** | v0.1.1 |
 
 > <sup>§</sup> Due to test-bed scale limits, **DeepSeek-V3.2** was validated separately on a reduced-layer configuration — LoongForge's **DSA CUDA kernel optimizations** still deliver **~5× speedup** over Megatron-LM and reach **64K sequence** (baseline OOMs beyond 8K).<br>
-> <sup>†</sup> Numbers reflect baseline and LoongForge versions at the time of measurement, and may evolve as implementations change.<br>
-> <sup>‡</sup> Validation on additional hardware is rolling out in upcoming releases.<br>
+> Numbers reflect baseline and LoongForge versions at the time of measurement (see the **Measured** column), and may evolve as implementations change.<br>
+> Hardware coverage (currently A800) is expanding in upcoming releases.<br>
 
 </details>
 
 ## 🌟 Powered by LoongForge
 
-Projects trained with LoongForge or its predecessor AIAK-Training-LLM:
+Open-source models trained with LoongForge or its predecessor AIAK-Training-LLM:
 
-- [LLaVA-OneVision-2.0](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2) — Next-generation multimodal model, with new VideoCaption and Spatial datasets.
-- [Innovator-VL](https://github.com/InnovatorLM/Innovator-VL/tree/main) — Scientific Multimodal Large Language Model for Advanced Reasoning.
-- [LLaVA-OneVision-1.5](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2/tree/1.5) — Fully open framework for democratized multimodal training.
-- [Qianfan-VL](https://github.com/baidubce/Qianfan-VL) — Domain-Enhanced Vision-Language Models for Enterprise, 3B to 70B parameters.
+- [LLaVA-OneVision-2.0](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2) — Next-generation multimodal model, with new VideoCaption and Spatial datasets. [[paper](https://arxiv.org/abs/2605.25979)]
+- [Innovator-VL](https://github.com/InnovatorLM/Innovator-VL/tree/main) — Scientific Multimodal Large Language Model for Advanced Reasoning. [[paper](https://arxiv.org/abs/2601.19325)]
+- [LLaVA-OneVision-1.5](https://github.com/EvolvingLMMs-Lab/LLaVA-OneVision-2/tree/1.5) — Fully open framework for democratized multimodal training. [[paper](https://arxiv.org/abs/2509.23661)]
+- [Qianfan-VL](https://github.com/baidubce/Qianfan-VL) — Domain-Enhanced Vision-Language Models for Enterprise, 3B to 70B parameters. [[paper](https://arxiv.org/abs/2509.18189)]
 
 <a id="models"></a>
 ## 🏛️ Supported Models
 
 LoongForge supports a broad range of [state-of-the-art models](https://loongforge.readthedocs.io/en/latest/get_started/support_model.html) across LLM, VLM, diffusion, and embodied.
 
-| **Modality** | **Architectures** | **Models** |
+| **Category** | **Architectures** | **Models** |
 |---------------|------------------|------------|
 | **LLM** | DeepSeek-V2 | deepseek-v2-lite, deepseek-v2 |
 | | DeepSeek-V3 | deepseek-v3, deepseek-v32 |
@@ -159,11 +166,16 @@ LoongForge supports a broad range of [state-of-the-art models](https://loongforg
 | | InternVL2.5 | internvl2.5-8b → internvl2.5-78b |
 | | InternVL3.5 | internvl3.5-8b → internvl3.5-241b-a28b |
 | | CustomCombinedModel | Flexible ViT + LLM backbone configuration ([example](https://github.com/baidu-baige/LoongForge/blob/master/configs/models/custom/qwen_vit_llama3_8b.yaml)) |
-| **Diffusion** | WAN2.2 | wan2.2_i2v_a14b |
+| **Diffusion** | Wan2.1 | wan2-1-i2v |
+| | Wan2.2 | wan2-2-i2v |
+| | Qwen-Image | qwen-image-edit-2511 |
 | **Embodied** | Pi | pi0.5 |
-| | GR00T N1.6 | groot_n1_6 |
+| | GR00T | groot_n1_6, groot_n1_7 |
 | | XVLA | xvla |
 | | FastWAM | fastwam |
+| | LingBot-VA | lingbot_va |
+| | Cosmos3 | cosmos3_nano |
+| | DreamZero | dreamzero_lora_wan22_5b, dreamzero_full_wan22_5b, dreamzero_lora_wan21_14b, dreamzero_full_wan21_14b, dreamzero_libero_wan22_5b, dreamzero_agibot_wan21_14b, dreamzero_yam_wan21_14b |
 
 ## 🏗️ Repository Layout
 
@@ -176,12 +188,12 @@ LoongForge/
 │   ├── train/                    # Training entry points & trainers
 │   │   ├── pretrain/             #   Pretrain (LLM, VLM)
 │   │   ├── sft/                  #   SFT (LLM, VLM, InternVL, ERNIE)
-│   │   └── diffusion/            #   Diffusion (WAN)
+│   │   └── diffusion/            #   Diffusion (WAN, Qwen-Image)
 │   ├── models/                   # Unified model abstractions
 │   │   ├── foundation/           #   LLM backbones (LLaMA, Qwen, DeepSeek, ...)
 │   │   ├── encoder/              #   Vision encoders (ViT, Qwen-VL, InternVL, ...)
 │   │   ├── omni_models/          #   Multi-modal composition
-│   │   ├── diffusion/            #   Diffusion models (WAN)
+│   │   ├── diffusion/            #   Diffusion models (WAN, Qwen-Image)
 │   │   └── common/               #   Shared layers and utilities
 │   ├── embodied/                 # LoongForge-Embodied: standalone torch-native (DDP/FSDP)
 │   │                             #   embodied (VLA + world-action) subsystem — see loongforge/embodied/README.md
@@ -223,7 +235,7 @@ LoongForge is released under the [Apache License 2.0](https://github.com/baidu-b
 
 ## 🙏 Acknowledgments
 
-LoongForge is built upon NVIDIA's Megatron-LM. We also drew inspiration from several excellent open-source projects, including but not limited to HuggingFace Transformers, LLaMA-Factory, and Megatron-Bridge. We sincerely thank these communities for their outstanding contributions.
+LoongForge builds on NVIDIA's Megatron-LM and draws inspiration from many excellent open-source projects, including HuggingFace Transformers, LLaMA-Factory, Megatron-Bridge, and LeRobot, as well as the official implementations of the models it supports (e.g. OpenPI, NVIDIA Isaac GR00T). We sincerely thank these communities for their outstanding contributions.
 
 ## 💬 Contact
 <a id="contact"></a>
@@ -232,6 +244,3 @@ Open a GitHub issue for questions, feedback, or feature requests. You can also j
 
 - **WeChat** — [Scan QR code to join](https://github.com/baidu-baige/LoongForge/issues/80#issue-4594463290)
 - **Slack** — [Join here](https://join.slack.com/t/baiduloongforge/shared_invite/zt-3ys3kaq2p-cmdw0nDoaHGOcKibgys5Yw)
-
-
-
