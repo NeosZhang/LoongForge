@@ -61,7 +61,6 @@ def _add_log_tensor_args(parser):
     register hooks to capture tensor statistics during training.
 
     Required dependency: llm-inspector (internal Baige library)
-    Git path: /workspace/baidu/hac-aiacc/llm-inspector
 
     Usage:
         These arguments are typically used together:
@@ -597,14 +596,6 @@ def _add_extra_sft_args(parser: argparse.ArgumentParser):
         action="store_true",
         help="Pack multiple short sequences into a single training sample to improve "
              "GPU utilization. Default: False"
-    )
-
-    group.add_argument(
-        "--deepseek-v4-sft-packing",
-        action="store_true",
-        help="Enable DeepSeek-V4-specific SFT packing semantics (per-segment position id "
-             "reset). Requires --packing-sft-data and only applies to the deepseek_v4 family. "
-             "Default: False"
     )
 
     group.add_argument(

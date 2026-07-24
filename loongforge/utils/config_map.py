@@ -231,7 +231,7 @@ MODEL_CONFIG_REGISTRY = {
         "config_path": "configs/models/qwen3_next",
         "config_name": "qwen3_next_80b_a3b",
     },
-    
+
     # qwen3.5
     "qwen3.5-0.8b": {
         "config_path": "configs/models/qwen3.5",
@@ -285,7 +285,7 @@ MODEL_CONFIG_REGISTRY = {
         "config_path": "configs/models/kimi_k2.6",
         "config_name": "kimi_k2_6",
     },
-    
+
     # qwen2.5-vl
     "qwen2.5-vl-3b": {
         "config_path": "configs/models/qwen2.5vl",

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 if [ $# -eq 0 ]; then
     echo "Usage: $0 input \"hg2mcore\" or \"mcore2hg\""
     exit 1
