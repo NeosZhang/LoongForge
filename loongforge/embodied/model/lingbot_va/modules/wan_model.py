@@ -28,7 +28,7 @@ from diffusers.models.normalization import FP32LayerNorm
 from einops import rearrange
 from torch.utils.checkpoint import checkpoint
 
-from .features import (
+from ..features import (
     FLEX_MASK_CACHE_MAX_SIZE,
     SELF_FLEX_BWD_CONFIG,
     SELF_FLEX_FWD_CONFIG,
