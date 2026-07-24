@@ -1,4 +1,6 @@
 #!/bin/bash
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
 # Convert DeepSeek-V4 from HF format to Megatron Core format (FP8 version)
 # This script converts BF16 HF weights to FP8 mcore format for training efficiency.
 set -e
@@ -21,17 +23,17 @@ PYTHONPATH=$MEGATRON_PATH:$PYTHONPATH \
     --save_platform=mcore \
     --config_file $MODEL_CONFIG_FILE \
     --convert_file $CONVERT_FILE \
-    --tensor_model_parallel_size=2 \
-    --pipeline_model_parallel_size=1 \
-    --expert_parallel_size=2 \
+    --tensor_model_parallel_size=1 \
+    --pipeline_model_parallel_size=3 \
+    --expert_parallel_size=8 \
     --expert_tensor_parallel_size=1 \
     --megatron_path=$MEGATRON_PATH \
     --load_ckpt_path=$HF_MODEL_PATH \
     --save_ckpt_path=$SAVE_ROOT \
     --safetensors \
-    --max_workers=4 \
+    --max_workers=32 \
     --moe-grouped-gemm \
-    --convert_to_fp8
+    --fp8_force_no_requant
 
 echo "=== HF -> mcore FP8 conversion completed ==="
 echo "Output: $SAVE_ROOT"

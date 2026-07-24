@@ -3,24 +3,24 @@
 data:
   # WDS-native input. The directory must contain uncompressed pretrain-*.tar shards.
   input_format: "wds"
-  wds_dir: "/mnt/cfs_bj_mt/mokai/datasets/pretrain/train_wds"
+  wds_dir: "/path/to/wds"
   # Text field name
   template_text_key: "texts"
   # Packed wds dataset
-  packed_wds_dir: "/mnt/cfs_bj_mt/mokai/datasets/pretrain/train_wds_packed_256k"
+  packed_wds_dir: "/path/to/save/packed_wds"
   # Directory for manifest, token reports, bins and pack_plan
-  work_dir: "/mnt/cfs_bj_mt/mokai/datasets/pretrain/train_wds_packed_256k/logs"
+  work_dir: "/path/to/save/packed_wds/logs"
 
 model:
   model_type: "kimi-k2.5"
   # Use auto_processor for VLM datasets. auto_tokenizer is useful for text-only smoke tests.
   processor_loader: "auto_tokenizer"
   use_hf_chat_template: true
-  chat_template_path: "/mnt/cfs_bj_mt/mokai/checkpoints/Kimi-k25/chat_template.jinja"
+  chat_template_path: "/path/to/chat_template.jinja"
   chat_template_kwargs:
     thinking: false
   processor_kwargs:
-    pretrained_model_name_or_path: "/mnt/cfs_bj_mt/mokai/checkpoints/Kimi-k25"
+    pretrained_model_name_or_path: "/path/to/official/huggingface_checkpoint/Kimi-k25"
     min_pixels: 3136   # 4*28*28
     max_pixels: 4014080 # 5120*28*28(4014080,8192)
     trust_remote_code: True

@@ -3,7 +3,7 @@
 MEGATRON_PATH=${MEGATRON_PATH:-"/workspace/Loong-Megatron"}
 export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"/workspace/LoongForge"}
 
-TOKENIZER_PATH=${TOKENIZER_PATH:-"/mnt/cluster/leoli/qwen/Qwen-7B-HF"}
+TOKENIZER_PATH=${TOKENIZER_PATH:-"/mnt/cluster/qwen/Qwen-7B-HF"}
 
 input_data=/mnt/cluster/LoongForge/dataset/sft_aplaca_zh_data.json
 output_path=/mnt/cluster/LoongForge/qwen/sft_aplaca_zh_tokenized
