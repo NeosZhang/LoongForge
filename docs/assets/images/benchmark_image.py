@@ -23,11 +23,11 @@ import numpy as np
 # - marker: "" or one of the footnote symbols ("§", "*", etc.)
 # - measured: the version/branch the row was benchmarked on (shown per bar).
 ROWS = [
-    ("DreamZero",          "WAM",       "DreamZero",   "DROID · Wan2.2-5B Full",         2.67, "",  "main · 2026-07"),
-    ("GR00T N1.6",         "VLA",       "LeRobot",     "GBS 96 · 224×224",               2.31, "",  "main · 2026-07"),
-    ("Pi 0.5",             "VLA",       "OpenPI",      "GBS 96 · 224×224×2",             2.23, "",  "main · 2026-07"),
-    ("LingBot VA",         "WAM",       "LingBot-VA",  "LIBERO",                         1.80, "",  "main · 2026-07"),
-    ("X-VLA",              "VLA",       "X-VLA",       "GBS 288",                        1.60, "",  "main · 2026-07"),
+    ("DreamZero",          "WAM",       "DreamZero",   "DROID · Wan2.2-5B Full",         2.67, "",  "master · 2026-07"),
+    ("GR00T N1.6",         "VLA",       "LeRobot",     "GBS 96 · 224×224",               2.31, "",  "master · 2026-07"),
+    ("Pi 0.5",             "VLA",       "OpenPI",      "GBS 96 · 224×224×2",             2.23, "",  "master · 2026-07"),
+    ("LingBot VA",         "WAM",       "LingBot-VA",  "LIBERO",                         1.80, "",  "master · 2026-07"),
+    ("X-VLA",              "VLA",       "X-VLA",       "GBS 288",                        1.60, "",  "master · 2026-07"),
     ("DeepSeek-V3.2 Lite", "MoE + DSA", "Megatron-LM", "Reduced layers · GBS 128 · 8K",  5.04, "§", "v0.1.1"),
     ("Qwen3-VL-30B-A3B",   "VLM",       "VeOmni",      "GBS 128 · 32K",                  1.45, "",  "v0.1.1"),
     ("Qwen3-30B-A3B",      "MoE",       "Megatron-LM", "GBS 1024 · 32K",                 1.16, "",  "v0.1.1"),
@@ -100,11 +100,11 @@ def main():
     # one line so they clearly attach to this row. main → brand purple, v0.1.1 → grey.
     for i, r in enumerate(ROWS):
         config, measured = r[3], r[6]
-        is_main = "main" in measured
+        is_current = "master" in measured
         # Light tinted chips (not solid purple) so the badge reads as a tag and
         # doesn't visually compete with the purple bars.
-        badge_fc = "#EDE9FE" if is_main else "#EDEFF2"   # lavender vs grey tint
-        badge_tc = COLOR_TEXT if is_main else COLOR_GREY_DARK
+        badge_fc = "#EDE9FE" if is_current else "#EDEFF2"   # lavender vs grey tint
+        badge_tc = COLOR_TEXT if is_current else COLOR_GREY_DARK
         # version badge: right-aligned nearest the axis
         ax.annotate(measured,
                     xy=(0, y[i]), xycoords=("axes fraction", "data"),
