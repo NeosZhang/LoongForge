@@ -25,11 +25,6 @@
 </p>
 
 <p align="center">
-  <b>🚀 显著的训练加速</b> &nbsp;·&nbsp;
-  <b>🌐 原生支持 NVIDIA GPU 与昆仑芯 XPU</b>
-</p>
-
-<p align="center">
   <a href="#quickstart"><b>📖 快速开始</b></a>
   &nbsp;·&nbsp;
   <a href="#performance"><b>📊 性能表现</b></a>
@@ -43,7 +38,7 @@
 
 ## 💡 为什么选择 LoongForge？
 
-> 🐉 LoongForge 是百度百舸 **Loong** 开源系列的一员 —— 名字源于中国传统 **龙舟**，象征协同发力与破浪前行。
+> 🐉 LoongForge 名字源于中国传统 **龙舟**，象征协同发力与破浪前行。
 
 **LoongForge** 是面向 **LLM、VLM、Diffusion 与 Embodied 模型** 的统一训练框架，覆盖 **预训练（Pre-training）**、**持续预训练（Continued Pre-training）** 和 **SFT**。其核心目标是覆盖主流开源模型，并提供高效的训练性能。
 
