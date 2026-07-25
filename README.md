@@ -25,11 +25,6 @@
 </p>
 
 <p align="center">
-  <b>🚀 Significant training speedups</b> &nbsp;·&nbsp;
-  <b>🌐 Native NVIDIA GPU & Kunlun XPU support</b>
-</p>
-
-<p align="center">
   <a href="#quickstart"><b>📖 Quick Start</b></a>
   &nbsp;·&nbsp;
   <a href="#performance"><b>📊 Performance</b></a>
@@ -43,7 +38,7 @@
 
 ## 💡 Why LoongForge?
 
-> 🐉 LoongForge is part of Baidu Baige's **Loong** open-source series — named after the traditional Chinese **loong boat (龙舟)**, a symbol of coordinated power and forward momentum.
+> 🐉 LoongForge is named after the traditional Chinese **loong boat (龙舟)**, a symbol of coordinated power and forward momentum.
 
 **LoongForge** is a unified training framework for **LLMs, VLMs, diffusion, and embodied models**, covering **pre-training**, **continued pre-training**, and **SFT**. Its primary goal is to provide broad coverage of mainstream open-source models while delivering efficient, high-throughput training.
 
