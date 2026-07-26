@@ -10,7 +10,7 @@
   </picture>
 </p>
 
-<h4>面向 LLM、VLM、Diffusion 与 Embodied 模型的模块化、可扩展、高性能训练框架。</h4>
+<h4>一个统一、高性能的框架，用于训练 LLM、VLM、Diffusion 与 Embodied 模型。</h4>
 
 <p align="center">
   
@@ -25,11 +25,13 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart"><b>📖 快速开始</b></a>
+  <a href="#architecture"><b>🏗️ 架构</b></a>
+  &nbsp;·&nbsp;
+  <a href="#quickstart"><b>⚡ 快速开始</b></a>
   &nbsp;·&nbsp;
   <a href="#performance"><b>📊 性能表现</b></a>
   &nbsp;·&nbsp;
-  <a href="#models"><b>🤖 支持模型</b></a>
+  <a href="#models"><b>🏛️ 支持模型</b></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/baidu-baige/LoongForge/issues/74"><b>🚀 路线图</b></a>
 </p>
@@ -42,9 +44,20 @@
 
 **LoongForge** 是面向 **LLM、VLM、Diffusion 与 Embodied 模型** 的统一训练框架，覆盖 **预训练（Pre-training）**、**持续预训练（Continued Pre-training）** 和 **SFT**。其核心目标是覆盖主流开源模型，并提供高效的训练性能。
 
+在开源之前，LoongForge 的前身是 **AIAK-Training-LLM** —— 百度百舸的训练加速栈，已在 **教育**、**计算机视觉** 和 **Embodied AI** 等多家企业客户的生产训练中落地，相对客户原有方案通常带来 **30%~50% 加速**，最大规模的生产训练任务达到 **5,000+ XPU**。
+
+<a id="architecture"></a>
+## 🏗️ 架构
+
 由于不同模型场景的训练需求各异，LoongForge 构建在多种分布式训练后端之上。其中 LLM/VLM/Diffusion 采用 **Megatron-LM**，具身模型采用 **torch 原生 DDP/FSDP** 技术栈。每条路线都经过深度性能优化，从而超越主流开源方案。
 
-在开源之前，LoongForge 的前身是 **AIAK-Training-LLM** —— 百度百舸的训练加速栈，已在 **教育**、**计算机视觉** 和 **Embodied AI** 等多家企业客户的生产训练中落地，相对客户原有方案通常带来 **30%~50% 加速**，最大规模的生产训练任务达到 **5,000+ XPU**。
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"  srcset="./docs/assets/images/architecture/loongforge-architecture-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./docs/assets/images/architecture/loongforge-architecture.svg">
+    <img alt="LoongForge 架构图" src="./docs/assets/images/architecture/loongforge-architecture.svg" width="100%">
+  </picture>
+</p>
 
 ## 🔥 最新动态
 
@@ -95,6 +108,7 @@
 ## 📊 性能表现
 
 相对主流开源基线的训练加速。每一行都标注了测量所用的版本，并随各模型的演进单独刷新：
+
 <img alt="LoongForge Benchmark Speedup" src="docs/assets/images/benchmark_speedup.png" />
 
 <details>
@@ -169,7 +183,7 @@ LoongForge 已支持 LLM、VLM、Diffusion 与 Embodied 等多模态的[广泛�
 | | Cosmos3 | cosmos3_nano |
 | | DreamZero | dreamzero_lora_wan22_5b, dreamzero_full_wan22_5b, dreamzero_lora_wan21_14b, dreamzero_full_wan21_14b, dreamzero_libero_wan22_5b, dreamzero_agibot_wan21_14b, dreamzero_yam_wan21_14b |
 
-## 🏗️ 代码结构
+## 📂 代码结构
 
 <details>
 <summary><b>📁 目录树</b></summary>
@@ -218,7 +232,7 @@ LoongForge 基于 [Apache License 2.0](https://github.com/baidu-baige/LoongForge
 
 ```bibtex
 @software{LoongForge2026,
-  title  = {LoongForge: A modular, scalable, high-performance training framework for LLMs, VLMs, diffusion, and embodied models},
+  title  = {LoongForge: A unified, high-performance framework for training LLMs, VLMs, diffusion, and embodied models},
   author = {{The LoongForge Authors}},
   year   = {2026},
   url    = {https://github.com/baidu-baige/LoongForge}
