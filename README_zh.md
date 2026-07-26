@@ -25,8 +25,6 @@
 </p>
 
 <p align="center">
-  <a href="#architecture"><b>🏗️ 架构</b></a>
-  &nbsp;·&nbsp;
   <a href="#quickstart"><b>⚡ 快速开始</b></a>
   &nbsp;·&nbsp;
   <a href="#performance"><b>📊 性能表现</b></a>

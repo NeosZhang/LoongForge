@@ -25,8 +25,6 @@
 </p>
 
 <p align="center">
-  <a href="#architecture"><b>🏗️ Architecture</b></a>
-  &nbsp;·&nbsp;
   <a href="#quickstart"><b>⚡ Quick Start</b></a>
   &nbsp;·&nbsp;
   <a href="#performance"><b>📊 Performance</b></a>
