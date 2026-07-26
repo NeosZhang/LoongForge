@@ -10,7 +10,7 @@
   </picture>
 </p>
 
-<h4>A modular, scalable, high-performance training framework for LLMs, VLMs, diffusion, and embodied models.</h4>
+<h4>A unified, high-performance framework for training LLMs, VLMs, diffusion, and embodied models.</h4>
 
 <p align="center">
 
@@ -25,11 +25,13 @@
 </p>
 
 <p align="center">
-  <a href="#quickstart"><b>📖 Quick Start</b></a>
+  <a href="#architecture"><b>🏗️ Architecture</b></a>
+  &nbsp;·&nbsp;
+  <a href="#quickstart"><b>⚡ Quick Start</b></a>
   &nbsp;·&nbsp;
   <a href="#performance"><b>📊 Performance</b></a>
   &nbsp;·&nbsp;
-  <a href="#models"><b>🤖 Supported Models</b></a>
+  <a href="#models"><b>🏛️ Supported Models</b></a>
   &nbsp;·&nbsp;
   <a href="https://github.com/baidu-baige/LoongForge/issues/74"><b>🚀 Roadmap</b></a>
 </p>
@@ -42,9 +44,20 @@
 
 **LoongForge** is a unified training framework for **LLMs, VLMs, diffusion, and embodied models**, covering **pre-training**, **continued pre-training**, and **SFT**. Its primary goal is to provide broad coverage of mainstream open-source models while delivering efficient, high-throughput training.
 
+Before going open-source, LoongForge was developed as **AIAK-Training-LLM**, Baidu Baige's training acceleration stack. It has supported production training for enterprise customers across **Education**, **Computer Vision**, and **Embodied AI**, typically delivering **30%~50% speedup over customer baselines**, with the largest production runs reaching **5,000+ XPUs**.
+
+<a id="architecture"></a>
+## 🏗️ Architecture
+
 Since training requirements vary across model scenarios, LoongForge builds on multiple distributed backends. LLM/VLM/diffusion run on **Megatron-LM**, while embodied models use a **torch-native DDP/FSDP** stack. Each is deeply optimized to outperform mainstream open-source baselines.
 
-Before going open-source, LoongForge was developed as **AIAK-Training-LLM**, Baidu Baige's training acceleration stack. It has supported production training for enterprise customers across **Education**, **Computer Vision**, and **Embodied AI**, typically delivering **30%~50% speedup over customer baselines**, with the largest production runs reaching **5,000+ XPUs**.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)"  srcset="./docs/assets/images/architecture/loongforge-architecture-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./docs/assets/images/architecture/loongforge-architecture.svg">
+    <img alt="LoongForge Architecture" src="./docs/assets/images/architecture/loongforge-architecture.svg" width="100%">
+  </picture>
+</p>
 
 ## 🔥 Latest News
 
@@ -171,7 +184,7 @@ LoongForge supports a broad range of [state-of-the-art models](https://loongforg
 | | Cosmos3 | cosmos3_nano |
 | | DreamZero | dreamzero_lora_wan22_5b, dreamzero_full_wan22_5b, dreamzero_lora_wan21_14b, dreamzero_full_wan21_14b, dreamzero_libero_wan22_5b, dreamzero_agibot_wan21_14b, dreamzero_yam_wan21_14b |
 
-## 🏗️ Repository Layout
+## 📂 Repository Layout
 
 <details>
 <summary><b>📁 Directory tree</b></summary>
@@ -220,7 +233,7 @@ LoongForge is released under the [Apache License 2.0](https://github.com/baidu-b
 
 ```bibtex
 @software{LoongForge2026,
-  title  = {LoongForge: A modular, scalable, high-performance training framework for LLMs, VLMs, diffusion, and embodied models},
+  title  = {LoongForge: A unified, high-performance framework for training LLMs, VLMs, diffusion, and embodied models},
   author = {{The LoongForge Authors}},
   year   = {2026},
   url    = {https://github.com/baidu-baige/LoongForge}
@@ -238,3 +251,4 @@ Open a GitHub issue for questions, feedback, or feature requests. You can also j
 
 - **WeChat** — [Scan QR code to join](https://github.com/baidu-baige/LoongForge/issues/80#issue-4594463290)
 - **Slack** — [Join here](https://join.slack.com/t/baiduloongforge/shared_invite/zt-3ys3kaq2p-cmdw0nDoaHGOcKibgys5Yw)
+
