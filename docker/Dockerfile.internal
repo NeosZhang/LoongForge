@@ -5,9 +5,6 @@ FROM ${BASE_IMAGE}
 # Build Arguments
 # =========================================================
 ARG COMPILE_ENV={{COMPILE_ENV}}
-# LeRobot has dependency conflicts with the base environment; disabled by default.
-# Do not change this here; set ENABLE_LEROBOT in the ipipe pipeline configuration.
-ARG ENABLE_LEROBOT="false"
 
 # =========================================================
 # Environment Variables
@@ -55,7 +52,8 @@ RUN set -exuo pipefail && \
         apt-get update && \
         DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata && \
         ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
-        apt-get install -y bc tree pwgen nodejs iproute2; \
+        apt-get install -y bc tree pwgen nodejs iproute2 && \
+        apt-get install -y ffmpeg=7:6.1.1-3ubuntu5; \
     }; \
     clean_pip_config && \
     install_pip_config && \
@@ -201,6 +199,10 @@ RUN set -exuo pipefail && \
     }; \
     install_lerobot() { \
         echo "Installing lerobot..." && \
+        pip install "dmuon @ git+https://github.com/X-Square-Robot/dmuon.git" && \
+        cd /workspace/LoongForge/ && \
+        uv pip install --no-config --system --break-system-packages --no-cache -e ".[vla]" --group internal \
+            -i http://mirrors.baidubce.com/pypi/simple --allow-insecure-host mirrors.baidubce.com; \
         cd /workspace && \
         if [ -d "lerobot" ]; then \
             rm -rf lerobot; \
@@ -213,16 +215,13 @@ RUN set -exuo pipefail && \
         fi && \
         pip install "http://aihc-ai-datasets-bj.bj.bcebos.com/hac-aiacc/omni_training/ngc2506_torch28_cuda129_tev29/transformers-5.3.0-py3-none-any.whl" && \
         pip install --no-build-isolation . && \
-        pip install "numpy==1.26" && \
+        pip install "numpy==1.26.4" && \
+        pip install "scipy==1.15.3" && \
         echo "Lerobot installation completed"; \
     }; \
     install_transformer_engine && \
     install_megatron && \
-    if [ "$ENABLE_LEROBOT" = "true" ]; then \
-        install_lerobot; \
-    else \
-        echo "Skipping lerobot installation (ENABLE_LEROBOT=${ENABLE_LEROBOT})"; \
-    fi
+    install_lerobot
 
 # =========================================================
 # Jupyter Configuration
