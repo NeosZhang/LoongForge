@@ -60,6 +60,7 @@ A modular, scalable, and highly efficient training framework for language, multi
 
    wan_tutorial/quick_start_wan_training
    wan_tutorial/wan_packing
+   qwen_image_edit_tutorial/quick_start_qwen_image_edit_2511_training
 
 .. toctree::
    :maxdepth: 1
