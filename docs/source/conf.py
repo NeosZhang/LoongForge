@@ -15,7 +15,7 @@ extensions = [
 ]
 
 templates_path = ['_templates']
-exclude_patterns = ['zh']
+exclude_patterns = ['zh', 'get_started/examples']
 
 language = 'en'
 
