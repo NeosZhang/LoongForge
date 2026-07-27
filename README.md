@@ -13,21 +13,21 @@
 <h4>A unified, high-performance framework for training LLMs, VLMs, diffusion, and embodied models.</h4>
 
 <p align="center">
-  <a href="https://baidu-baige.github.io/LoongForge/"><b>🌐 Website</b></a>
+  <a href="https://baidu-baige.github.io/LoongForge/"><b>Website</b></a>
   &nbsp;·&nbsp;
-  <a href="https://loongforge.readthedocs.io/en/latest/index.html"><b>📖 Docs</b></a>
+  <a href="https://loongforge.readthedocs.io/en/latest/index.html"><b>Docs</b></a>
   &nbsp;·&nbsp;
-  <a href="https://baidu-baige.github.io/LoongForge/blog/"><b>✍️ Blog</b></a>
+  <a href="https://baidu-baige.github.io/LoongForge/blog/"><b>Blog</b></a>
   &nbsp;·&nbsp;
-  <a href="#quickstart"><b>⚡ Quick Start</b></a>
+  <a href="#quickstart"><b>Quick Start</b></a>
   &nbsp;·&nbsp;
-  <a href="#performance"><b>📊 Performance</b></a>
+  <a href="#performance"><b>Performance</b></a>
   &nbsp;·&nbsp;
-  <a href="#models"><b>🏛️ Supported Models</b></a>
+  <a href="#models"><b>Supported Models</b></a>
   &nbsp;·&nbsp;
-  <a href="#contact"><b>💬 Contact</b></a>
+  <a href="#contact"><b>Contact</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/baidu-baige/LoongForge/issues/74"><b>🚀 Roadmap</b></a>
+  <a href="https://github.com/baidu-baige/LoongForge/issues/74"><b>Roadmap</b></a>
 </p>
 
 </div>
