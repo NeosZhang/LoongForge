@@ -13,25 +13,19 @@
 <h4>一个统一、高性能的框架，用于训练 LLM、VLM、Diffusion 与 Embodied 模型。</h4>
 
 <p align="center">
-
-[![Home](https://img.shields.io/badge/LoongForge-主页-8A2CE3?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9Ikxvb25nRm9yZ2UgbG9nbyI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImciIHgxPSIwIiB5MT0iMCIgeDI9IjEiIHkyPSIxIj4KICAgICAgPHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzYzNjZGMSIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjYwJSIgc3RvcC1jb2xvcj0iIzhCNUNGNiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNGNTlFMEIiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxyZWN0IHg9IjIiIHk9IjIiIHdpZHRoPSI2MCIgaGVpZ2h0PSI2MCIgcng9IjE0IiBmaWxsPSJ1cmwoI2cpIi8+CiAgPHBhdGggZD0iTTE4IDQwIEMgMjIgMzAsIDI4IDI4LCAzMiAzMiBDIDM2IDM2LCA0MiAzNCwgNDYgMjQiCiAgICAgICAgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjMuMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBmaWxsPSJub25lIi8+CiAgPGNpcmNsZSBjeD0iNDYiIGN5PSIyNCIgcj0iMy4yIiBmaWxsPSIjZmZmIi8+CiAgPGNpcmNsZSBjeD0iMTgiIGN5PSI0MCIgcj0iMi4yIiBmaWxsPSIjZmZmIiBvcGFjaXR5PSIwLjg1Ii8+CiAgPHBhdGggZD0iTTI0IDQ2IEw0MCA0NiIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgb3BhY2l0eT0iMC43Ii8+Cjwvc3ZnPgo=)](https://baidu-baige.github.io/LoongForge/)
-[![Docs](https://img.shields.io/badge/文档-Latest-00A3FF?logo=readthedocs)](https://loongforge.readthedocs.io/zh-cn/latest/index.html)
-[![Blog](https://img.shields.io/badge/博客-View-FF6B35.svg?logo=github)](https://baidu-baige.github.io/LoongForge/blog/)
-[![Release](https://img.shields.io/github/v/release/baidu-baige/LoongForge?include_prereleases&label=release&color=blue)](https://github.com/baidu-baige/LoongForge/releases)
-[![License](https://img.shields.io/github/license/baidu-baige/LoongForge.svg?logo=github)](https://github.com/baidu-baige/LoongForge/blob/master/LICENSE)
-[![Slack](https://img.shields.io/badge/Slack-加入-4A154B.svg?logo=slack)](https://join.slack.com/t/baiduloongforge/shared_invite/zt-3ys3kaq2p-cmdw0nDoaHGOcKibgys5Yw)
-[![WeChat](https://img.shields.io/badge/WeChat-Join-07C160.svg?logo=wechat)](https://github.com/baidu-baige/LoongForge/issues/80#issue-4594463290)
-
-</p>
-
-<p align="center">
+  <a href="https://baidu-baige.github.io/LoongForge/"><b>🌐 官网</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://loongforge.readthedocs.io/zh-cn/latest/index.html"><b>📖 文档</b></a>
+  &nbsp;·&nbsp;
+  <a href="https://baidu-baige.github.io/LoongForge/blog/"><b>✍️ 博客</b></a>
+  &nbsp;·&nbsp;
   <a href="#quickstart"><b>⚡ 快速开始</b></a>
   &nbsp;·&nbsp;
   <a href="#performance"><b>📊 性能表现</b></a>
   &nbsp;·&nbsp;
   <a href="#models"><b>🏛️ 支持模型</b></a>
   &nbsp;·&nbsp;
-  <a href="https://github.com/baidu-baige/LoongForge/issues/74"><b>🚀 路线图</b></a>
+  <a href="#contact"><b>💬 联系我们</b></a>
 </p>
 
 </div>
