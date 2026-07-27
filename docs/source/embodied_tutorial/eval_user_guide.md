@@ -52,7 +52,7 @@ Two conda environments are involved, kept separate on purpose:
 
 GPU requirements: model inference requires at least 1 NVIDIA GPU (VRAM ≥16 GB, A100/A800 recommended). Benchmark-side rendering (SimplerEnv, RoboTwin, ManiSkill) also requires GPU Vulkan support.
 
-Per-benchmark dependencies and known-good versions are documented in [benchmark_envs.md](../../loongforge/embodied/eval/benchmark_envs.md).
+Per-benchmark dependencies and known-good versions are documented in [benchmark_envs.md](https://github.com/baidu-baige/LoongForge/blob/master/loongforge/embodied/eval/benchmark_envs.md).
 
 ### 2.2 Run pi0.5 on LIBERO
 
@@ -384,7 +384,5 @@ Without either, the environment either errors at construction with a missing con
 
 This section is for developers who need to integrate new models. To integrate a model beyond pi0.5 / X-VLA, the core approach is: reuse the shared `predict_action` interface and `GenericPredictActionPolicy`, keep benchmark protocols and adapters unchanged, and put model differences in a thin factory. Do not fork benchmark runners or directly modify LoongForge training code. For detailed integration steps, model semantic comparisons (action space, normalization ownership, chunk length, etc.), and the minimum checklist, see:
 
-- [model_integration_guide.md](../../loongforge/embodied/eval/model_integration_guide.md) — New-model semantic checklist with pi0.5 vs X-VLA side-by-side comparison
-- [predict_action_interface.md](../../loongforge/embodied/eval/predict_action_interface.md) — `predict_action` interface contract (signature, shapes, unnormalization ownership, postprocess vs model)
-
----
+- [model_integration_guide.md](https://github.com/baidu-baige/LoongForge/blob/master/loongforge/embodied/eval/model_integration_guide.md) — New-model semantic checklist with pi0.5 vs X-VLA side-by-side comparison
+- [predict_action_interface.md](https://github.com/baidu-baige/LoongForge/blob/master/loongforge/embodied/eval/predict_action_interface.md) — `predict_action` interface contract (signature, shapes, unnormalization ownership, postprocess vs model)
