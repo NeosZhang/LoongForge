@@ -25,7 +25,7 @@
   &nbsp;·&nbsp;
   <a href="#models"><b>🏛️ 支持模型</b></a>
   &nbsp;·&nbsp;
-  <a href="#contact"><b>💬 联系我们</b></a>
+  <a href="https://github.com/baidu-baige/LoongForge/issues/80"><b>💬 联系我们</b></a>
 </p>
 
 </div>
