@@ -186,8 +186,10 @@ class Resample(nn.Module):
                     x = x.reshape(b, c, t * 2, h, w)
         t = x.shape[2]
         x = rearrange(x, 'b c t h w -> (b t) c h w')
+        x = x.to(memory_format=torch.channels_last)  # maintain NHWC for 4D ops
         x = self.resample(x)
         x = rearrange(x, '(b t) c h w -> b c t h w', t=t)
+        x = x.to(memory_format=torch.channels_last_3d)  # restore 5D NHWC
 
         if self.mode == 'downsample3d':
             if feat_cache is not None:
@@ -362,6 +364,7 @@ class AttentionBlock(nn.Module):
         identity = x
         b, c, t, h, w = x.size()
         x = rearrange(x, 'b c t h w -> (b t) c h w')
+        x = x.to(memory_format=torch.channels_last)  # maintain NHWC for 4D ops
         x = self.norm(x)
         # compute query, key, value
         q, k, v = self.to_qkv(x).reshape(b * t, 1, c * 3, -1).permute(
@@ -379,6 +382,7 @@ class AttentionBlock(nn.Module):
         # output
         x = self.proj(x)
         x = rearrange(x, '(b t) c h w-> b c t h w', t=t)
+        x = x.to(memory_format=torch.channels_last_3d)  # restore 5D NHWC
         return x + identity
 
 
@@ -408,7 +412,7 @@ class AvgDown3D(nn.Module):
         pad = (0, 0, 0, 0, pad_t, 0)
         x = F.pad(x, pad)
         B, C, T, H, W = x.shape
-        x = x.view(
+        x = x.reshape(
             B,
             C,
             T // self.factor_t,
@@ -1410,6 +1414,7 @@ class VideoVAE38Core(VideoVAECore):
         """Encode videos or tensors into latent states."""
         self.clear_cache()
         x = patchify(x, patch_size=2)
+        x = x.to(memory_format=torch.channels_last_3d)  # NHWC to avoid per-layer format conversion
         t = x.shape[2]
         iter_ = 1 + (t - 1) // 4
         for i in range(iter_):
@@ -1433,7 +1438,7 @@ class VideoVAE38Core(VideoVAECore):
                 scale = scale.to(dtype=mu.dtype, device=mu.device)
                 mu = (mu - scale[0]) * scale[1]
         self.clear_cache()
-        return mu
+        return mu.contiguous()
 
 
     def decode(self, z, scale=None):
