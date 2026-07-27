@@ -60,14 +60,15 @@ git clone --recurse-submodules https://github.com/baidu-baige/LoongForge.git
 然后构建镜像：
 
 ```bash
-docker build --build-arg COMPILE_ENV=hopper --build-arg ENABLE_LEROBOT=false \
+docker build --build-arg COMPILE_ENV=hopper \
   -t loongforge:latest -f ./LoongForge/docker/Dockerfile .
 ```
+
+> **说明**：所有模型系列（LLM / VLM / VLA / Diffusion）现在共用同一个 Docker 镜像。`ENABLE_LEROBOT` 构建参数以及单独的 `_lerobot` 镜像变体已被移除 —— 构建或拉取镜像时不再区分 lerobot 与非 lerobot。
 
 | 构建参数 | 描述 | 选项 |
 |---|---|---|
 | `COMPILE_ENV` | 目标 GPU 架构 | `ampere`, `hopper`|
-| `ENABLE_LEROBOT` | 启用 VLA 模型训练（如 Pi0.5, GR00T）的 LeRobot 依赖。由于与基础环境存在依赖冲突，默认禁用。 | `true`, `false` |
 
 构建完成后，验证：
 
@@ -83,22 +84,18 @@ LoongForge Docker 镜像保存在 Docker Hub：
 [https://hub.docker.com/u/loongforge](https://hub.docker.com/u/loongforge)。
 
 LoongForge 发布带版本号的预构建 Docker 镜像。请在 Docker Hub 中选择需要的 tag。
-LeRobot 镜像在可用时使用相同版本号并追加 `_lerobot` 后缀。
+单个镜像覆盖所有模型系列（LLM / VLM / VLA / Diffusion），不再提供单独的 `_lerobot` 变体。
 
 | 镜像 | 标签模式 | 描述 |
 |---|---|---|
-| `loongforge/loongforge` | `<version>` | 基础镜像：仅支持 LLM / VLM / Diffusion 训练 |
-| `loongforge/loongforge` | `<version>_lerobot` | 包含 VLA 训练（Pi0.5 + GR00T）的 LeRobot 依赖 |
+| `loongforge/loongforge` | `<version>` | 统一镜像：支持 LLM / VLM / VLA / Diffusion 训练 |
 
 ```bash
 # 设置需要使用的版本 tag，例如：0.1.1
 LOONGFORGE_VERSION=<version>
 
-# 拉取基础镜像
+# 拉取镜像
 docker pull loongforge/loongforge:${LOONGFORGE_VERSION}
-
-# 拉取带 LeRobot 支持的镜像
-docker pull loongforge/loongforge:${LOONGFORGE_VERSION}_lerobot
 ```
 
 ### 运行容器
@@ -107,50 +104,13 @@ docker pull loongforge/loongforge:${LOONGFORGE_VERSION}_lerobot
 # 设置需要使用的版本 tag，例如：0.1.1
 LOONGFORGE_VERSION=<version>
 
-# 使用基础镜像（LLM/VLM/Diffusion）
 docker run --runtime=nvidia --gpus all -itd --rm \
   -v /path/to/your/hf/models:/mnt/cluster/huggingface.co/ \
   -v /path/to/data:/mnt/cluster/LoongForge/ \
   loongforge/loongforge:${LOONGFORGE_VERSION} /bin/bash
-
-# 使用 LeRobot 镜像（VLA: Pi0.5 + GR00T）
-docker run --runtime=nvidia --gpus all -itd --rm \
-  -v /path/to/your/hf/models:/mnt/cluster/huggingface.co/ \
-  -v /path/to/data:/mnt/cluster/LoongForge/ \
-  loongforge/loongforge:${LOONGFORGE_VERSION}_lerobot /bin/bash
 ```
 
 进入容器后，导航到 `/workspace/LoongForge/examples/` 并启动所需的训练脚本。
-对于 GR00T 训练，请先激活 GR00T 虚拟环境（参见下方双 Python 环境说明）。
-
-### LeRobot 镜像中的双 Python 环境
-
-LeRobot 镜像（`<version>_lerobot`）使用**双虚拟环境**方案解决 Pi0.5 和 GR00T 之间的依赖冲突：
-
-| 环境 | 路径 | 是否默认 | 用途 |
-|---|---|---|---|
-| 基础环境（Pi0.5） | 系统 Python | 是 | Pi0.5 VLA 训练 |
-| GR00T | `/opt/venvs/gr00t` | 否 | GR00T-N1.6 VLA 训练 |
-
-**在容器中激活 GR00T 环境：**
-
-```bash
-source /opt/venvs/gr00t/bin/activate
-# 或使用快捷命令：
-use-gr00t
-```
-
-**返回基础（Pi0.5）环境：**
-
-```bash
-deactivate
-```
-
-**分布式训练请使用虚拟环境内的 torchrun：**
-
-```bash
-/opt/venvs/gr00t/bin/torchrun ${DISTRIBUTED_ARGS[@]} ...
-```
 
 ---
 

@@ -28,22 +28,22 @@ git clone --recurse-submodules https://github.com/baidu-baige/LoongForge.git
 
 ```bash
 BASE_IMAGE=loongforge/loongforge_kunlun:py310_torch25
-ENABLE_LEROBOT=false
 DEFAULT_XPYTORCH_URL_ARG=https://baidu-kunlun-public.su.bcebos.com/baidu-kunlun-share/20260409/torch25/xpytorch-cp310-torch251-ubuntu2004-x64.run
 
 docker build  \
     --build-arg BASE_IMAGE=${BASE_IMAGE} \
-    --build-arg ENABLE_LEROBOT=${ENABLE_LEROBOT} \
     --build-arg XPYTORCH_URL_ARG="${DEFAULT_XPYTORCH_URL_ARG}" \
     -t LoongForge-kunlun:latest -f LoongForge/docker/Dockerfile.xpu .
     # 内部 conda 镜像：
     #-t LoongForge-kunlun:latest -f LoongForge/docker/Dockerfile.xpu.internal .
 ```
+
+> **说明**：所有模型系列（LLM / VLM / VLA / Diffusion）现在共用同一个 Docker 镜像。`ENABLE_LEROBOT` 构建参数已被移除 —— 构建镜像时不再区分 lerobot 与非 lerobot。
+
 - `BASE_IMAGE` 是用于构建的基础镜像。可选值包括：
   * `loongforge/loongforge_kunlun:py310_torch25`（默认）[Docker Hub 提供]
   * `iregistry.baidu-int.com/xmlir/xmlir_ubuntu_2004_x86_64:v0.33`[仅限内部使用]
 - `XPYTORCH_URL_ARG` 是 xpytorch 安装程序的 URL 参数。
-- `ENABLE_LEROBOT`：启用 VLA 模型训练（如 Pi0.5、GR00T）的 LeRobot 依赖。由于与基础环境存在依赖冲突，默认禁用。可选值：`true`、`false`（默认）。
 
 构建完成后，可验证镜像：
 
