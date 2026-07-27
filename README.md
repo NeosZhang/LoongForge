@@ -25,16 +25,9 @@
   &nbsp;·&nbsp;
   <a href="#models"><b>🏛️ Supported Models</b></a>
   &nbsp;·&nbsp;
+  <a href="#contact"><b>💬 Contact</b></a>
+  &nbsp;·&nbsp;
   <a href="https://github.com/baidu-baige/LoongForge/issues/74"><b>🚀 Roadmap</b></a>
-</p>
-
-<p align="center">
-
-[![Release](https://img.shields.io/github/v/release/baidu-baige/LoongForge?include_prereleases&label=release&color=blue)](https://github.com/baidu-baige/LoongForge/releases)
-[![License](https://img.shields.io/github/license/baidu-baige/LoongForge.svg?logo=github)](https://github.com/baidu-baige/LoongForge/blob/master/LICENSE)
-[![Slack](https://img.shields.io/badge/Slack-Join-4A154B.svg?logo=slack)](https://join.slack.com/t/baiduloongforge/shared_invite/zt-3ys3kaq2p-cmdw0nDoaHGOcKibgys5Yw)
-[![WeChat](https://img.shields.io/badge/WeChat-Join-07C160.svg?logo=wechat)](https://github.com/baidu-baige/LoongForge/issues/80#issue-4594463290)
-
 </p>
 
 </div>
