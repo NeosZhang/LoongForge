@@ -13,21 +13,19 @@
 <h4>一个统一、高性能的框架，用于训练 LLM、VLM、Diffusion 与 Embodied 模型。</h4>
 
 <p align="center">
-  <a href="https://baidu-baige.github.io/LoongForge/"><b>官网</b></a>
+  <a href="https://baidu-baige.github.io/LoongForge/"><b>🌐 官网</b></a>
   &nbsp;·&nbsp;
-  <a href="https://loongforge.readthedocs.io/zh-cn/latest/index.html"><b>文档</b></a>
+  <a href="https://loongforge.readthedocs.io/zh-cn/latest/index.html"><b>📖 文档</b></a>
   &nbsp;·&nbsp;
-  <a href="https://baidu-baige.github.io/LoongForge/blog/"><b>博客</b></a>
+  <a href="https://baidu-baige.github.io/LoongForge/blog/"><b>✍️ 博客</b></a>
   &nbsp;·&nbsp;
-  <a href="#quickstart"><b>快速开始</b></a>
+  <a href="#quickstart"><b>⚡ 快速开始</b></a>
   &nbsp;·&nbsp;
-  <a href="#performance"><b>性能表现</b></a>
+  <a href="#performance"><b>📊 性能表现</b></a>
   &nbsp;·&nbsp;
-  <a href="#models"><b>支持模型</b></a>
+  <a href="#models"><b>🏛️ 支持模型</b></a>
   &nbsp;·&nbsp;
-  <a href="#contact"><b>联系我们</b></a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/baidu-baige/LoongForge/issues/74"><b>路线图</b></a>
+  <a href="#contact"><b>💬 联系我们</b></a>
 </p>
 
 </div>
