@@ -41,9 +41,18 @@ A modular, scalable, and highly efficient training framework for language, multi
 
 .. toctree::
    :maxdepth: 1
-   :caption: VLA Training
+   :caption: Embodied Training
 
-   vla_tutorial/quick_start_pi05_training
+   embodied_tutorial/overview
+   embodied_tutorial/quick_start_pi05
+   embodied_tutorial/quick_start_groot_n1_6
+   embodied_tutorial/quick_start_groot_n1_7
+   embodied_tutorial/quick_start_lingbot_va
+   embodied_tutorial/quick_start_xvla
+   embodied_tutorial/quick_start_dreamzero
+   embodied_tutorial/quick_start_fastwam
+   embodied_tutorial/quick_start_cosmos3
+   embodied_tutorial/eval_user_guide
 
 .. toctree::
    :maxdepth: 1
@@ -61,7 +70,6 @@ A modular, scalable, and highly efficient training framework for language, multi
    kunlun_tutorial/quick_start_llm_pretrain_p800
    kunlun_tutorial/quick_start_llm_sft_p800
    kunlun_tutorial/quick_start_vlm_p800
-   kunlun_tutorial/quick_start_vla_p800
 
 .. toctree::
    :maxdepth: 1

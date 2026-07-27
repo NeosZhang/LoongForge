@@ -104,30 +104,17 @@ Resolution flow: `--model-name` routes through `config_map.py` to the model's YA
 
 ## Quick Start
 
-Training is launched with `torchrun` against `loongforge/embodied/train.py`. The generic shape is:
+For the full framework user guide, see [User Manual](../../docs/source/embodied_tutorial/overview.md). Model-specific quick starts:
 
-```bash
-export LOONGFORGE_PATH=/workspace/LoongForge
-
-PYTHONPATH=$LOONGFORGE_PATH:$PYTHONPATH \
-  torchrun --nproc_per_node 8 --nnodes 1 \
-    $LOONGFORGE_PATH/loongforge/embodied/train.py \
-    --model-name pi05 \
-    --trainer-type FinetuneTrainer \
-    --dataset-format lerobot_datasets \
-    --distributed-strategy fsdp \
-    --train-iters 30000 \
-    ...
-```
-
-Different models have different data-format support, processing pipelines, and performance-optimization configs, so the exact runnable command differs per model. See the example scripts under `examples/embodied/` and the user guide for details:
-
-```bash
-bash examples/embodied/pi05/run_pi05_fsdp_finetune.sh       # also: ddp / ddp_zero1 variants
-bash examples/embodied/groot_n1_6/run_groot_n1_6_ddp_finetune.sh
-...
-```
+- [π0.5 (pi05)](../../docs/source/embodied_tutorial/quick_start_pi05.md)
+- [GR00T-N1.6](../../docs/source/embodied_tutorial/quick_start_groot_n1_6.md)
+- [GR00T-N1.7](../../docs/source/embodied_tutorial/quick_start_groot_n1_7.md)
+- [FastWAM](../../docs/source/embodied_tutorial/quick_start_fastwam.md)
+- [DreamZero](../../docs/source/embodied_tutorial/quick_start_dreamzero.md)
+- [Cosmos3](../../docs/source/embodied_tutorial/quick_start_cosmos3.md)
+- [xVLA](../../docs/source/embodied_tutorial/quick_start_xvla.md)
+- [Lingbot-VA](../../docs/source/embodied_tutorial/quick_start_lingbot_va.md)
 
 ## Evaluation
 
-Offline benchmark evaluation (LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill) is a separate module. See [`eval/README.md`](eval/README.md).
+Offline benchmark evaluation (LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill) is a separate module. See [Eval User Guide](../../docs/source/embodied_tutorial/eval_user_guide.md).

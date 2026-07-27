@@ -43,9 +43,18 @@ LoongForge 中文文档
 
 .. toctree::
    :maxdepth: 1
-   :caption: VLA 训练
+   :caption: Embodied 训练
 
-   vla_tutorial/quick_start_pi05_training
+   embodied_tutorial/overview.md
+   embodied_tutorial/quick_start_pi05.md
+   embodied_tutorial/quick_start_groot_n1_6.md
+   embodied_tutorial/quick_start_groot_n1_7.md
+   embodied_tutorial/quick_start_lingbot_va.md
+   embodied_tutorial/quick_start_xvla.md
+   embodied_tutorial/quick_start_dreamzero.md
+   embodied_tutorial/quick_start_fastwam.md
+   embodied_tutorial/quick_start_cosmos3.md
+   embodied_tutorial/eval_user_guide.md
 
 .. toctree::
    :maxdepth: 1
@@ -63,7 +72,6 @@ LoongForge 中文文档
    kunlun_tutorial/quick_start_llm_pretrain_p800
    kunlun_tutorial/quick_start_llm_sft_p800
    kunlun_tutorial/quick_start_vlm_p800
-   kunlun_tutorial/quick_start_vla_p800
 
 .. toctree::
    :maxdepth: 1
