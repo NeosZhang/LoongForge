@@ -102,30 +102,17 @@ loongforge/embodied/
 
 ## 快速开始
 
-训练通过 `torchrun` 启动 `loongforge/embodied/train.py`，通用形态如下：
+完整的框架使用说明请参阅 [用户手册](../../docs/source_zh/embodied_tutorial/overview.md)，各模型的快速入门：
 
-```bash
-export LOONGFORGE_PATH=/workspace/LoongForge
-
-PYTHONPATH=$LOONGFORGE_PATH:$PYTHONPATH \
-  torchrun --nproc_per_node 8 --nnodes 1 \
-    $LOONGFORGE_PATH/loongforge/embodied/train.py \
-    --model-name pi05 \
-    --trainer-type FinetuneTrainer \
-    --dataset-format lerobot_datasets \
-    --distributed-strategy fsdp \
-    --train-iters 30000 \
-    ...
-```
-
-不同模型在数据格式支持、处理流程、性能优化配置等方面各有差异，因此真正可运行的命令因模型而异。详细请参考 `examples/embodied/` 下的示例脚本及用户手册说明：
-
-```bash
-bash examples/embodied/pi05/run_pi05_fsdp_finetune.sh       # 另有 ddp / ddp_zero1 变体
-bash examples/embodied/groot_n1_6/run_groot_n1_6_ddp_finetune.sh
-...
-```
+- [π0.5 (pi05)](../../docs/source_zh/embodied_tutorial/quick_start_pi05.md)
+- [GR00T-N1.6](../../docs/source_zh/embodied_tutorial/quick_start_groot_n1_6.md)
+- [GR00T-N1.7](../../docs/source_zh/embodied_tutorial/quick_start_groot_n1_7.md)
+- [FastWAM](../../docs/source_zh/embodied_tutorial/quick_start_fastwam.md)
+- [DreamZero](../../docs/source_zh/embodied_tutorial/quick_start_dreamzero.md)
+- [Cosmos3](../../docs/source_zh/embodied_tutorial/quick_start_cosmos3.md)
+- [xVLA](../../docs/source_zh/embodied_tutorial/quick_start_xvla.md)
+- [Lingbot-VA](../../docs/source_zh/embodied_tutorial/quick_start_lingbot_va.md)
 
 ## 评测
 
-离线 benchmark 评测（LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill）是一个独立模块，详见 [`eval/README.md`](eval/README.md)。
+离线 benchmark 评测（LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill）是一个独立模块，详见 [评测用户指南](../../docs/source_zh/embodied_tutorial/eval_user_guide.md)。
