@@ -28,22 +28,24 @@ Then build the image:
 
 ```bash
 BASE_IMAGE=loongforge/loongforge_kunlun:py310_torch25
-ENABLE_LEROBOT=false
 DEFAULT_XPYTORCH_URL_ARG=https://baidu-kunlun-public.su.bcebos.com/baidu-kunlun-share/20260409/torch25/xpytorch-cp310-torch251-ubuntu2004-x64.run
 
 docker build  \
     --build-arg BASE_IMAGE=${BASE_IMAGE} \
-    --build-arg ENABLE_LEROBOT=${ENABLE_LEROBOT} \
     --build-arg XPYTORCH_URL_ARG="${DEFAULT_XPYTORCH_URL_ARG}" \
     -t LoongForge-kunlun:latest -f LoongForge/docker/Dockerfile.xpu .
     # For internal conda image:
     #-t LoongForge-kunlun:latest -f LoongForge/docker/Dockerfile.xpu.internal .
 ```
+
+> **Note:** All model families (LLM / VLM / VLA / Diffusion) now share a single
+> Docker image. The `ENABLE_LEROBOT` build argument has been removed — there is
+> no longer a lerobot / non-lerobot distinction when building images.
+
 - `BASE_IMAGE` is the base image used for building. Options include:
   * `loongforge/loongforge_kunlun:py310_torch25` (default) [available at Docker Hub]
   * `iregistry.baidu-int.com/xmlir/xmlir_ubuntu_2004_x86_64:v0.33` [internal use only]
 - `XPYTORCH_URL_ARG` is the xpytorch installer url argument.
-- `ENABLE_LEROBOT`: enable LeRobot dependencies for VLA model training (e.g., Pi0.5, GR00T). Disabled by default due to dependency conflicts with the base environment. Options: `true`, `false` (default).
 After building, you can verify the image:
 
 ```bash

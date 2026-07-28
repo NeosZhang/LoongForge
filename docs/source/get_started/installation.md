@@ -68,14 +68,18 @@ git clone --recurse-submodules https://github.com/baidu-baige/LoongForge.git
 Then build the image:
 
 ```bash
-docker build --build-arg COMPILE_ENV=hopper --build-arg ENABLE_LEROBOT=false \
+docker build --build-arg COMPILE_ENV=hopper \
   -t loongforge:latest -f ./LoongForge/docker/Dockerfile .
 ```
+
+> **Note:** All model families (LLM / VLM / VLA / Diffusion) now share a single
+> Docker image. The `ENABLE_LEROBOT` build argument and the separate `_lerobot`
+> image variant have been removed — there is no longer a lerobot / non-lerobot
+> distinction when building or pulling images.
 
 | Build Arg | Description | Options |
 |---|---|---|
 | `COMPILE_ENV` | Target GPU architecture | `ampere`, `hopper`|
-| `ENABLE_LEROBOT` | Enable LeRobot dependencies for VLA model training (e.g., Pi0.5, GR00T). Disabled by default due to dependency conflicts with the base environment. | `true`, `false` |
 
 After the build finishes, verify:
 
@@ -91,23 +95,19 @@ LoongForge Docker images are available on Docker Hub:
 [https://hub.docker.com/u/loongforge](https://hub.docker.com/u/loongforge).
 
 LoongForge publishes versioned pre-built Docker images. Select the desired tag
-from Docker Hub. LeRobot images use the same version tag with a `_lerobot` suffix
-when available.
+from Docker Hub. A single image covers all model families (LLM / VLM / VLA /
+Diffusion) — there is no longer a separate `_lerobot` variant.
 
 | Image | Tag Pattern | Description |
 |---|---|---|
-| `loongforge/loongforge` | `<version>` | Base image: LLM / VLM / Diffusion training only |
-| `loongforge/loongforge` | `<version>_lerobot` | Includes LeRobot dependencies for VLA training (Pi0.5 + GR00T) |
+| `loongforge/loongforge` | `<version>` | Unified image: LLM / VLM / VLA / Diffusion training |
 
 ```bash
 # Set the version tag you want to use, for example: 0.1.1
 LOONGFORGE_VERSION=<version>
 
-# Pull the base image
+# Pull the image
 docker pull loongforge/loongforge:${LOONGFORGE_VERSION}
-
-# Pull the image with LeRobot support
-docker pull loongforge/loongforge:${LOONGFORGE_VERSION}_lerobot
 ```
 
 ### Run the container
@@ -116,52 +116,14 @@ docker pull loongforge/loongforge:${LOONGFORGE_VERSION}_lerobot
 # Set the version tag you want to use, for example: 0.1.1
 LOONGFORGE_VERSION=<version>
 
-# Using the base image (LLM/VLM/Diffusion)
 docker run --runtime=nvidia --gpus all -itd --rm \
   -v /path/to/your/hf/models:/mnt/cluster/huggingface.co/ \
   -v /path/to/data:/mnt/cluster/LoongForge/ \
   loongforge/loongforge:${LOONGFORGE_VERSION} /bin/bash
-
-# Using the LeRobot image (VLA: Pi0.5 + GR00T)
-docker run --runtime=nvidia --gpus all -itd --rm \
-  -v /path/to/your/hf/models:/mnt/cluster/huggingface.co/ \
-  -v /path/to/data:/mnt/cluster/LoongForge/ \
-  loongforge/loongforge:${LOONGFORGE_VERSION}_lerobot /bin/bash
 ```
 
 Once inside the container, navigate to `/workspace/LoongForge/examples/` and
-launch the desired training script. For GR00T training, remember to activate
-the GR00T virtual environment first (see Dual Python Environment below).
-
-### Dual Python Environment in the LeRobot Image
-
-The LeRobot image (`<version>_lerobot`) uses a **dual virtual-environment** setup to resolve
-dependency conflicts between Pi0.5 and GR00T:
-
-| Environment | Path | Default? | Use Case |
-|---|---|---|---|
-| Base (Pi0.5) | System Python | Yes | Pi0.5 VLA training |
-| GR00T | `/opt/venvs/gr00t` | No | GR00T-N1.6 VLA training |
-
-**To activate the GR00T environment inside the container:**
-
-```bash
-source /opt/venvs/gr00t/bin/activate
-# or use the convenience alias:
-use-gr00t
-```
-
-**To return to the base (Pi0.5) environment:**
-
-```bash
-deactivate
-```
-
-**For distributed training, use the venv's torchrun:**
-
-```bash
-/opt/venvs/gr00t/bin/torchrun ${DISTRIBUTED_ARGS[@]} ...
-```
+launch the desired training script.
 
 ---
 
