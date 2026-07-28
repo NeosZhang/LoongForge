@@ -83,15 +83,20 @@ class RMSNorm(nn.Module):
         shape = (dim, *broadcastable_dims) if channel_first else (dim,)
 
         self.channel_first = channel_first
-        self.scale = dim**0.5
+        self.eps = 1e-12
         self.gamma = nn.Parameter(torch.ones(shape))
         self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.
 
     def forward(self, x):
         """Normalize input tensor and apply scale and bias parameters."""
-        return F.normalize(
-            x, dim=(1 if self.channel_first else
-                    -1)) * self.scale * self.gamma + self.bias
+        weight = self.gamma.reshape(-1)
+        if self.channel_first:
+            # Move channels to the last axis so F.rms_norm can use the fused kernel.
+            x = F.rms_norm(x.movedim(1, -1), weight.shape, weight=weight, eps=self.eps)
+            x = x.movedim(-1, 1)
+        else:
+            x = F.rms_norm(x, weight.shape, weight=weight, eps=self.eps)
+        return x + self.bias
 
 
 class Upsample(nn.Upsample):
