@@ -4,13 +4,13 @@
     <linearGradient id="lf-icon" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%"   stop-color="#6366F1"/>
       <stop offset="55%"  stop-color="#8B5CF6"/>
-      <stop offset="100%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#F472B6"/>
     </linearGradient>
-    <!-- Text gradient tuned for dark background: lighter shades -->
+    <!-- Text gradient tuned for dark background: matches site .dark .text-gradient -->
     <linearGradient id="lf-text" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%"   stop-color="#A5B4FC"/>
-      <stop offset="55%"  stop-color="#C4B5FD"/>
-      <stop offset="100%" stop-color="#FCD34D"/>
+      <stop offset="50%"  stop-color="#FDE68A"/>
+      <stop offset="100%" stop-color="#F472B6"/>
     </linearGradient>
   </defs>
 
