@@ -5,9 +5,6 @@ FROM ${BASE_IMAGE}
 # Build Arguments
 # =========================================================
 ARG COMPILE_ENV="hopper"
-# LeRobot has dependency conflicts with the base environment; disabled by default.
-# Enable only when training VLA models (e.g., Pi0.5, GR00T).
-ARG ENABLE_LEROBOT="false"
 
 # =========================================================
 # Environment Variables
@@ -31,7 +28,8 @@ RUN set -exuo pipefail && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata && \
     ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
     apt-get install -y bc tree pwgen nodejs iproute2 && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get install -y ffmpeg=7:6.1.1-3ubuntu5
 
 # ======================== Install Base Requirements ========================
 RUN set -exuo pipefail && \
@@ -157,6 +155,9 @@ RUN set -exuo pipefail && \
     }; \
     install_lerobot() { \
         echo "Installing Lerobot..." && \
+        pip install "dmuon @ git+https://github.com/X-Square-Robot/dmuon.git" && \
+        cd /workspace/LoongForge/ && \
+        uv pip install --no-config --system --break-system-packages --no-cache -e ".[vla]" && \
         cd /workspace && \
         if [ -d "lerobot" ]; then \
             rm -rf lerobot; \
@@ -167,14 +168,12 @@ RUN set -exuo pipefail && \
             sed -i '/evdev/d' requirements-ubuntu.txt; \
         fi && \
         pip install --no-build-isolation ".[pi]" && \
+        pip install "numpy==1.26.4" && \
+        pip install "scipy==1.15.3" && \
         echo "Lerobot installation completed"; \
     }; \
     install_transformer_engine && \
-    if [ "$ENABLE_LEROBOT" = "true" ]; then \
-        install_lerobot; \
-    else \
-        echo "Skipping lerobot installation (ENABLE_LEROBOT=${ENABLE_LEROBOT})"; \
-    fi
+    install_lerobot
 
 
 # =========================================================
