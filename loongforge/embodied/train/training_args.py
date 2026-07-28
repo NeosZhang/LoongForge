@@ -49,15 +49,6 @@ _FSDP_DTYPE_BY_NAME = {
 # ---------------------------------------------------------------------------
 
 
-def parse_bool(value: str) -> bool:
-    """Parse bool from CLI text: true|false|1|0|yes|no."""
-    if value.strip().lower() in {"true", "t", "1", "yes"}:
-        return True
-    if value.strip().lower() in {"false", "f", "0", "no"}:
-        return False
-    raise argparse.ArgumentTypeError(f"Expected true/false, got: {value!r}")
-
-
 def parse_reshard_after_forward(value: str):
     """Parse FSDP2 reshard_after_forward from CLI text: true|false|none|int>1."""
     normalized = value.strip().lower()
@@ -667,13 +658,12 @@ class _DataArgs:
         },
     )
     batch_drop_last: bool = field(
-        default=True,
+        default=False,
         metadata={
-            "cli_type": parse_bool,
             "help": (
                 "If True, drop the last incomplete batch so every rank sees the same "
                 "number of full-size batches. Applied to both sampler and DataLoader. "
-                "Default True preserves training stability."
+                "Default False preserves all samples."
             ),
         },
     )
