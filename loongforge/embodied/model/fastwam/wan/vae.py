@@ -76,7 +76,7 @@ class CausalConv3d(nn.Conv3d):
 class RMSNorm(nn.Module):
     """Root mean square normalization supporting channel-first tensors."""
 
-    def __init__(self, dim, channel_first=True, images=True):
+    def __init__(self, dim, channel_first=True, images=True, bias=False):
         """Initialize learnable RMS normalization parameters."""
         super().__init__()
         broadcastable_dims = (1, 1, 1) if not images else (1, 1)
@@ -85,15 +85,18 @@ class RMSNorm(nn.Module):
         self.channel_first = channel_first
         self.eps = 1e-12
         self.gamma = nn.Parameter(torch.ones(shape))
+        self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.
 
     def forward(self, x):
-        """Normalize input tensor and apply scale parameters."""
+        """Normalize input tensor and apply scale and bias parameters."""
         weight = self.gamma.reshape(-1)
         if self.channel_first:
             # Move channels to the last axis so F.rms_norm can use the fused kernel.
             x = F.rms_norm(x.movedim(1, -1), weight.shape, weight=weight, eps=self.eps)
-            return x.movedim(-1, 1)
-        return F.rms_norm(x, weight.shape, weight=weight, eps=self.eps)
+            x = x.movedim(-1, 1)
+        else:
+            x = F.rms_norm(x, weight.shape, weight=weight, eps=self.eps)
+        return x + self.bias
 
 
 class Upsample(nn.Upsample):
