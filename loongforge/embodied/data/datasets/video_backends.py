@@ -114,6 +114,14 @@ def _decode_pyav(video_path, timestamps=None):
     import av
     container = av.open(str(video_path))
     stream = container.streams.video[0]
+    # Single-threaded decode. CPU parallelism here is owned by --num-workers;
+    # libav slice threading would be a second knob over the same cores, and the
+    # two multiply (num_workers * world_size * threads-per-core). It is also the
+    # worse knob for this access pattern (many small independent seek-and-grab
+    # decodes): processes scale near-linearly, slice threading gives ~1.6x at
+    # best, and thread_count=0 ("auto") pays a per-core thread-pool setup on
+    # every av.open that a few decoded frames never amortize.
+    stream.thread_count = 1
     first_ts = min(timestamps)
     last_ts = max(timestamps)
     seek_pts = int(first_ts / stream.time_base)
