@@ -27,7 +27,7 @@ ROWS = [
     ("GR00T N1.6",         "VLA",       "LeRobot",     "GBS 96 · 224×224",               2.31, "",  "master · 2026-07"),
     ("Pi 0.5",             "VLA",       "OpenPI",      "GBS 96 · 224×224×2",             2.23, "",  "master · 2026-07"),
     ("LingBot VA",         "WAM",       "LingBot-VA",  "LIBERO",                         1.80, "",  "master · 2026-07"),
-    ("X-VLA",              "VLA",       "X-VLA",       "GBS 288",                        1.60, "",  "master · 2026-07"),
+    ("X-VLA",              "VLA",       "X-VLA",       "GBS 288",                        1.69, "",  "master · 2026-07"),
     ("DeepSeek-V3.2 Lite", "MoE + DSA", "Megatron-LM", "Reduced layers · GBS 128 · 8K",  5.04, "§", "v0.1.1"),
     ("Qwen3-VL-30B-A3B",   "VLM",       "VeOmni",      "GBS 128 · 32K",                  1.45, "",  "v0.1.1"),
     ("Qwen3-30B-A3B",      "MoE",       "Megatron-LM", "GBS 1024 · 32K",                 1.16, "",  "v0.1.1"),
