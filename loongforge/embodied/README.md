@@ -1,21 +1,49 @@
 # LoongForge-Embodied — Embodied Model Training Subsystem
 
-`loongforge/embodied/` is a **self-contained training subsystem for embodied foundation models**: Vision-Language-Action (VLA) policies (e.g. pi0.5) and world-action models (WAM, e.g. FastWAM). It lives inside the LoongForge monorepo alongside the Megatron-based LLM / VLM / Diffusion stacks, but is built on a torch-native DDP/FSDP engine instead.
+`loongforge/embodied/` is a **torch-native training subsystem for embodied models** — Vision-Language-Action (VLA) policies and world-action models (WAM) — combining broad open-source model support with production-grade training performance.
+
+- **Torch-native architecture** — built on vanilla PyTorch around unified `data`, `model`, and `trainer` abstractions that can be flexibly reused or extended.
+- **Extensive open-source model support** — π0.5, GR00T-N1.6 / N1.7, xVLA, Lingbot-VA, FastWAM, DreamZero, Cosmos3, and more — each supports fine-tuning, with accuracy aligned to the official baselines.
+- **High training throughput** — up to 2x+ throughput on representative models through `torch.compile`, CUDA Graph, custom kernels, and I/O optimization, plus a full range of distributed strategies: DDP, ZeRO-1, FSDP, and HSDP.
 
 ---
 
 ## Why a Separate Subsystem?
 
-Compared with typical large models, embodied models are far smaller (generally under 10B) — a typical VLA is a VLM plus an action head. Their bottleneck is data plumbing and iteration speed, not model parameter scale — so Megatron's TP/PP/EP model parallelism does little here and only adds complexity.
+Embodied models are far smaller than typical LLMs (generally under 10B) — a VLA is essentially a VLM plus an action head — so their bottleneck is not model parameter scale. Megatron's TP/PP/EP model parallelism brings little benefit at this scale.
 
-This subsystem is therefore built on **plain PyTorch DDP/FSDP**, with its own configuration, trainer, data, distributed, and evaluation layers. It shares LoongForge's repository, release, and tooling — but not the Megatron core engine. The two stacks are intentionally decoupled (no shared args/parser/core) so each evolves on its own terms:
+The subsystem is therefore built on a **torch-native DDP/FSDP** engine with its own configuration, trainer, data, distributed, and evaluation layers. It shares LoongForge's repository, release, and tooling, but stays intentionally decoupled from the Megatron core (no shared args / parser / core) so each stack evolves on its own terms. The core abstractions below all follow from that choice.
 
-| Axis | LoongForge core (LLM / VLM / Diffusion) | LoongForge-Embodied |
-|------|------------------------------------------|---------------------|
-| Compute / distributed | Megatron-LM — TP / PP / EP / CP / FSDP | torch-native DDP / FSDP |
-| Workload | large-scale, model-parallel pretrain/SFT | small-to-mid, data-parallel SFT |
+---
 
-The core abstractions below all follow from that choice.
+## Quick Start
+
+For the full framework user guide, see [User Manual](../../docs/source/embodied_tutorial/overview.md). Model-specific quick starts:
+
+- [π0.5 (pi05)](../../docs/source/embodied_tutorial/quick_start_pi05.md)
+- [GR00T-N1.6](../../docs/source/embodied_tutorial/quick_start_groot_n1_6.md)
+- [GR00T-N1.7](../../docs/source/embodied_tutorial/quick_start_groot_n1_7.md)
+- [FastWAM](../../docs/source/embodied_tutorial/quick_start_fastwam.md)
+- [DreamZero](../../docs/source/embodied_tutorial/quick_start_dreamzero.md)
+- [Cosmos3](../../docs/source/embodied_tutorial/quick_start_cosmos3.md)
+- [xVLA](../../docs/source/embodied_tutorial/quick_start_xvla.md)
+- [Lingbot-VA](../../docs/source/embodied_tutorial/quick_start_lingbot_va.md)
+
+---
+
+## Performance
+
+Training speedups over mainstream open-source baselines. Performance is still under active optimization, and these numbers will keep improving over time:
+
+| Model | Type | Baseline | Speedup |
+|---|---|---|---|
+| DreamZero (DROID Wan2.2-5B Full) | WAM | DreamZero | **2.67×** |
+| GR00T-N1.6 | VLA | LeRobot | **2.31×** |
+| π0.5 | VLA | OpenPI | **2.23×** |
+| Lingbot-VA | WAM | LingBot-VA | **1.80×** |
+| xVLA | VLA | X-VLA | **1.6×** |
+
+Numbers reflect the baseline and LoongForge versions at measurement time and may evolve as implementations change. See the [root README](../../README.md#-performance) for the full benchmark chart across all model families.
 
 ---
 
@@ -58,11 +86,11 @@ loongforge/embodied/
 
 The entry point `train.py` is self-explanatory (parse configs → build trainer → train), so we skip it. The real core is the four abstractions below.
 
-### 1. Model networking (`model/`)
+### 1. Model definition (`model/`)
 
 One directory per model, registered into a single entry via `@register_model`:
 
-- `modeling_<name>.py` — networking, forward, loss;
+- `modeling_<name>.py` — architecture, forward, loss;
 - `model_configuration_<name>.py` — model config dataclass (architecture hyperparams);
 - exposes a uniform interface upward (trainer / eval), so adding a model requires no change to the training loop.
 
@@ -101,19 +129,6 @@ Resolution flow: `--model-name` routes through `config_map.py` to the model's YA
 5. Add a launch script under `examples/`.
 
 ---
-
-## Quick Start
-
-For the full framework user guide, see [User Manual](../../docs/source/embodied_tutorial/overview.md). Model-specific quick starts:
-
-- [π0.5 (pi05)](../../docs/source/embodied_tutorial/quick_start_pi05.md)
-- [GR00T-N1.6](../../docs/source/embodied_tutorial/quick_start_groot_n1_6.md)
-- [GR00T-N1.7](../../docs/source/embodied_tutorial/quick_start_groot_n1_7.md)
-- [FastWAM](../../docs/source/embodied_tutorial/quick_start_fastwam.md)
-- [DreamZero](../../docs/source/embodied_tutorial/quick_start_dreamzero.md)
-- [Cosmos3](../../docs/source/embodied_tutorial/quick_start_cosmos3.md)
-- [xVLA](../../docs/source/embodied_tutorial/quick_start_xvla.md)
-- [Lingbot-VA](../../docs/source/embodied_tutorial/quick_start_lingbot_va.md)
 
 ## Evaluation
 

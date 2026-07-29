@@ -1,21 +1,49 @@
 # LoongForge-Embodied —— 具身模型训练子系统
 
-`loongforge/embodied/` 是 LoongForge 主仓库内一个**自成体系的具身基础模型训练子系统**，既涵盖视觉-语言-动作（VLA）策略模型（如 pi0.5），也涵盖世界-动作模型（WAM，如 FastWAM）。它与基于 Megatron 的 LLM / VLM / Diffusion 栈并列存在，但底层构建在 torch 原生的 DDP / FSDP 之上。
+`loongforge/embodied/` 是一个 **torch 原生的具身模型训练子系统**——涵盖视觉-语言-动作（VLA）策略模型与世界-动作模型（WAM）——在广泛的开源模型支持之上，兼顾生产级的训练性能。
+
+- **Torch 原生架构**：完全基于原生 PyTorch，构建了统一的 `data`、`model`、`trainer` 抽象，可灵活复用或扩展。
+- **广泛的开源模型支持**：π0.5、GR00T-N1.6 / N1.7、xVLA、Lingbot-VA、FastWAM、DreamZero、Cosmos3 等均支持微调，且精度与官方 baseline 对齐。
+- **高训练吞吐**：典型模型最高可达 2x+ 吞吐提升，集成 `torch.compile`、CUDA Graph、自定义 kernel 与 I/O 优化，并支持 DDP、ZeRO-1、FSDP、HSDP 等多种分布式策略。
 
 ---
 
 ## 为什么单独拆成一个子系统？
 
-与典型大模型相比，具身模型参数量小得多（通常在 10B 以内），典型的 VLA 多为一个 VLM 叠加一个动作头。其瓶颈在于数据管道与迭代速度，而非模型参数规模——因此 Megatron 的 TP/PP/EP 模型并行在这里作用有限，反而徒增复杂度。
+与典型大模型相比，具身模型参数量小得多（通常在 10B 以内），典型的 VLA 多为一个 VLM 叠加一个动作头，其瓶颈不在于模型参数规模。因此 Megatron 的 TP/PP/EP 模型并行在这个规模下收益有限。
 
-基于这一判断，该子系统直接构建在**原生 PyTorch 的 DDP/FSDP** 之上，拥有独立的配置、训练器、数据、分布式与评测层。它共享 LoongForge 的代码仓库、发布流程与工具链，但不共享 Megatron 核心引擎；两套栈刻意保持**解耦**（不共享 args/parser/core），从而各自独立演进：
+基于这一判断，该子系统构建在**原生 PyTorch 的 DDP/FSDP** 引擎之上，拥有独立的配置、训练器、数据、分布式与评测层。它共享 LoongForge 的代码仓库、发布流程与工具链，但与 Megatron 核心刻意保持解耦（不共享 args / parser / core），从而两套栈各自独立演进。下文的核心抽象，都是这个选择的自然结果。
 
-| 维度 | LoongForge 核心（LLM / VLM / Diffusion） | LoongForge-Embodied |
-|------|------------------------------------------|---------------------|
-| 计算 / 分布式 | Megatron-LM —— TP / PP / EP / CP / FSDP | torch-native DDP / FSDP |
-| 负载 | 大规模、模型并行的预训练/SFT | 中小规模、数据并行的 SFT |
+---
 
-下文的核心抽象，都是这个选择的自然结果。
+## 快速开始
+
+完整的框架使用说明请参阅 [用户手册](../../docs/source_zh/embodied_tutorial/overview.md)，各模型的快速入门：
+
+- [π0.5 (pi05)](../../docs/source_zh/embodied_tutorial/quick_start_pi05.md)
+- [GR00T-N1.6](../../docs/source_zh/embodied_tutorial/quick_start_groot_n1_6.md)
+- [GR00T-N1.7](../../docs/source_zh/embodied_tutorial/quick_start_groot_n1_7.md)
+- [FastWAM](../../docs/source_zh/embodied_tutorial/quick_start_fastwam.md)
+- [DreamZero](../../docs/source_zh/embodied_tutorial/quick_start_dreamzero.md)
+- [Cosmos3](../../docs/source_zh/embodied_tutorial/quick_start_cosmos3.md)
+- [xVLA](../../docs/source_zh/embodied_tutorial/quick_start_xvla.md)
+- [Lingbot-VA](../../docs/source_zh/embodied_tutorial/quick_start_lingbot_va.md)
+
+---
+
+## 性能
+
+相较主流开源 baseline 的训练加速比（性能仍在积极优化中，这些数字后续还会持续提升）：
+
+| 模型 | 类型 | Baseline | 加速比 |
+|---|---|---|---|
+| DreamZero (DROID Wan2.2-5B Full) | WAM | DreamZero | **2.67×** |
+| GR00T-N1.6 | VLA | LeRobot | **2.31×** |
+| π0.5 | VLA | OpenPI | **2.23×** |
+| Lingbot-VA | WAM | LingBot-VA | **1.80×** |
+| xVLA | VLA | X-VLA | **1.6×** |
+
+数据反映测量时刻的 baseline 与 LoongForge 版本，可能随实现演进而变化。跨所有模型族的完整基准图表见 [根 README](../../README_zh.md#-性能表现)。
 
 ---
 
@@ -56,11 +84,13 @@ loongforge/embodied/
 
 ## 核心抽象
 
-### 1. 模型组网（`model/`）
+入口 `train.py` 本身一目了然（解析配置 → 构建训练器 → 训练），此处略过，真正的核心是下面四个抽象。
+
+### 1. 模型定义（`model/`）
 
 每个模型一个目录，通过 `@register_model` 注册到统一入口：
 
-- `modeling_<name>.py` —— 组网、前向、损失计算；
+- `modeling_<name>.py` —— 架构、前向、损失计算；
 - `model_configuration_<name>.py` —— 模型配置数据类（架构超参）；
 - 对上层（Trainer / 评测）暴露统一接口，新增模型无需改训练循环。
 
@@ -99,19 +129,6 @@ loongforge/embodied/
 5. 在 `examples/` 下添加启动脚本。
 
 ---
-
-## 快速开始
-
-完整的框架使用说明请参阅 [用户手册](../../docs/source_zh/embodied_tutorial/overview.md)，各模型的快速入门：
-
-- [π0.5 (pi05)](../../docs/source_zh/embodied_tutorial/quick_start_pi05.md)
-- [GR00T-N1.6](../../docs/source_zh/embodied_tutorial/quick_start_groot_n1_6.md)
-- [GR00T-N1.7](../../docs/source_zh/embodied_tutorial/quick_start_groot_n1_7.md)
-- [FastWAM](../../docs/source_zh/embodied_tutorial/quick_start_fastwam.md)
-- [DreamZero](../../docs/source_zh/embodied_tutorial/quick_start_dreamzero.md)
-- [Cosmos3](../../docs/source_zh/embodied_tutorial/quick_start_cosmos3.md)
-- [xVLA](../../docs/source_zh/embodied_tutorial/quick_start_xvla.md)
-- [Lingbot-VA](../../docs/source_zh/embodied_tutorial/quick_start_lingbot_va.md)
 
 ## 评测
 
