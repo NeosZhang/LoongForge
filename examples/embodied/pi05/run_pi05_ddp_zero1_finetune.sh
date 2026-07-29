@@ -52,6 +52,7 @@ DATA_ARGS=(
     --tokenizer-path $TOKENIZER_PATH
     --robot-type libero_franka
     --num-workers 16
+    --batch-drop-last
 )
 
 # ── Training params (aligned with examples/pi05/finetuning/sft_pi05.sh) ──
