@@ -114,7 +114,7 @@
 | GR00T N1.6 | VLA | LeRobot | **2.31×** | master · 2026-07 |
 | Pi0.5 | VLA | OpenPI | **2.23×** | master · 2026-07 |
 | LingBot VA | WAM | LingBot-VA | **1.80×** | master · 2026-07 |
-| X-VLA | VLA | X-VLA | **1.6×** | master · 2026-07 |
+| X-VLA | VLA | X-VLA | **1.69×** | master · 2026-07 |
 | DeepSeek-V3.2 Lite <sup>§</sup> | MoE + DSA | Megatron-LM | **5.04×** | v0.1.1 |
 | Qwen3-VL-30B-A3B | VLM | VeOmni | **1.45×** | v0.1.1 |
 | Qwen3-30B-A3B | MoE | Megatron-LM | **1.16×** | v0.1.1 |
