@@ -41,7 +41,7 @@
 | GR00T-N1.6 | VLA | LeRobot | **2.31×** |
 | π0.5 | VLA | OpenPI | **2.23×** |
 | Lingbot-VA | WAM | LingBot-VA | **1.80×** |
-| xVLA | VLA | X-VLA | **1.6×** |
+| xVLA | VLA | X-VLA | **1.69×** |
 
 数据反映测量时刻的 baseline 与 LoongForge 版本，可能随实现演进而变化。跨所有模型族的完整基准图表见 [根 README](../../README_zh.md#-性能表现)。
 

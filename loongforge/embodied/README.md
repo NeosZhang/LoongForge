@@ -41,7 +41,7 @@ Training speedups over mainstream open-source baselines. Performance is still un
 | GR00T-N1.6 | VLA | LeRobot | **2.31×** |
 | π0.5 | VLA | OpenPI | **2.23×** |
 | Lingbot-VA | WAM | LingBot-VA | **1.80×** |
-| xVLA | VLA | X-VLA | **1.6×** |
+| xVLA | VLA | X-VLA | **1.69×** |
 
 Numbers reflect the baseline and LoongForge versions at measurement time and may evolve as implementations change. See the [root README](../../README.md#-performance) for the full benchmark chart across all model families.
 
