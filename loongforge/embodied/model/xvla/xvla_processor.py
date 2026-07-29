@@ -64,7 +64,8 @@ class XVLATokenizerCore:
     def tokenizer(self):
         """Lazy-load the tokenizer on first access."""
         if self._tokenizer is None:
-            tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.tokenizer_path, trust_remote_code=True, local_files_only=True)
 
             # Ensure a pad token exists (BART/Florence2 may lack one by default)
             if tokenizer.pad_token is None:
@@ -122,7 +123,7 @@ class XVLAImageProcessorCore:
         """Lazy-load the image processor on first access."""
         if self._image_processor is None:
             self._image_processor = AutoImageProcessor.from_pretrained(
-                self.tokenizer_path
+                self.tokenizer_path, trust_remote_code=True, local_files_only=True
             )
         return self._image_processor
 
