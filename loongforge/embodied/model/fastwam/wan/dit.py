@@ -191,9 +191,12 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
 
     def forward(self, x):
-        """Apply RMS normalization and learned scaling."""
-        dtype = x.dtype
-        return self.norm(x.float()).to(dtype) * self.weight
+        """Apply RMS normalization and learned scaling via the fused ATen kernel."""
+        # F.rms_norm only fuses when weight and x share a dtype; otherwise scale
+        # separately to keep the original dtype promotion (fp32 weight -> fp32 out).
+        if self.weight.dtype == x.dtype:
+            return F.rms_norm(x, self.weight.shape, weight=self.weight, eps=self.eps)
+        return F.rms_norm(x, self.weight.shape, eps=self.eps) * self.weight
 
 
 class AttentionModule(nn.Module):
