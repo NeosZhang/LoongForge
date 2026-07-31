@@ -18,7 +18,7 @@ benchmark:
   max_steps: 300
   num_steps_wait: 10
   continuous_gripper: true
-  # control_mode: auto  # LIBERO OSC: auto|absolute|delta (auto=delta when no action_postprocess)
+  # control_mode: auto  # LIBERO OSC: auto|absolute|delta (auto=delta when the decoder key is identity)
 
 model:
   backend: loongforge

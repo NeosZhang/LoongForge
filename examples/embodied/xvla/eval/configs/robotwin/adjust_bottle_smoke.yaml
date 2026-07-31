@@ -46,7 +46,6 @@ server:
   dataset_statistics_path: ""
   use_bf16: false
   loongforge_root: /path/to/LoongForge-VLA
-  state_format: ee6d
 
 env:
   eval_root: /path/to/LoongForge-VLA/loongforge/embodied/eval

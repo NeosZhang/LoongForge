@@ -1,176 +1,136 @@
-# LoongForge-VLA Offline Eval User Guide
+# LoongForge-VLA Offline Evaluation — User Guide
 
-This document explains how to run LoongForge-VLA offline evaluation under `/path/to/LoongForge/loongforge/embodied/eval` with a single YAML config. The module currently serves LoongForge **pi05** and **xvla** policy servers. LIBERO / SimplerEnv / RoboTwin already have verified task-success runs; the full matrix is in §2.1 and §11.
+LoongForge-VLA offline evaluation runs a policy against a simulation benchmark from a single YAML config. You point the CLI at one `--config <yaml>` file; it launches the benchmark simulator and an independent model server, runs the rollout, and writes results.
 
-## 1. Module role
+Two policies are supported out of the box — **pi05** and **xvla** — across five benchmarks: **LIBERO, CALVIN, SimplerEnv, RoboTwin, ManiSkill**.
 
-The eval stack decouples the benchmark client from the model server:
+---
 
-- Benchmark side: environment reset/step, observation/action adapters, result logging.
-- Model side: independent policy server for action prediction.
-- Communication: WebSocket + msgpack-numpy RPC.
-- User entry: YAML only; CLI passes `--config`.
-- Training-tree LoongForge source is not patched for eval. Model load/build compatibility lives in `eval/factories`; generic RPC and interface checks live in `eval/servers`.
+## 1. What's supported
 
-### 1.1 End-to-end flow (LoongForge)
+### Models
 
-```mermaid
-flowchart LR
-    A[User YAML] --> B[loongforge.embodied.eval.orchestrator.run]
-    B --> C{benchmark.name}
-    C -->|libero| D[LIBERO runner]
-    C -->|calvin| Q[CALVIN runner]
-    C -->|simplerenv| E[SimplerEnv runner]
-    C -->|robotwin| F[RoboTwin official runner]
-    C -->|maniskill| R[ManiSkill runner]
-    B --> G{model.backend}
-    G -->|loongforge| H[LoongForge policy server]
-    G -->|mock| I[Mock policy server]
-    D --> J[Benchmark observation adapter]
-    Q --> J
-    E --> J
-    F --> J
-    R --> J
-    J --> K[WebSocket + msgpack-numpy RPC]
-    K --> H
-    H --> S[Model factory / loader]
-    S --> L[model.predict_action\nmodel-owned normalization / unnormalization]
-    L --> K
-    K --> N[Benchmark action adapter]
-    N --> O[Environment step]
-    O --> P[results / trace / replay / official logs]
-```
-
-### 1.2 Data path
-
-1. Start with `--config <yaml>`. `benchmark.name` selects the runner; `model.backend` selects the policy server backend.
-2. The orchestrator starts the benchmark client and launches an independent LoongForge policy server via `server.python`.
-3. The runner reads raw observations; the benchmark adapter converts them to the canonical observation schema (images, structured state, optional `model_state`, language, episode/task metadata).
-4. The runner sends RPC over WebSocket + msgpack-numpy. Benchmark-native structured state stays on the adapter/trace side; the model server only receives `model_state`. The benchmark side does not import or modify LoongForge model code.
-5. The LoongForge policy server picks a model factory from YAML. The factory imports the model, registers private config, loads a checkpoint (or random-init with `server.random_init: true`), and returns a model that implements `predict_action()`.
-6. `GenericPredictActionPolicy` owns eval RPC, image-view packing, action-chunk cache, latency, metadata, shape checks, and action-dim truncation, then calls `model.predict_action(images, instructions, state=model_state, dataset_stats=dataset_stats)`.
-7. Inside `predict_action()`, the model decides whether to consume `dataset_stats` and owns private state normalization / action unnormalization. Benchmark-native dict state is not cleaned up in the factory; adapters must emit a clean `model_state` when proprio is required.
-8. The returned action chunk goes back to the client; the action adapter converts it to env actions (e.g. 7D for LIBERO/SimplerEnv/ManiSkill, 14D bimanual for RoboTwin).
-9. After each step the runner logs episode results, traces, replays, or RoboTwin official artifacts. Policy server stdout/stderr go to `policy_server.log` (`server.log` in YAML).
-
-## 2. What is supported
-
-| Item | Status |
+| Model | Notes |
 |---|---|
-| LoongForge pi05 server | Supported; `PI05ModelFactory -> GenericPredictActionPolicy -> PI05Policy.predict_action()`; view count follows client (LIBERO 2 / RoboTwin 3) |
-| LoongForge xvla server | Supported; `XVLAModelFactory -> GenericPredictActionPolicy`; `domain_id`, `action_postprocess`, `state_format: ee6d` per benchmark |
-| Shared model API | `predict_action(images, instructions, state=None, dataset_stats=None)` validation + action shape normalize |
-| LIBERO rollout | Supported; **pi05 / xvla real weights task-success verified** (§11) |
-| CALVIN long-horizon | YAML + conda env + debug dataset; link smoke OK; **no formal CALVIN-domain pi05 / local X-VLA-Calvin score yet** |
-| SimplerEnv rollout | Bridge WidowX; **xvla + X-VLA-WidowX task-success after patch**; pi05 still lacks Bridge finetune weights |
-| RoboTwin official runner | Official evaluator; **pi05 (`pi05_aloha_14d`) and xvla (`ee6d_dual`) task-success** (§9 / §11) |
-| ManiSkill runner | PickCube smoke; formal scores need ManiSkill-domain checkpoint + stats |
-| RoboTwin `action_bridge` | `strict_14d` (default 14D joints), `duplicate_7d` (7D smoke only), `ee6d_dual` (X-VLA EE), `pi05_aloha_14d` (openpi Aloha: adapt_to_pi + delta→abs) |
-| Action unnormalization | Inside model `predict_action()` (pi05 uses q99); eval only passes stats via `dataset_statistics_path` |
-| Replay GIF / trace / summary | Supported; set `run.save_replay` / `run.save_trace` false under disk pressure |
+| **pi05** | π0.5 flow-matching policy |
+| **xvla** | X-VLA multi-embodiment policy (uses a per-benchmark `domain_id`) |
 
-### 2.1 Model × benchmark task-success (2026-07-21)
+Any model that implements the shared `predict_action(images, instructions, state=None, dataset_stats=None)` interface can be added — see §7.
 
-| | LIBERO | CALVIN | SimplerEnv (WidowX) | RoboTwin2 | ManiSkill |
+### Benchmarks and released-weight coverage
+
+The matrix below shows which model × benchmark combinations have released weights with verified task success, versus those that run today only as a connectivity check (random-initialized weights, useful to validate the pipeline but not a score).
+
+| | LIBERO | CALVIN | SimplerEnv (WidowX) | RoboTwin | ManiSkill |
 |---|---|---|---|---|---|
-| **pi05** | **success** (finetuned) | link smoke | no Bridge finetune weight | **success** (`pi0.5_robotwin2` + `pi05_aloha_14d`) | no matching weight |
-| **xvla** | **success** (~94% object full) | needs official ABC_D weight | **success** (X-VLA-WidowX + patch) | **success** (X-VLA-RoboTwin2 + `ee6d_dual`) | no matching weight |
+| **pi05** | ✅ task success | connectivity only¹ | connectivity only² | ✅ task success | connectivity only³ |
+| **xvla** | ✅ task success | connectivity only⁴ | ✅ task success⁵ | ✅ task success | connectivity only³ |
 
-"Success" means at least one task episode passed the official/local success criterion, not RPC-only smoke.
+¹ No CALVIN-domain pi05 weights released yet.
+² No Bridge/WidowX fine-tuned pi05 weights yet.
+³ No ManiSkill-domain weights released yet.
+⁴ Needs official X-VLA CALVIN (ABC_D) weights.
+⁵ Requires the SimplerEnv absolute-EE control patch (see §4.3).
 
-### 2.2 Examples: public templates
+"Task success" means at least one episode passed the benchmark's official success criterion.
 
-User-editable YAML and launch scripts live under `examples/embodied/<model>/eval/`:
+### Features
 
-| Layer | Naming | Paths | Use |
-|---|---|---|---|
-| **Public** | `*.yaml` / `run_*_eval.sh` | `/path/to/...` placeholders | Templates; replace paths/weights |
+- Single-YAML entry point; the CLI only takes `--config`.
+- Benchmark client and model server run as separate processes and communicate over WebSocket + msgpack RPC, so simulator and model dependencies stay isolated.
+- Per-episode results, suite aggregates, optional replay GIFs and per-step action traces.
+- Model-agnostic: benchmark code never imports model code, and vice versa.
 
-Use `/path/to/...` placeholders; do not hardcode machine-specific absolute paths.
+---
 
-```text
-examples/embodied/
-  pi05/eval/
-    configs/<benchmark>/*.yaml              # libero/robotwin/calvin/simplerenv/maniskill
-    assets/pi05_robotwin2_dataset_stats.json
-    run_*_eval.sh
-  xvla/eval/
-    configs/<benchmark>/*.yaml              # same five benchmarks
-    run_*_eval.sh
-    SIMPLERENV_PATCH_en.md
-    xvla_libero_diagnosis.md
+## 2. Quick start
+
+### 2.1 Prepare environments
+
+Use two separate conda environments (they usually have conflicting dependencies):
+
+- **Benchmark environment** — the simulator client, one per benchmark (e.g. a `libero` env, a `simplerenv` env, …).
+- **Model server environment** — loads pi05/xvla; e.g. a `loongforge` env. Requires Python ≥ 3.12.
+
+Per-benchmark dependency details are in [benchmark_envs.md](benchmark_envs.md).
+
+### 2.2 Get the weights
+
+Released weights (Hugging Face):
+
+| Combo | Weights |
+|---|---|
+| xvla + LIBERO | [2toINF/X-VLA-LIBERO](https://huggingface.co/2toINF/X-VLA-LIBERO) |
+| xvla + RoboTwin | [2toINF/X-VLA-RoboTwin2](https://huggingface.co/2toINF/X-VLA-RoboTwin2) |
+| xvla + SimplerEnv | [2toINF/X-VLA-WidowX](https://huggingface.co/2toINF/X-VLA-WidowX) |
+| pi05 + LIBERO | a π0.5 LIBERO fine-tune (`model.safetensors` + `dataset_statistics.json`) |
+| pi05 + RoboTwin | a π0.5 RoboTwin-2.0 joint fine-tune (`model.safetensors` + openpi `norm_stats`, see §4.4) |
+
+### 2.3 Configure and run
+
+Example configs live under `examples/embodied/<model>/eval/`. Each benchmark ships a ready-to-edit template:
+
+```bash
+cd /path/to/LoongForge-VLA
+
+# 1. Copy/edit the template config: fill in weight paths and the two python envs.
+#    examples/embodied/pi05/eval/configs/libero/object_smoke.yaml
+
+# 2. Run it.
+examples/embodied/pi05/eval/run_libero_eval.sh
 ```
 
-Each benchmark ships one public YAML. Optional knobs go in file-header comments (no extra full-suite YAML files unless explicitly requested).
+The run script accepts a few environment overrides: `CONFIG`, `REPO_ROOT`, `BENCHMARK_PYTHON`, `CUDA_VISIBLE_DEVICES`, and (for SAPIEN benchmarks) `LD_LIBRARY_PATH` / `VK_ICD_FILENAMES`.
 
-### 2.3 Task-success combos: open weights and configs
+Or invoke the orchestrator directly:
 
-| Combo | Open weights | Public config |
-|---|---|---|
-| **pi05 + LIBERO** | pi0.5 LIBERO finetune (e.g. openpi `pi05_libero` family / local `model.safetensors` + `dataset_statistics.json`) | `examples/embodied/pi05/eval/configs/libero/object_smoke.yaml` |
-| **pi05 + RoboTwin** | pi0.5 RoboTwin-2.0 joint finetune (`model.safetensors` + openpi `norm_stats` → LoongForge stats, §9.2) | `.../pi05/eval/configs/robotwin/adjust_bottle_smoke.yaml` |
-| **xvla + LIBERO** | [2toINF/X-VLA-LIBERO](https://huggingface.co/2toINF/X-VLA-LIBERO) | `.../xvla/eval/configs/libero/libero_weight_object_smoke.yaml` (full suite: raise `max_tasks` / `episodes_per_task` in the same YAML) |
-| **xvla + RoboTwin** | [2toINF/X-VLA-RoboTwin2](https://huggingface.co/2toINF/X-VLA-RoboTwin2) | `.../xvla/eval/configs/robotwin/adjust_bottle_smoke.yaml` |
-| **xvla + SimplerEnv** | [2toINF/X-VLA-WidowX](https://huggingface.co/2toINF/X-VLA-WidowX) | `.../xvla/eval/configs/simplerenv/widowx_stack_cube_smoke.yaml` |
+```bash
+python -m loongforge.embodied.eval.orchestrator.run --config /path/to/config.yaml
+```
 
-Key protocol fields (task-success combos):
+Run the orchestrator command inside the **benchmark** conda environment; the config's `server.python` points at the **model server** environment.
 
-| Combo | Key config |
-|---|---|
-| pi05 + LIBERO | `action_dim: 7`, `action_horizon: 50`; matching `dataset_statistics.json` (q01/q99); no special `action_bridge` |
-| pi05 + RoboTwin | `action_dim: 14`, `action_horizon: 32`; **`action_bridge: pi05_aloha_14d`**; `dataset_statistics_path` §9.2 |
-| xvla + LIBERO | X-VLA-LIBERO weights; `domain_id: 3`; `action_postprocess: ee6d_to_axis_angle`; `server.state_format: ee6d`; `max_steps: 800` (object recommended) |
-| xvla + RoboTwin | X-VLA-RoboTwin2; `domain_id: 6`; **`action_bridge: ee6d_dual`** |
-| xvla + SimplerEnv | X-VLA-WidowX; `domain_id: 0`; `max_steps: 1200`; `control_mode: arm_pd_ee_target_base_pose_gripper_pd_joint_pos`; `action_postprocess: ee6d_to_simpler_abs_euler`; **must apply** `examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md` |
+---
 
-**Usage:** download weights → replace `/path/to/...` in the public YAML/scripts → run `run_*_eval.sh`. Overridable env vars: `REPO_ROOT`, `CONFIG`, `BENCHMARK_PYTHON`, `CUDA_VISIBLE_DEVICES`, `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`.
+## 3. Configuration reference
 
-## 3. Environment requirements
-
-Isolate by role:
-
-- Benchmark env: simulator client, one conda env per benchmark, e.g. LIBERO `/path/to/envs/libero/bin/python`, CALVIN `.../calvin/...`, SimplerEnv `.../simplerenv/...`, RoboTwin `.../robotwin/...`, ManiSkill `.../maniskill/...`.
-- Model server env: LoongForge pi05/xvla, e.g. `/path/to/envs/loongforge/bin/python`.
-
-`lerobot==0.5.0` needs Python >= 3.12, so the LoongForge server must not use an old 3.10 env. Per-benchmark isolation and key dependency versions: `benchmark_envs.md`.
-
-## 4. YAML structure
+A config has five sections: `benchmark`, `model`, `server`, `run`, `timeouts`.
 
 ```yaml
 benchmark:
-  name: libero
-  suite: libero_object  # optional: libero_spatial | libero_goal | libero_10
+  name: libero               # libero | calvin | simplerenv | robotwin | maniskill
+  suite: libero_object       # benchmark-specific
   max_tasks: 1
   episodes_per_task: 1
   max_steps: 300
   num_steps_wait: 10
 
 model:
-  backend: loongforge
-  model_type: pi05
-  name: loongforge-pi05
+  backend: loongforge        # loongforge | mock
+  model_type: pi05           # REQUIRED (no default) — pi05 | xvla
   action_dim: 7
-  state_dim: 7
   action_horizon: 50
-  max_action_dim: 32
-  max_state_dim: 32
-  compile_model: false
+  # Optional model capability fields (have defaults; usually omitted):
+  #   state_encoding   proprio encoding the model consumes
+  #   action_encoding  the model's action encoding
+  #   domain_id        xvla multi-embodiment id (auto by benchmark if omitted)
 
 server:
   host: 127.0.0.1
   port: 12093
   health_port: 12094
-  python: /path/to/envs/loongforge/bin/python
+  python: /path/to/model-server-env/bin/python
   log: /path/to/policy_server.log
   start_timeout_sec: 900
   ckpt_path: /path/to/checkpoint_or_model_dir
   dataset_statistics_path: /path/to/dataset_statistics.json
   tokenizer_path: /path/to/paligemma-3b-pt-224
   use_bf16: false
-  loongforge_root: /path/to/LoongForge
+  loongforge_root: /path/to/LoongForge-VLA
+  random_init: false         # true = run with random weights (connectivity check)
 
 run:
-  output_dir: /path/to/LoongForge/loongforge/embodied/eval/reports/pi05/libero/object_smoke
+  output_dir: /path/to/reports/pi05/libero/object_smoke
   seed: 7
   save_trace: true
   save_replay: true
@@ -183,205 +143,89 @@ timeouts:
 
 Key fields:
 
-- `benchmark.name` selects the runner: `libero`, `calvin`, `simplerenv`, `robotwin`, `maniskill`.
-- `model.backend`: `loongforge` or `mock`.
-- `model:` only model-structure fields (`action_dim`, `action_horizon`, `compile_model`, …) matching each ModelConfig dataclass.
-- `server.ckpt_path`: directory containing `model.safetensors`, or the weight file itself.
-- `server.dataset_statistics_path`: passed through for pi05 action unnormalization inside `predict_action()`.
-- `server.python`: LoongForge server interpreter.
-- `run.output_dir`: stable run-tag directory; unified entry defaults to timestamped subdirs so old `results.jsonl` is not reused.
-- Under disk pressure or interface-only smoke: `run.save_replay: false`, `run.save_trace: false` keeps only `results.jsonl`, `summary.csv`, `suite_summary.csv`, and `policy_server.log`.
+- `benchmark.name` — selects the benchmark runner.
+- `model.model_type` — **required**; selects the model factory / PayloadBuilder (`pi05` | `xvla`). There is no default — the eval server fails fast if it is missing.
+- `model.backend` — `loongforge` for a real model, `mock` for a pipeline-only check.
+- `model:` — model-structure fields (`action_dim`, `action_horizon`, …) plus optional capability fields (`state_encoding` / `action_encoding` / `domain_id`). Defaults are sensible per model, so you rarely set these by hand.
+- `server.ckpt_path` — a directory with `model.safetensors` (or the weight file). Set `server.random_init: true` to run without weights.
+- `server.dataset_statistics_path` — action-normalization stats the model uses internally (e.g. pi05).
+- `server.python` — the model server interpreter.
+- `run.output_dir` — where results are written.
+- Under disk pressure, set `run.save_replay: false` and `run.save_trace: false` to keep only the CSV/JSONL summaries.
 
-## 5. Running LIBERO
+Every config comes as a **public template** (with `/path/to/...` placeholders, meant to be edited) plus a matching launch script. Optional knobs (larger suites, more episodes) are documented in each config's header comments — raise `max_tasks` / `episodes_per_task` in the same file.
 
-```bash
-cd /path/to/LoongForge
-examples/embodied/pi05/eval/run_libero_eval.sh
-```
+---
 
-pi05 LIBERO ships one task-success config:
+## 4. Running each benchmark
 
-- `examples/embodied/pi05/eval/configs/libero/object_smoke.yaml`
-
-Default `suite: libero_object`. Change suite / episode counts inside the YAML (header comments list options).
+### 4.1 LIBERO
 
 ```bash
-cd /path/to/LoongForge
-# edit /path/to/... in the YAML first
-examples/embodied/pi05/eval/run_libero_eval.sh
+examples/embodied/pi05/eval/run_libero_eval.sh   # pi05
+examples/embodied/xvla/eval/run_libero_eval.sh   # xvla
 ```
 
-## 6. Running CALVIN
+- pi05: `action_dim: 7`, `action_horizon: 50`, plus a matching `dataset_statistics.json`.
+- xvla: set `model.domain_id: 3` (or omit to auto-resolve); recommended `max_steps: 800`.
 
-CALVIN is long-horizon Franka language manipulation (5 subtasks per sequence). Metrics: `success_count`, Avg. Length, Task 1–5 success rates. `benchmark.dataset_path` must point at a tree that contains `validation/`.
+Change the suite (`libero_object` / `libero_spatial` / `libero_goal` / `libero_10`) and episode counts in the config.
 
-pi05 has **no CALVIN-domain weight**; examples keep **one link-smoke config** with **`server.random_init: true`**:
+### 4.2 CALVIN
 
-- `examples/embodied/pi05/eval/configs/calvin/smoke.yaml`
+CALVIN is long-horizon Franka language manipulation (five subtasks per sequence). `benchmark.dataset_path` must point at a tree containing `validation/`.
+
+No CALVIN-domain weights are released yet, so the shipped configs run with `server.random_init: true` (connectivity check only). With a CALVIN-domain checkpoint, set `random_init: false`, fill `ckpt_path` / `dataset_statistics_path`, and for xvla set `model.domain_id: 2`.
+
+### 4.3 SimplerEnv
 
 ```bash
-cd /path/to/LoongForge
-examples/embodied/pi05/eval/run_calvin_eval.sh
+examples/embodied/xvla/eval/run_simplerenv_eval.sh
 ```
 
-Edit suite / sequence count / step budget in YAML. With a CALVIN-domain checkpoint: set `random_init: false` and fill `ckpt_path` / `dataset_statistics_path`. xvla also has calvin smoke configs under `examples/embodied/xvla/eval/configs/calvin/` (formal scores need official ABC_D weights, `domain_id=2`, `action_postprocess: ee6d_to_calvin_abs`).
+xvla with WidowX-domain weights reaches task success. Two notes:
 
-## 7. Running SimplerEnv
+- Set `benchmark.control_mode: arm_pd_ee_target_base_pose_gripper_pd_joint_pos`, `max_steps: 1200`, and `model.domain_id: 0` (or omit to auto-resolve).
+- Upstream SimplerEnv does not ship absolute end-effector control by default. Apply the patch described in `examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md` first.
 
-### 7.1 pi05 × SimplerEnv (link smoke only, `random_init`)
+pi05 has no Bridge/WidowX weights yet, so its SimplerEnv configs are connectivity checks (`random_init: true`).
 
-pi05 has no Bridge/WidowX finetune weight; examples keep **one config** with **`server.random_init: true`** (no fake weights, no task-success claim):
+### 4.4 RoboTwin
 
-- `examples/embodied/pi05/eval/configs/simplerenv/widowx_stack_cube_smoke.yaml`
+RoboTwin reuses its official evaluator, which calls the policy through a plugin. Select the protocol with `benchmark.action_bridge`:
+
+| `action_bridge` | Model | Notes |
+|---|---|---|
+| `pi05_aloha_14d` | pi05 | openpi Aloha joint protocol; `action_dim: 14`, `action_horizon: 32` |
+| `ee6d_dual` | xvla | X-VLA dual-arm end-effector protocol; `domain_id: 6` |
 
 ```bash
-cd /path/to/LoongForge
-examples/embodied/pi05/eval/run_simplerenv_eval.sh
+examples/embodied/pi05/eval/run_robotwin_eval.sh    # pi05, action_bridge: pi05_aloha_14d
+examples/embodied/xvla/eval/run_robotwin_eval.sh    # xvla, action_bridge: ee6d_dual
 ```
 
-Switch Bridge tasks (eggplant / carrot / spoon, …) via `task_name` / `robot_setup` / `scene_name` in the same YAML. The runner re-execs before importing SAPIEN so `LD_LIBRARY_PATH` and `VK_ICD_FILENAMES` take effect.
-
-### 7.2 X-VLA × SimplerEnv (task-success)
-
-Use WidowX-domain weights (e.g. `/path/to/X-VLA-WidowX`), aligned with official `evaluation/simpler/WidowX`:
-
-```yaml
-benchmark:
-  name: simplerenv
-  domain_id: 0
-  max_steps: 1200
-  control_mode: arm_pd_ee_target_base_pose_gripper_pd_joint_pos
-  action_postprocess: ee6d_to_simpler_abs_euler
-```
-
-Upstream SimplerEnv does **not** ship absolute EE control by default; follow `examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md` (255isWhite fork or two local patches). Configs: `examples/embodied/xvla/eval/configs/simplerenv/`.
-
-### SAPIEN / Vulkan troubleshooting
-
-SimplerEnv, RoboTwin, and ManiSkill depend on SAPIEN rendering. Before adapting a new SAPIEN benchmark, verify the Vulkan ICD — not only `nvidia-smi`. If `vulkaninfo` shows only `llvmpipe` / `lavapipe`, visual obs / camera / replay may segfault; a state-only rollout passing does **not** prove the visual path works.
-
-Quick check:
-
-```bash
-LD_LIBRARY_PATH=/path/to/nvidia_lib:/usr/lib64:${LD_LIBRARY_PATH:-} \
-VK_ICD_FILENAMES=/path/to/nvidia_lib/10_nvidia.json \
-vulkaninfo
-```
-
-Expect `deviceName = NVIDIA ...` and `driverName = NVIDIA`. Set `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, `XDG_RUNTIME_DIR` **before** importing SAPIEN / svulkan2 / ManiSkill / the renderer; re-exec the Python process if needed. Changing `LD_LIBRARY_PATH` after Python starts is usually insufficient.
-
-## 8. Running ManiSkill
-
-ManiSkill is a SAPIEN-based, GPU-friendly manipulation suite. Shipped examples keep **one link-smoke pair** with **`server.random_init: true`** (no formal task-success claim for open weights):
-
-- `examples/embodied/pi05/eval/configs/maniskill/pick_cube_smoke.yaml`
-
-Default `PickCube-v1`, `pd_ee_delta_pose`, 7D action. Task / `obs_mode` (rgbd vs state) in YAML comments.
-
-**Proprio / `model_state`:** the ManiSkill adapter maps Panda `qpos` to a numeric vector for the model. When `qpos` is 9D (7 arm + 2 finger), it emits **8D** = 7 joints + mean of the two finger joints (RLinf/openpi ManiSkill-style). Joint list in structured `state` remains full `qpos`. Single-camera `base_camera` only (no wrist packing in the adapter).
-
-```bash
-cd /path/to/LoongForge
-examples/embodied/pi05/eval/run_maniskill_eval.sh
-```
-
-With a ManiSkill-domain checkpoint: set `random_init: false` and fill `ckpt_path` / `dataset_statistics_path` (state dim must match training, typically 8 for openpi/RLinf ManiSkill stats). xvla has matching smoke configs under `examples/embodied/xvla/eval/configs/maniskill/`.
-
-> **Not the same as RLinf PutOnPlate:** RLinf’s pi0.5 ManiSkill SFT (`RLinf-Pi05-ManiSkill-25Main-SFT`) is trained on **`PutOnPlateInScene25Main-v3`** (WidowX Bridge real2sim), not stock `PickCube-v1` + Panda. LoongForge does not ship that RLinf env; PickCube smoke only proves the ManiSkill runner/RPC path.
-
-## 9. Running RoboTwin
-
-RoboTwin is launched via official `script/eval_policy.py`; the bridge is `loongforge/embodied/eval/bridges/robotwin_policy.py`. Pick `benchmark.action_bridge` (or `model.robotwin_action_bridge`) per model.
-
-### 9.1 `action_bridge` map
-
-| bridge | Role | Action / control | Notes |
-|---|---|---|---|
-| `strict_14d` | default 14D joints | joint qpos via `take_action` | model output ≥14D; no Aloha adapt_to_pi |
-| `duplicate_7d` | smoke only | 7D duplicated to 14D | **not** for formal scores |
-| `pi05_aloha_14d` | **pi0.5 RoboTwin formal protocol** | joint qpos | openpi Aloha: `adapt_to_pi` decode state → model → delta→abs → `adapt_to_pi` encode; reorder off |
-| `ee6d_dual` | **X-VLA RoboTwin formal protocol** | `take_action(..., action_type='ee')` | 20D ee6d, three views, proprio closed-loop fill; instruction = task name with spaces |
-
-> **Note:** Set `action_bridge` only in YAML (`benchmark.action_bridge` or `model.robotwin_action_bridge`). The runner CLI does not expose `--action-bridge`; values come from the config file.
-
-### 9.2 pi05 + RoboTwin (task-success)
-
-Weight example: `/path/to/pi0.5_robotwin2` (PyTorch `model.safetensors` + openpi `assets/.../norm_stats.json` in the checkpoint). Training side: `adapt_to_pi=True`, `use_delta_joint_actions=True`, `action_horizon=32`, three views head/left/right.
-
-```bash
-cd /path/to/LoongForge
-CONFIG=examples/embodied/pi05/eval/configs/robotwin/adjust_bottle_smoke.yaml \
-  examples/embodied/pi05/eval/run_robotwin_eval.sh
-```
-
-Key YAML fields:
-
-```yaml
-benchmark:
-  name: robotwin
-  task_name: adjust_bottle
-  task_config: demo_clean
-  action_bridge: pi05_aloha_14d
-  max_steps: 300
-model:
-  model_type: pi05
-  action_dim: 14
-  state_dim: 14
-  action_horizon: 32
-server:
-  ckpt_path: /path/to/pi0.5_robotwin2
-  dataset_statistics_path: examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json
-```
-
-#### Where `pi05_robotwin2_dataset_stats.json` comes from
-
-It is **not** re-computed at train time; it is the openpi `norm_stats.json` from the **pi0.5 RoboTwin-2.0 weight package**, with keys renamed for LoongForge pi05 `predict_action` q99 normalize/unnormalize.
-
-| Item | Detail |
-|---|---|
-| Source checkpoint | internal: `/path/to/pi0.5_robotwin2` |
-| Source file | `assets/pi0.5_clean_randomize_joint_training/norm_stats.json` (openpi training asset, ships with weights) |
-| openpi shape | `{"norm_stats": {"state": {mean,std,q01,q99}, "actions": {...}}}` |
-| LoongForge shape | `{"observation.state": {mean,std,q01,q99}, "action": {...}}` (keys aligned with LeRobot / pi05 `dataset_stats`) |
-| Values | field-identical to source (only keys: `state`→`observation.state`, `actions`→`action`) |
-| In-repo path | `examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json` |
-
-Generate from any openpi-style checkpoint:
+For **pi05 + RoboTwin**, the model needs a `dataset_statistics.json` derived from the checkpoint's openpi `norm_stats.json`. A ready-made copy ships at `examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json`; to regenerate from another openpi-style checkpoint:
 
 ```python
 import json
 from pathlib import Path
 
-src = Path("/path/to/pi0.5_robotwin2/assets/pi0.5_clean_randomize_joint_training/norm_stats.json")
-raw = json.loads(src.read_text())["norm_stats"]
-out = {
-    "observation.state": raw["state"],
-    "action": raw["actions"],
-}
-Path("pi05_robotwin2_dataset_stats.json").write_text(json.dumps(out, indent=2))
+raw = json.loads(Path("<ckpt>/assets/.../norm_stats.json").read_text())["norm_stats"]
+out = {"observation.state": raw["state"], "action": raw["actions"]}
+Path("dataset_stats.json").write_text(json.dumps(out, indent=2))
 ```
 
-On the joint path the adapter sets `model_state = joint` (14D); `pi05_aloha_14d` applies adapt_to_pi inside the bridge and does **not** affect `ee6d_dual`.
-
-### 9.3 X-VLA + RoboTwin (task-success)
-
-Aligned with official `evaluation/robotwin-2.0`: `domain_id: 6`, `action_bridge: ee6d_dual`, weights e.g. `/path/to/X-VLA-RoboTwin2`.
+### 4.5 ManiSkill
 
 ```bash
-cd /path/to/LoongForge
-CONFIG=examples/embodied/xvla/eval/configs/robotwin/adjust_bottle_smoke.yaml \
-  examples/embodied/xvla/eval/run_robotwin_eval.sh
+examples/embodied/pi05/eval/run_maniskill_eval.sh
 ```
 
-### 9.4 Link smoke (no formal weight)
+Default task `PickCube-v1` with `pd_ee_delta_pose` control. No ManiSkill-domain weights are released yet, so shipped configs run with `random_init: true`. With a ManiSkill-domain checkpoint, set `random_init: false` and provide matching stats (state dim is typically 8: 7 arm joints + gripper width).
 
-pi05 RoboTwin examples keep only `adjust_bottle_smoke.yaml`. Without formal weights, temporarily edit the same YAML:
+---
 
-- `server.random_init: true`, `max_steps: 5`: random 14D, official runner connectivity
-- `action_bridge: duplicate_7d` (and model `action_dim: 7`): interface smoke only — **not** a score
-- `action_bridge: strict_14d`: raw 14D joints, no adapt_to_pi (not the openpi formal protocol)
-
-## 10. Outputs
+## 5. Outputs
 
 LIBERO / CALVIN / SimplerEnv / ManiSkill write under `run.output_dir`:
 
@@ -390,141 +234,71 @@ LIBERO / CALVIN / SimplerEnv / ManiSkill write under `run.output_dir`:
 | `results.jsonl` | per-episode results |
 | `summary.csv` | task-level aggregate |
 | `suite_summary.csv` | suite-level aggregate |
-| `artifacts/.../replay_*.gif` | replay GIF |
-| `artifacts/.../trace_*.json` | per-step action trace |
+| `artifacts/.../replay_*.gif` | replay (when `save_replay: true`) |
+| `artifacts/.../trace_*.json` | per-step action trace (when `save_trace: true`) |
 | `policy_server.log` | model server stdout/stderr |
 
-Under disk pressure or interface-only checks, set `run.save_replay: false` and `run.save_trace: false`. Past LIBERO re-runs hit `No space left on device` while saving replay artifacts — not policy RPC or state adapters.
+RoboTwin additionally collects the official evaluator logs, deploy config, result file, and any `mp4` videos under `artifacts/robotwin/<task_name>/<task_config>/`, and writes one `results.jsonl` row per completed episode so aggregation matches the other benchmarks.
 
-RoboTwin collects official logs, deploy config, `_result.txt`, bridge `trace.json`, and available `mp4` videos under `run.output_dir/artifacts/robotwin/<task_name>/<task_config>/`. RoboTwin does not force GIF conversion; video stays official `mp4`. Policy server log path is `server.log`.
+`run.output_dir` is a stable run tag; by default the orchestrator writes a timestamped subdirectory so previous results are never overwritten. Set `run.timestamped_output: false` to reuse a fixed directory.
 
-#### RoboTwin `results.jsonl` aggregation (aligned with other benchmarks)
+---
 
-The official RoboTwin evaluator loops until `test_num` **valid** episodes (expert_check may skip seeds) and writes a single rate in `_result.txt`. LoongForge does **not** collapse that into one `success = int(rate > 0)` row.
+## 6. Troubleshooting
 
-Instead, the runner parses official log lines of the form `Success rate: suc/test_num => …, current seed: S` and writes **one `results.jsonl` row per completed episode** with `success` ∈ {0, 1}. Each row also carries the overall `success_rate` and `n_episodes` so `summary.csv` matches LIBERO-style per-episode aggregation. If log parsing finds no episode lines, it falls back to a single row from `_result.txt`.
+**Vulkan / SAPIEN (SimplerEnv, RoboTwin, ManiSkill).** These render with SAPIEN and need a working NVIDIA Vulkan ICD. Check with `vulkaninfo` (not just `nvidia-smi`):
 
-### 10.1 configs / reports layout
-
-Organize configs and reports by model, benchmark, and run. New benchmarks must follow the same layout — do not flatten different benchmarks into one directory.
-
-```text
-examples/embodied/<model>/eval/configs/
-  <benchmark>/
-    <run_name>.yaml
-
-loongforge/embodied/eval/reports/
-  <model>/
-    <benchmark>/
-      <run_name>/
-        policy_server.log
-        results.jsonl
-        summary.csv
-        suite_summary.csv
-        artifacts/
-          ... benchmark-specific trace / replay / video / official logs ...
+```bash
+LD_LIBRARY_PATH=/path/to/nvidia_lib:/usr/lib64 \
+VK_ICD_FILENAMES=/path/to/nvidia_icd.json \
+vulkaninfo
 ```
 
-YAML `run.output_dir` should point at a stable run-tag directory, e.g. `reports/pi05/robotwin/adjust_bottle_smoke`. The unified entry defaults to `run.timestamped_output: true` and creates `<yyyymmdd_hhmmss>_<run_tag>`. `reports/` is local-only and not committed. To reuse a fixed directory for debugging, set `run.timestamped_output: false`.
+Expect `deviceName = NVIDIA ...` / `driverName = NVIDIA`. If you see only `llvmpipe` / `lavapipe`, camera images and replays are unreliable. Set `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, and `XDG_RUNTIME_DIR` **before** SAPIEN is imported; the runners re-exec the process so these take effect.
 
-## 11. Verified runs
+**MuJoCo (LIBERO, CALVIN).** Keep the `MUJOCO_GL` / `PYOPENGL_PLATFORM` and benchmark config-path settings from the shipped configs.
 
-### 11.1 Task-success (success=1, not RPC-only smoke)
+**Disk space.** Replay GIFs are the largest artifact. Set `run.save_replay: false` (and `save_trace: false`) if a run fails while writing artifacts.
 
-| Date | Model | Benchmark | Config / weight highlights | Result |
-|---|---|---|---|---|
-| 2026-07-21 | pi05 | RoboTwin | `adjust_bottle_smoke.yaml`; `/path/to/pi0.5_robotwin2`; `action_bridge: pi05_aloha_14d` | **1/1**, ~135 steps Success |
-| 2026-07-21 | pi05 | LIBERO | `libero_object` 2 task × 2 ep; `pi05_libero_finetuned_v044` (post–RoboTwin-change regression) | **4/4** |
-| 2026-07-20 | xvla | RoboTwin | `adjust_bottle_smoke.yaml`; `X-VLA-RoboTwin2`; `domain_id: 6`; `ee6d_dual` | **1/1** |
-| 2026-07-20 | xvla | SimplerEnv | WidowX stack_cube smoke; `X-VLA-WidowX`; `domain_id: 0` + `SIMPLERENV_PATCH_en.md` | **success** (smoke episode) |
-| 2026-07-17 | xvla | LIBERO | open X-VLA LIBERO weights; absolute control + rot6d column-major; full `libero_object` | **~94/100**, see `examples/embodied/xvla/eval/xvla_libero_diagnosis.md` |
-| 2026-07-15 | pi05 | LIBERO | `pi05_libero_finetuned_v044`; libero10 / goal smoke, etc. | multiple successes (incl. task0 1/1, high smoke rates) |
+**Python version.** The model server needs Python ≥ 3.12 (`lerobot==0.5.0` requirement); don't run it in an old 3.10 env.
 
-### 11.2 Link smoke / not yet scored
+---
 
-| Model | Benchmark | Notes |
-|---|---|---|
-| pi05 | CALVIN | random-init or LIBERO-weight smoke; needs CALVIN-domain checkpoint |
-| pi05 | SimplerEnv | hard-running LIBERO-domain weights is not trustworthy; needs Bridge/WidowX finetune |
-| pi05 | ManiSkill | PickCube link smoke; no LoongForge task-success claim (RLinf PutOnPlate env not integrated) |
-| xvla | CALVIN | needs official `X-VLA-Calvin-ABC_D` etc. (`domain_id=2`) |
-| xvla | ManiSkill | PickCube link smoke; no matching open weight for formal scores |
+## 7. Adding a new model
 
-**2026-07-22** short-horizon matrix (pi05 / xvla × all five benchmarks): all ten jobs produced `results.jsonl` (link-only; not a task-success table).
+Beyond pi05/xvla, a new model plugs into three small pieces (benchmark runners and adapters are reused unchanged):
 
-### 11.3 Compatibility notes (after 2026-07-21 changes)
+1. **Model factory** (`factories/<model>_factory.py`): loads the model + checkpoint and returns it behind the shared `predict_action(images, instructions, state=None, dataset_stats=None)` interface.
+2. **PayloadBuilder** (`payload_builders/<model>.py`): turns a benchmark observation into the model's `predict_action` inputs, and declares the model's capabilities (`state_encoding` / `action_encoding` / `domain_id`).
+3. **ActionDecoder** (`action_decoders/`, optional): converts the model's raw actions into the benchmark's action space. If the model's action encoding already matches the benchmark, this is a no-op and nothing is needed.
 
-- **`pi05_aloha_14d`**: only when YAML enables it; `strict_14d` / `ee6d_dual` / `duplicate_7d` unchanged.
-- **RoboTwin adapter `model_state=joint`**: joint path can pass 14D state to the model; X-VLA `ee6d_dual` still builds 20D proprio in the bridge.
-- **RoboTwin multi-episode aggregation**: per-episode 0/1 rows from official logs (§10); unit tests in `unit_tests/test_robotwin_adapter.py`.
-- **ManiSkill `model_state`**: 9D Panda qpos → 8D (7 + finger mean) when applicable (§8).
-- **`predict_action` dynamic `num_images`**: LIBERO remains 2 views; RoboTwin can use 3; missing views use mask=False.
-- **`server.chunk_execute_steps` (xvla)**: optional open-loop truncate of the predicted action horizon (e.g. `10` for official X-VLA LIBERO-style). `0` uses factory default (10 for xvla); `-1` disables truncation. Set in YAML `server:` only.
-- SimplerEnv absolute control depends on a user-environment patch: `examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md`.
+Action normalization/unnormalization always lives inside the model's `predict_action`; eval only passes stats through. The full step-by-step checklist (with pi05 and xvla as worked examples) and the exact interface contract are in [model_integration.md](model_integration.md).
 
-## 12. Adding a new model
+---
 
-To integrate beyond pi05/xvla, reuse the shared `predict_action()` API and `GenericPredictActionPolicy`. For model semantics (action space, absolute vs delta, postprocess, proprio layout, normalization ownership, `domain_id` and other private fields, chunk length, eval horizon) see the full checklist in `model_integration_guide.md` (pi05 vs xvla side-by-side). Keep the benchmark protocol and adapters unified; put model differences in a thin factory/loader. Do not fork benchmark runners or patch training-tree LoongForge source.
+## 8. Related docs
 
-### 12.1 Recommended path
-
-1. Implement the shared inference API:
-
-```python
-def predict_action(images, instructions, state=None, dataset_stats=None):
-    ...
-```
-
-Model output may be `[D]`, `[H, D]`, or `[B, H, D]`; eval normalizes to `[H, action_dim]`. If model dim > required `action_dim`, eval truncates; if smaller, it errors.
-
-2. Add or reuse a model factory.
-
-Factory owns private logic only: import, config/tokenizer/processor, checkpoint, device/dtype, compile, metadata. Return a `predict_action()` model plus metadata. Do not clean benchmark-native observation/state structures here.
-
-3. Reuse `GenericPredictActionPolicy`.
-
-It owns eval RPC, image views, chunk cache, latency, metadata, dataset stats, shape checks, and dim truncation. Do not copy a full `LoongForgeXXXPolicy` per model.
-
-4. Register the factory with the server/backend.
-
-Follow the current `loongforge_server.py` pi05 path: `PI05ModelFactory.build(...) -> GenericPredictActionPolicy(...)`. For a totally different framework you may add a separate server entrypoint, but still reuse `predict_action_interface.py` validation/normalization. Keep the user entry as `--config <yaml>` only.
-
-5. Add YAML examples.
-
-At least one smoke (or documented) config per integrated benchmark: LIBERO, CALVIN, SimplerEnv, RoboTwin, ManiSkill. Each should include `benchmark.name`, `model.backend`, `model.model_type`, model path, stats path, server env, and output dir.
-
-6. Run smoke tests.
-
-Benchmark client in its conda env; model server in its own env. Verify server health, WebSocket RPC, `predict_action()` shape, action dim, model-side stats handling, result files. For SAPIEN benchmarks, confirm Vulkan ICD.
-
-### 12.2 State boundary
-
-Adapters may keep structured `state` for trace/debug/action adapters, but must not pass a benchmark-native dict to the model. Anything for the model goes in `model_state`:
-
-- **RoboTwin adapter:** `model_state` is 14D `joint_action.vector` for joint-space models (pi05, …); with `action_bridge: ee6d_dual` the bridge **ignores** it and builds 20D ee6d proprio.
-- **ManiSkill adapter:** numeric `model_state` from qpos (9D → 8D as in §8); not `None` when agent state is present.
-- **LIBERO / CALVIN / SimplerEnv:** proprio may stay unset (`model_state: None`) unless YAML sets `server.state_format` (e.g. xvla `ee6d`) and the adapter/runner builds it.
-- If the model needs state, the adapter must emit a numeric, well-shaped `model_state` (`np.ndarray` / list), not a raw dict.
-- `GenericPredictActionPolicy` only forwards RPC `state`; factories do not clean benchmark-native state.
-
-### 12.3 Minimal checklist
-
-Full interface contract for model owners: [`predict_action_interface.md`](predict_action_interface.md).
-
-- `predict_action_interface.validate_predict_action_model(model)` passes.
-- `predict_action()` accepts `images`, `instructions`, optional `state` / `dataset_stats`; output normalizes to `[H, action_dim]`.
-- Action unnormalization (q99 / mean-std / …) lives **inside** `predict_action`; eval only passes `dataset_stats`. Env-space conversion uses `action_postprocess` / RoboTwin `action_bridge`, not the model.
-- Factory registered with `@register_factory("<model_type>")`; `build()` returns `PredictActionModelSpec`; `predict_action()` tolerates warmup empty instruction + zero image.
-- YAML includes `benchmark.name`, `model.backend`, `model.model_type`, `server.python` / `ckpt_path` (or `random_init`), `run.output_dir`. Protocol knobs (`action_bridge`, `domain_id`, `action_postprocess`, …) are **YAML-only**.
-- At least one smoke per target benchmark: health, RPC, action shape, result files; SAPIEN → Vulkan ICD.
-- After changing shared runner / adapter / bridge / generic policy code, regression-test successful combos (at least pi05 × LIBERO).
-
-## 13. Related docs
-
-| Doc | Notes |
+| Doc | Contents |
 |---|---|
-| [README.md](README.md) | Module scope, quick start, config index |
-| [model_integration_guide.md](model_integration_guide.md) | New-model semantic checklist |
-| [predict_action_interface.md](predict_action_interface.md) | **For model owners:** `predict_action` contract (signature, shapes, unnorm ownership, postprocess vs model) |
-| [benchmark_envs.md](benchmark_envs.md) | Per-benchmark conda envs and dependencies |
-| `examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md` | SimplerEnv absolute EE control patch |
+| [README.md](README.md) | Module scope and quick start |
+| [benchmark_envs.md](benchmark_envs.md) | Per-benchmark conda environments and dependencies |
+| [model_integration.md](model_integration.md) | Step-by-step guide to add a model + the `predict_action` contract for model owners |
+| `examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md` | SimplerEnv absolute end-effector control patch |
+
+---
+
+## Appendix: how a step flows (optional)
+
+For readers who want the internals, one evaluation step is a four-stage chain that keeps the model and benchmark decoupled:
+
+```
+Adapter            benchmark observation      → canonical observation
+PayloadBuilder     canonical observation      → model.predict_action(**kwargs)
+model.predict_action (server)                 → raw action chunk
+ActionDecoder      raw action chunk           → benchmark env action
+```
+
+- **Adapter** (one per benchmark) reads the raw observation and exposes images, language, and raw robot state.
+- **PayloadBuilder** (one per model) assembles the model's inputs and encodes proprio per the model's `state_encoding`.
+- The **model server** runs `predict_action` and owns all normalization.
+- **ActionDecoder** converts the model's output into the env's action space; the right decoder is selected automatically from the model's `action_encoding` and the benchmark's action space.

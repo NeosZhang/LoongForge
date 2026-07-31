@@ -12,16 +12,23 @@ import pathlib
 import numpy as np
 import pytest
 
-from loongforge.embodied.eval.adapters.robotwin import ROBOTWIN_ACTION_REORDER, RoboTwinAdapter
-from loongforge.embodied.eval.bridges.robotwin_policy import (
-    ModelClient,
-    _adapt_to_pi_decode_state,
-    _adapt_to_pi_encode_actions,
-    _delta_to_absolute_actions,
-    _ee6d_action_to_env,
+from loongforge.embodied.eval.action_decoders.ee6d import (
+    _robotwin_ee6d_row_to_ee as _ee6d_action_to_env,
+)
+from loongforge.embodied.eval.action_decoders.joint import (
     _PI05_DELTA_JOINT_MASK,
     _PI05_JOINT_FLIP_MASK,
+    adapt_to_pi_encode_actions as _adapt_to_pi_encode_actions,
+    delta_to_absolute_actions as _delta_to_absolute_actions,
 )
+from loongforge.embodied.eval.adapters.robotwin import (
+    ROBOTWIN_ACTION_REORDER,
+    RoboTwinAdapter,
+)
+from loongforge.embodied.eval.payload_builders.pi05 import (
+    adapt_to_pi_decode_state as _adapt_to_pi_decode_state,
+)
+from loongforge.embodied.eval.bridges.robotwin_policy import ModelClient
 from loongforge.embodied.eval.orchestrator.runners.robotwin_runner import (
     _build_robotwin_records,
     _override_eval_policy_for_smoke,
@@ -118,27 +125,6 @@ def test_robotwin_eval_context_marks_script_success_oracle() -> None:
     assert context["action_dim"] == 14
 
 
-def test_robotwin_policy_duplicate_7d_bridge_is_explicit() -> None:
-    """Run test_robotwin_policy_duplicate_7d_bridge_is_explicit."""
-    client = ModelClient.__new__(ModelClient)
-    client.action_bridge = "duplicate_7d"
-
-    action = client._extract_robotwin_action(np.arange(7, dtype=np.float32))
-
-    np.testing.assert_array_equal(
-        action, np.concatenate([np.arange(7, dtype=np.float32), np.arange(7, dtype=np.float32)])
-    )
-
-
-def test_robotwin_policy_rejects_7d_without_bridge() -> None:
-    """Run test_robotwin_policy_rejects_7d_without_bridge."""
-    client = ModelClient.__new__(ModelClient)
-    client.action_bridge = "strict_14d"
-
-    with pytest.raises(ValueError, match="14D"):
-        client._extract_robotwin_action(np.arange(7, dtype=np.float32))
-
-
 def test_pi05_aloha_14d_delta_to_abs_and_roundtrip_masks() -> None:
     """openpi AbsoluteActions: joints relative, grippers absolute; flip mask is ±1."""
     state = np.arange(14, dtype=np.float32) * 0.1
@@ -222,15 +208,15 @@ def test_robotwin_policy_writes_trace_file(tmp_path: pathlib.Path) -> None:
     client.trace_path = tmp_path / "trace.json"
     client.trace_records = []
     client.episode_id = "robotwin/adjust_bottle/default"
+    client.action_bridge = "ee6d_dual"
     client.adapter = RoboTwinAdapter(task_name="adjust_bottle", action_mode="abs")
 
     client._record_trace(
         step=2,
         instruction="adjust bottle",
         joint=np.arange(14, dtype=np.float32),
-        raw_action=np.ones(14, dtype=np.float32),
-        output_action=np.ones(14, dtype=np.float32) * 2,
-        env_action=np.ones(14, dtype=np.float32) * 3,
+        raw_action=np.ones(20, dtype=np.float32),
+        env_action=np.ones(16, dtype=np.float32) * 3,
         response={"data": {"inference_latency_ms": 12.5}},
     )
 
@@ -238,9 +224,9 @@ def test_robotwin_policy_writes_trace_file(tmp_path: pathlib.Path) -> None:
     assert payload["benchmark"] == "robotwin"
     assert payload["task_name"] == "adjust_bottle"
     assert payload["steps"][0]["step"] == 2
-    assert payload["steps"][0]["raw_action"] == [1.0] * 14
-    assert payload["steps"][0]["output_action"] == [2.0] * 14
-    assert payload["steps"][0]["env_action"] == [3.0] * 14
+    assert payload["steps"][0]["raw_action"] == [1.0] * 20
+    assert payload["steps"][0]["env_action"] == [3.0] * 16
+    assert payload["steps"][0]["action_bridge"] == "ee6d_dual"
 
 
 def test_robotwin_runner_builds_eval_policy_command() -> None:

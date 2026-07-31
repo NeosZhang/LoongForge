@@ -1,64 +1,121 @@
 ---
 name: vla-model-eval-adapter
-description: Use this skill when adapting a VLA/model backend into the LoongForge embodied eval system after benchmark runners already exist. Trigger on requests to add or refactor model eval integration, validate a model predict_action interface, create model factory/loader code, wire model.backend/server routing, write eval YAML, handle action normalization or dataset_statistics, align eval config with a model's official inference configuration, or reproduce pi05/xvla-style integration. At run start, collect required inputs from the user (target model + benchmark, model package location, checkpoint/tokenizer/dataset-statistics paths). Before writing configs, search the web for the model's official inference config (repo, paper, HuggingFace card), diff it against the existing eval YAML/ModelConfig, and ask the user before adding missing fields; then iterate the eval code to follow the official config. Prefer the shared predict_action contract plus GenericPredictActionPolicy before creating a bespoke policy adapter. Prefer eval-only changes; put protocol logic in action_bridge/action_postprocess. By default, ship one public + one _internal YAML pair (and matching run scripts) per supported benchmark (LIBERO, CALVIN, SimplerEnv, RoboTwin, ManiSkill), using random_init link smoke when no domain weight exists, unless the user narrows scope.
+description: Use this skill when adapting a VLA/model backend into the LoongForge embodied eval system after benchmark runners already exist. Trigger on requests to add or refactor model eval integration, validate a model predict_action interface, create model factory/loader code, wire model.backend/server routing, write eval YAML, handle action normalization or dataset_statistics, align eval config with a model's official inference configuration, or reproduce pi05/xvla-style integration. At run start, collect required inputs from the user (target model + benchmark, model package location, checkpoint/tokenizer/dataset-statistics paths). Before writing configs, search the web for the model's official inference config (repo, paper, HuggingFace card), diff it against the eval YAML you draft from the pi05/xvla template (there is no pre-existing model eval code in a real adaptation — you create the factory, PayloadBuilder, YAMLs, and run scripts) and against the training-side ModelConfig, and ask the user before values that deviate from the official config; then iterate the eval code to follow the official config. Prefer the shared predict_action contract plus GenericPredictActionPolicy before creating a bespoke policy adapter. Prefer eval-only changes; put per-model protocol logic in the model's PayloadBuilder (canonical -> predict_action kwargs) plus the ActionDecoder registry (raw action chunk -> env action space), and use RoboTwin's action_bridge only to select that wiring. By default, ship one public + one _internal YAML pair (and matching run scripts) per supported benchmark (LIBERO, CALVIN, SimplerEnv, RoboTwin, ManiSkill), using random_init link smoke when no domain weight exists, unless the user narrows scope. Adaptation is only complete after the smoke tests are actually executed (not just generated): author a run script per benchmark that activates the matching conda env and sets the correct environment variables (PYTHONPATH, CUDA_VISIBLE_DEVICES, LD_LIBRARY_PATH so libcuda resolves, plus simulator vars), run each benchmark through that generated script, and do not report a GPU/driver blocker before re-checking in that environment.
 ---
 
 # VLA Model Eval Adapter
 
-Use this skill to connect a model backend to the existing LoongForge embodied evaluation stack. The benchmark runners and benchmark adapters are assumed to already exist. The preferred model-side architecture is now:
+Use this skill to connect a model backend to the existing LoongForge embodied evaluation stack. The benchmark runners and benchmark adapters are assumed to already exist. The model-integration architecture is now a **3-part component split** on the eval side:
 
 ```text
-model factory/loader
-  -> model instance exposing predict_action(images, instructions, state=None, dataset_stats=None)
-  -> GenericPredictActionPolicy
-  -> PolicyServer RPC
+benchmark adapter  (emits canonical obs incl. state_raw)
+  -> PayloadBuilder (client-side): canonical dict -> predict_action(**kwargs)
+  -> GenericPredictActionPolicy -> PolicyServer RPC
+  -> model factory/loader -> model.predict_action(images, instructions, state=None, dataset_stats=None, ...)
+  -> raw action chunk
+  -> ActionDecoder (client-side): raw chunk -> benchmark env action space
 ```
+
+Each supported model contributes three registered pieces: a **ModelFactory** (`factories/<model>_factory.py`, `@register_factory`, server-side), a **PayloadBuilder** (`payload_builders/<model>.py`, `@register_payload_builder`, client-side), and — only when its action encoding is not already covered — an **ActionDecoder** (`action_decoders/`). The ActionDecoder key is auto-composed at orchestrator startup from `payload_builder.action_encoding` and `adapter.action_space`, so users no longer hand-write it in YAML.
 
 Create a bespoke policy adapter only when the model cannot reasonably expose the shared `predict_action` interface or needs custom RPC behavior that `GenericPredictActionPolicy` cannot cover.
 
+## What already exists vs what you create
+
+This skill adapts a **new model**. The benchmark side and the shared eval infrastructure already exist, but **none of the model's own eval glue does** — do not assume the model's factory, PayloadBuilder, YAMLs, or run scripts are present. You author them from scratch, using pi05/xvla as templates.
+
+Already exists — reuse, do not recreate:
+- Benchmark adapters (`adapters/*.py`) and their runners; each adapter's `action_space` / `cameras` / `default_fps`.
+- Shared eval infra: `GenericPredictActionPolicy`, `servers/predict_action_interface.py`, the factory and payload-builder registries, `action_decoders/base.py` + `rotation.py` and the already-registered `ee6d_*` / `joint` decoders, `bridges/robotwin_policy.py`, `EvalServerArgs`, `loongforge_server.py`, and `server_manager.py` routing.
+- The training-side model package: `xxxx_modeling.py` (its `predict_action`) and `model_configuration_<model>.py` (`ModelConfig`) — read-only.
+- The pi05/xvla integrations — as **templates to copy**, not code your model reuses at runtime.
+
+You create for the new model, from scratch (pi05/xvla is the structural template):
+- `factories/<model>_factory.py`, `payload_builders/<model>.py`, the per-benchmark YAML pairs, the `run_*.sh` scripts, and — only if the model's action encoding is not already covered — a new ActionDecoder. Register the new factory and payload-builder module paths in the two registries.
+
+Because the model's eval YAML does not exist yet, the official-config reconciliation in step 2 diffs the **official inference config** against the YAML you are drafting from the pi05/xvla template — not against a pre-existing model YAML. The human-approval gate then applies to values that **deviate from the official config** or to non-obvious choices, not to every field of a from-scratch YAML (a from-scratch YAML has no "existing value" to preserve).
+
 ## Mental model
 
-Keep four boundaries separate:
+Keep these boundaries separate:
 
 ```text
-benchmark adapter:
+benchmark adapter (adapters/):
   benchmark obs/action <-> canonical eval schema
-  owns benchmark-native state, action conversion, and debug/trace metadata
+  OUTPUTS raw obs fields in canonical_obs["state_raw"] (NOT an encoded model state)
+  declares capability class attrs: action_space / default_fps / cameras
+  owns benchmark-native state and debug/trace metadata
   examples: adapters/libero.py, adapters/maniskill.py, adapters/simplerenv.py
 
-model factory/loader:
+model factory/loader (factories/):
   model config/import/checkpoint/tokenizer/device/dtype/random-init/metadata
-  returns a model object implementing predict_action(...)
-  example: PI05ModelFactory in factories/pi05_factory.py
+  server-side (needs torch); returns a PredictActionModelSpec whose model
+  implements predict_action(...). Role UNCHANGED by the refactor.
+  example: PI05ModelFactory in factories/pi05_factory.py, XVLAModelFactory in
+  factories/xvla_factory.py (still wraps predict_action for domain_id int->tensor).
 
-generic eval policy:
-  RPC payload handling, image view selection, predict_action invocation,
-  action chunk cache, action shape validation, action dim truncation,
-  dataset statistics loading, latency, metadata.
-  View packing (see `_build_image_input`): primary/head required; if both
-  left and right exist → 3 views [head, left, right] (RoboTwin); else at most
+payload builder (payload_builders/, client-side):
+  Converts the adapter's canonical dict -> the kwargs for
+  model.predict_action(**kwargs). This is where per-model payload assembly
+  now lives (previously scattered across runner `_canonical_to_*_payload`,
+  the factory's `_predict_action_wrapper`, the policy's image packing, and
+  adapters' state building). Declares model capabilities as typed class
+  attributes (state_encoding / action_encoding / action_dim / action_horizon /
+  domain_id / unnorm_key) — the annotated names are the whitelist for YAML
+  `model:` overrides. Base class payload_builders/base.py: PayloadBuilder with
+  build(canonical, ctx) / reset(episode_id) / update_from_response(response) /
+  note_env_action(env_action). Registry: payload_builders/registry.py
+  (build_payload_builder). Image view packing is `_pack_images` in
+  payload_builders/pi05.py (reused by xvla): primary/head required; if both
+  left and right exist -> 3 views [head, left, right] (RoboTwin); else at most
   one wrist/right/left as the second view. Models must accept dynamic view
   count (e.g. `num_images = len(images[0])`), never hardcode 2 or 3.
-  Action unnormalization is NOT done here; it is the model's responsibility
-  inside predict_action().
+  Proprio encoding lives here via the state_encoding logic.
+  examples: Pi05PayloadBuilder, XVLAPayloadBuilder.
+
+generic eval policy (servers/loongforge_policy.py):
+  RPC payload handling, chunk caching, predict_action invocation, action shape
+  validation, action dim truncation, dataset statistics loading, latency,
+  metadata. It NO LONGER packs images (that moved to _pack_images in the
+  PayloadBuilder). RPC payload is v2 only: `images` = list of view arrays,
+  `instructions` = list[str]. Action unnormalization is NOT done here; it is
+  the model's responsibility inside predict_action().
   example: GenericPredictActionPolicy in servers/loongforge_policy.py
 
-eval bridges / action postprocess (protocol-specific, not in the model package):
-  RoboTwin: bridges/robotwin_policy.py via benchmark.action_bridge
-    (pi05_aloha_14d | ee6d_dual | strict_14d | duplicate_7d).
-  Runner-side action conversion: benchmark.action_postprocess keys from
-    ACTION_POSTPROCESS_REGISTRY in servers/predict_action_interface.py
-    (ee6d_to_axis_angle, ee6d_to_simpler_abs_euler, ee6d_to_calvin_abs, ...).
-  Proprio layout for models that need ee6d state: server.state_format: ee6d.
+action decoders (action_decoders/, client-side):
+  Convert the raw model action chunk -> the benchmark env action space.
+  base.py = ActionDecoder base (__call__(actions[H,D], ctx) -> env_actions,
+  optional reset()), IdentityDecoder, and the registry (register_action_decoder
+  / build_action_decoder). rotation.py = pure rot6d math. ee6d.py = decoders
+  for ee6d-output models (ee6d_to_axis_angle, ee6d_to_euler, ee6d_to_quat,
+  ee6d_to_calvin_abs, ee6d_to_simpler_abs_euler, ee6d_robotwin_ee_dual).
+  joint.py = decoders for joint(-delta)-output models (pi05_aloha_robotwin,
+  stateful). The decoder key is AUTO-COMPOSED at orchestrator startup by
+  orchestrator/config.py: resolve_action_decoder_key(payload_builder, adapter)
+  = "{payload_builder.action_encoding}_to_{adapter.action_space}"; identity
+  (source == target) -> empty key -> IdentityDecoder (no-op). Users do not
+  hand-write a decoder key in YAML.
+
+RoboTwin form-B bridge (bridges/robotwin_policy.py, protocol-specific):
+  Thinned to the 4-component chain (adapter -> PayloadBuilder -> PolicyClient
+  -> ActionDecoder). `_BRIDGE_WIRING` maps benchmark.action_bridge ->
+  (model_type, payload-builder state_encoding, decoder key):
+    ee6d_dual      -> (xvla, ee6d_dual, ee6d_robotwin_ee_dual)
+    pi05_aloha_14d -> (pi05, aloha_pi, pi05_aloha_robotwin)
 ```
 
-The adapter state boundary matters. Benchmark-native structured state stays in `canonical_obs["state"]` for eval/debug/trace. Only model-ready state goes into `canonical_obs["model_state"]`, which runners forward as RPC payload `state`, and which eventually reaches `predict_action(state=...)`.
+The state boundary is now: the adapter emits raw obs fields under
+`canonical_obs["state_raw"]`; the PayloadBuilder encodes them per its
+`state_encoding` into the `predict_action` `state` kwarg; RPC forwards that to
+`predict_action(state=...)`. Benchmark-native structured state stays in
+`canonical_obs["state"]` for eval/debug/trace. There is no longer an
+adapter-provided `model_state`; proprio encoding is the PayloadBuilder's job.
 
 ```text
-adapter.model_state -> RPC payload.state -> predict_action(state=...)
+adapter.state_raw -> PayloadBuilder encodes per state_encoding -> RPC payload.state -> predict_action(state=...)
 ```
 
-Do not clean, drop, or reinterpret benchmark-native dict state inside a model factory. That belongs in the benchmark adapter or payload boundary.
+Do not clean, drop, or reinterpret benchmark-native dict state inside a model factory. That belongs in the benchmark adapter (raw fields) or the PayloadBuilder (encoding).
 
 ## Expected deliverables
 
@@ -67,16 +124,18 @@ Produce concrete files whenever implementation is requested. A complete model in
 - An official inference-config research note: which official sources were consulted (official repo, paper, HuggingFace model card, official deployment/eval scripts), which official inference parameters were found, and a field-by-field comparison against the existing eval YAML. Missing fields must be explicitly confirmed or rejected by the user before being added, and confirmed fields land in eval-side code only (factory, eval policy, eval YAML) — never in the training-side `ModelConfig`.
 - A model factory/loader that returns a model instance and metadata, preferably via `PredictActionModelSpec` or an equivalent local pattern.
 - A model object exposing `predict_action(images, instructions, state=None, dataset_stats=None)`. This method is implemented by the training team in the model package's `xxxx_modeling.py`; this skill consumes it as-is and does not reimplement inference. Thin eval-side wrappers are allowed only for type/coercion plumbing (e.g. xvla `domain_id` int → LongTensor). If the method is missing or does not match the contract, report that to the user/training team as a blocker.
+- A PayloadBuilder registered with `@register_payload_builder("<model_type>")` under `payload_builders/<model>.py`. It converts the adapter's canonical dict into `predict_action(**kwargs)`, declares model capabilities as typed class attributes (`state_encoding` / `action_encoding` / `action_dim` / `action_horizon` / `domain_id` / `unnorm_key` — the annotated names are the whitelist for YAML `model:` overrides), and encodes proprio per `state_encoding` from `canonical_obs["state_raw"]`. The orchestrator asserts `set(MODEL_FACTORY_REGISTRY) == set(PAYLOAD_BUILDER_REGISTRY)` at startup, so a factory without its paired payload builder (or vice-versa) fails fast — always ship the factory and payload builder together.
+- An ActionDecoder under `action_decoders/` only if the model's action encoding is not already covered. Otherwise it is auto-selected: identity source==target action space → `IdentityDecoder` (no-op), or an existing `ee6d_*` decoder when `{action_encoding}_to_{action_space}` already maps to one. New decoders register with `@register_action_decoder("<key>")` (grouped by source encoding in `ee6d.py` / `joint.py`); the key is auto-composed at startup, not written in YAML.
 - Interface validation using `validate_predict_action_model()` and `call_predict_action()` from `loongforge/embodied/eval/servers/predict_action_interface.py`.
 - Reuse of `GenericPredictActionPolicy` when the shared interface is sufficient.
 - A bespoke `servers/<model>_policy.py` only if shared `predict_action` is not a good fit.
 - `loongforge/embodied/eval/servers/<model>_server.py` or existing server entrypoint reuse if applicable.
 - `loongforge/embodied/eval/orchestrator/server_manager.py` routing only when adding a new `model.backend` that cannot reuse existing LoongForge routing.
 - Demo YAML configs for every already-supported benchmark under `examples/embodied/<model>/eval/configs/<benchmark>/`, unless the user narrows scope. Prefer the **one public + one `_internal` pair per benchmark** layout used by pi05/xvla (see step 6); do not ship extra full/regression YAMLs unless the user asks.
-- Matching run scripts under `examples/embodied/<model>/eval/` (`run_<benchmark>_eval.sh` + `run_<benchmark>_eval_internal.sh`) when following the pi05/xvla pattern.
+- Matching run scripts under `examples/embodied/<model>/eval/` (`run_<benchmark>_eval.sh` + `run_<benchmark>_eval_internal.sh`) when following the pi05/xvla pattern. These run scripts do not exist yet during a real adaptation — you must **author them as part of the deliverables**, and each one must bake in (a) the correct benchmark conda env for the orchestrator (`BENCHMARK_PYTHON` / the env used to launch `-m loongforge.embodied.eval.orchestrator.run`) and (b) all required env exports before launch: `PYTHONPATH=<repo_root>`, `CUDA_VISIBLE_DEVICES`, `LD_LIBRARY_PATH` including the machine's `nvidia_lib` dir so `libcuda.so.<driver-version>` resolves, and the simulator vars for that benchmark (`MUJOCO_GL`/`PYOPENGL_PLATFORM` for LIBERO/CALVIN; `VK_ICD_FILENAMES`/`XDG_RUNTIME_DIR` for SAPIEN). Copy the env-export block from the pi05/xvla run scripts as the template.
 - A smoke-test matrix covering every generated benchmark demo, with one command and expected artifact path per benchmark.
 - Executed smoke tests for every generated benchmark demo that can run in the current environment; do not stop at generating YAML/matrix files.
-- Documentation updates in the relevant eval docs, especially `README.md`, `user_guide_en.md`, `benchmark_envs.md`, `loongforge_eval_summary.md`, or `predict_action_interface.md`.
+- Documentation updates in the relevant eval docs, especially `README.md`, `user_guide_en.md`, `benchmark_envs.md`, `loongforge_eval_summary.md`, or `model_integration.md`.
 
 If the user asks for a dry-run, generation test, or re-application test, write generated artifacts to a temp directory such as `/tmp/<model>_eval_adapter_*` and do not overwrite repo files except the skill itself when explicitly requested.
 
@@ -94,12 +153,12 @@ Strongly recommended (ask for them; proceed with discovery only if the user defe
 
 - Official source links for the model + benchmark: official GitHub repo, HuggingFace model card, paper, ideally the official eval script/config for that benchmark. These become mandatory if web access is unavailable.
 - Runtime environments: the conda env name for each target benchmark client, and the model server Python path for YAML `server.python`.
-- The existing eval YAML to use as the diff baseline under `examples/embodied/<model>/eval/configs/`, or confirmation that configs are generated from scratch.
+- The diff baseline for configs: for a new model there is normally none, so configs are drafted from scratch using the pi05/xvla template. Only when refactoring an existing integration is there an existing eval YAML under `examples/embodied/<model>/eval/configs/` to diff against.
 
 Optional (ask once; if unanswered, apply the defaults stated below):
 
 - Pre-authorized decisions for the human-intervention gates: e.g. "add missing fields at official recommended values without asking". Default: no pre-authorization — every gate stops and asks.
-- Port range constraints (default: pick unique unused ports), `benchmark.domain_id` if the model requires one (e.g. xvla; default: the known per-benchmark IDs listed in step 6 — note SimplerEnv WidowX/Bridge is **0**, not 1), dry-run vs writing to the repo (default: write to the repo), and GPU/Vulkan readiness for SAPIEN-based benchmarks (default: probe with `vulkaninfo` per step 8).
+- Port range constraints (default: pick unique unused ports), `model.domain_id` if the model requires one (e.g. xvla; default: the known per-benchmark IDs listed in step 6 — note SimplerEnv WidowX/Bridge is **0**, not 1), dry-run vs writing to the repo (default: write to the repo), and GPU/Vulkan readiness for SAPIEN-based benchmarks (default: probe with `vulkaninfo` per step 8).
 
 ## Workflow
 
@@ -109,24 +168,27 @@ Optional (ask once; if unanswered, apply the defaults stated below):
    - Confirm target benchmarks are already wired in the orchestrator.
    - Discover the already-supported benchmark set from runner/config directories rather than assuming only one benchmark.
 
-2. Research the official inference configuration online and reconcile it with the existing eval config.
+2. Research the official inference configuration online and reconcile it with the eval config you are drafting.
+   - **MANDATORY — official-config parity gate (blocking).** You MUST reproduce the model+benchmark's exact official configuration before running for a success rate, and you MUST NOT attribute a low/zero success rate to "model behavior", "inference numerics", or "hard task" until EVERY inference-relevant knob has been proven equal to (a) the checkpoint's own bundled files and (b) the official eval client. Build an explicit parity checklist and verify each item = official; treat any unverified item as a suspected bug, not the model's fault. The checklist MUST cover, at minimum: per-embodiment state/action layout; normalization method per dim (min-max vs mean-std / `mean_std_embedding_keys`, sin/cos, q01/q99); relative-vs-absolute action (`action_configs`/`use_relative_action`); **action horizon / `delta_indices`**; **open-loop execution length `n_action_steps` / `chunk_execute_steps`**; `max_episode_steps`; `control_freq`/`sim_freq`; embodiment→projector id; image size + preprocessing + camera view(s); prompt/instruction format; denoising/sampling steps; dtype; and the benchmark's episode-init protocol (e.g. `prepackaged_config`). Numbers come from the checkpoint's `processor_config.json`/`experiment_cfg`/`config.json` and the official eval CLIENT command — NEVER from library/registration defaults or from eyeballing `statistics.json` ranges. When a knob cannot be confirmed against an official source, stop and ask the user rather than guessing. Only after this checklist is 100% green may you investigate model/inference-level causes.
+   - **The checkpoint's own bundled config files are authoritative — read them, do not hand-derive.** When adapting a real checkpoint, its directory ships the exact modality + normalization spec (e.g. `config.json`, `processor_config.json`, `experiment_cfg/`, `meta/modality.json`, `statistics.json`, `embodiment_id.json`). Read these to get the per-embodiment state/action **layout AND the normalization method**: min-max vs mean-std (`mean_std_embedding_keys`), sin/cos encoding, relative vs absolute (`action_configs` / `use_relative_action`), embodiment→projector id, action `delta_indices`/horizon, image size/preprocessing. Do NOT reconstruct the embodiment/modality config by eyeballing `statistics.json` min/max ranges — the ranges do not tell you the normalization scheme, and guessing it (e.g. assuming min-max when the checkpoint uses mean-std over a wide ±2π euler range) silently produces catastrophically wrong actions that only show up on wide-range action dims (a small-range benchmark like LIBERO will hide the bug). If the checkpoint bundles a processor/modality config, mirror it verbatim into the eval-side embodiment config.
    - Search the web for the model's official sources: the official GitHub repo (inference/eval scripts, `config.json`, deployment docs), the paper, and the HuggingFace model card. Prefer official first-party sources over blog posts or third-party reproductions.
    - If web access is unavailable, stop and ask the user to intervene: either restore web access or provide the official inference config manually. Do not silently substitute guesses or unverified local sources for the official config.
    - The research target is the specific model plus the benchmark to be evaluated (e.g. "xvla on LIBERO"); official inference configs often differ per benchmark, so look for the official setup used for that benchmark.
    - Extract the official inference-time parameters, typically: action horizon / chunk size, action dim, state dim, image resolution and preprocessing, expected camera views, prompt/instruction format, normalization scheme (q01/q99, mean/std, none) and its statistics source, denoising/sampling steps, dtype, and any control-frequency or replan-interval assumptions.
-   - Compare field-by-field against the existing eval YAML (`model:` and `server:` sections). Read the training-side `XxxModelConfig` dataclass only to learn which `model:` fields exist and take effect; it is training-side code and must NOT be modified by this skill. Produce a three-column diff: official value, current eval value, and status (match / mismatch / missing in eval config).
-   - For fields present in the official config but missing from the eval YAML, stop and ask the user before adding them. Present each missing field with its official value, its likely impact on eval correctness, and a recommendation. Only add fields the user confirms; record rejected fields and the reason in the research note.
-   - Route each confirmed missing field to an eval-side home: if the training-side `ModelConfig` already declares it, set it via the YAML `model:` section; otherwise put it in the `server:` section (extending `EvalServerArgs` if needed) or handle it inside the eval-side factory / eval policy. Never add fields to the training-side `ModelConfig` to make a YAML knob work.
-   - For fields whose eval value mismatches the official value, flag them the same way; do not silently overwrite user-tuned values.
-   - Also compare against eval-pipeline capabilities, not just YAML fields: e.g. camera-view packing (1 primary + optional wrist, or 3-view head/left/right for RoboTwin), `action_postprocess` / `action_bridge` coverage, or a state format the runner does not forward. When the official config exceeds what the eval pipeline can do, stop and ask the user to decide whether to add the corresponding capability to the eval-side code; do not extend the pipeline or accept the deviation on your own.
+   - **Also align the benchmark/client-side runtime knobs, and take them from the official eval CLIENT command — NOT the env registration default.** These include `max_episode_steps` (episode horizon), `control_freq`, open-loop execution horizon / `n_action_steps` (→ `chunk_execute_steps`), replan interval, and episode count. The official client often overrides the gym env's registered default (e.g. a drawer env registers `max_episode_steps=120` but the official rollout passes `--max-episode-steps 300`; using the 120 registration default silently starves a slow precision task and tanks the rate). Copy these from the published eval command, and include them in the same field-by-field diff. In short: **every knob that affects the rollout — model, server, AND benchmark — must match the official value; do not fall back to library/registration defaults.**
+   - Compare field-by-field against the eval YAML you are drafting (`model:` and `server:` sections), bootstrapped from the pi05/xvla template — for a new model there is no pre-existing model YAML, so the template defaults are the starting point. Read the training-side `XxxModelConfig` dataclass only to learn which `model:` fields exist and take effect; it is training-side code and must NOT be modified by this skill. Produce a three-column diff: official value, drafted eval value (or template default), and status (match / mismatch / missing in eval config).
+   - For fields present in the official config but not yet in your drafted YAML, add them at the official value when they are unambiguous and clearly required (this is the normal from-scratch case — do not stop on every field). Stop and ask the user only for fields where the official value is ambiguous, contested across sources, or where you must deviate from it. Present each such field with its official value, its likely impact on eval correctness, and a recommendation; record rejected fields and the reason in the research note.
+   - Route each confirmed field to an eval-side home: if the training-side `ModelConfig` already declares it, set it via the YAML `model:` section; otherwise put it in the `server:` section (extending `EvalServerArgs` if needed) or handle it inside the eval-side factory / eval policy. Never add fields to the training-side `ModelConfig` to make a YAML knob work.
+   - For fields whose drafted value mismatches the official value, flag them the same way; do not silently overwrite a value the user has already tuned in an earlier iteration.
+   - Also compare against eval-pipeline capabilities, not just YAML fields: e.g. camera-view packing (1 primary + optional wrist, or 3-view head/left/right for RoboTwin), PayloadBuilder `state_encoding` / `action_encoding` coverage and ActionDecoder coverage (auto-composed `{action_encoding}_to_{action_space}` key), or a state field the adapter does not emit under `state_raw`. When the official config exceeds what the eval pipeline can do, stop and ask the user to decide whether to add the corresponding capability to the eval-side code; do not extend the pipeline or accept the deviation on your own.
    - If web research was possible but genuinely no official inference config exists for this model + benchmark, say so explicitly and proceed with the existing eval config, noting the gap in the research note and the final report. This clause does not apply when web access is unavailable — that case requires user intervention as above.
 
 3. Iterate the eval code to follow the official inference configuration.
-   - Prefer **eval-only** edits: `loongforge/embodied/eval/**` (factories, servers, eval policy, adapters, bridges, orchestrator, `EvalServerArgs`) and `examples/embodied/<model>/eval/**` YAMLs/scripts. Training-side code — the model package, its `ModelConfig`, and `predict_action()` in `xxxx_modeling.py` — is out of scope by default; if a required change can only be made there, stop and report it to the user/training team as a blocker instead of editing it. If the user later authorizes a minimal model-side fix (e.g. dynamic `num_images`), keep it multi-benchmark safe and re-smoke a known-good combo (typically pi05×LIBERO) after shared changes.
-   - Put protocol-specific logic in eval bridges / `action_postprocess` named modes (e.g. `pi05_aloha_14d` vs `ee6d_dual`), not as hard-coded model defaults.
+   - Prefer **eval-only** edits: `loongforge/embodied/eval/**` (factories, payload builders, action decoders, servers, adapters, bridges, orchestrator, `EvalServerArgs`) and `examples/embodied/<model>/eval/**` YAMLs/scripts. Training-side code — the model package, its `ModelConfig`, and `predict_action()` in `xxxx_modeling.py` — is out of scope by default; if a required change can only be made there, stop and report it to the user/training team as a blocker instead of editing it. If the user later authorizes a minimal model-side fix (e.g. dynamic `num_images`), keep it multi-benchmark safe and re-smoke a known-good combo (typically pi05×LIBERO) after shared changes.
+   - Put per-model protocol logic in the PayloadBuilder (`state_encoding` / `action_encoding` capability attrs) plus the ActionDecoder registry, not as hard-coded model defaults. RoboTwin form-B uses `benchmark.action_bridge` (`pi05_aloha_14d` vs `ee6d_dual`) only to select the (model_type, state_encoding, decoder key) wiring in `bridges/robotwin_policy.py::_BRIDGE_WIRING`.
    - Apply the user-confirmed field additions to `EvalServerArgs` / the eval-side model factory / the eval YAMLs together, so every YAML field maps to a field that actually takes effect.
    - Drive official-config alignment through eval-side knobs only: pass officially-documented values through existing `ModelConfig` fields via the YAML `model:` section, and adjust the eval-side factory (loading, device/dtype, paths) and eval policy/adapter where the change is eval-owned. If the official behavior depends on model-internal logic (normalization scheme, preprocessing, prompt format, denoising steps) that `predict_action()` does not expose a knob for, report it as a training-side blocker.
-   - Keep boundaries intact while iterating: normalization stays inside the training-side `predict_action()`, view selection and chunk caching stay in `GenericPredictActionPolicy`, and benchmark state conversion stays in the adapter.
+   - Keep boundaries intact while iterating: normalization stays inside the training-side `predict_action()`, image view packing and proprio `state_encoding` stay in the PayloadBuilder, chunk caching stays in `GenericPredictActionPolicy`, action decoding stays in the ActionDecoder, and benchmark raw-state extraction (`state_raw`) stays in the adapter.
    - After each iteration, re-run local interface validation and at least one benchmark smoke to confirm the change did not break the RPC contract or action shapes.
 
 4. Decide whether the shared `predict_action` path applies.
@@ -140,37 +202,45 @@ Optional (ask once; if unanswered, apply the defaults stated below):
    - Use `PredictActionModel`, `validate_predict_action_model()`, and `call_predict_action()` to define and test the contract.
    - Accept these output shapes from the model and normalize to `[H, action_dim]`: `[D]`, `[H, D]`, or `[B, H, D]`.
    - Make the model factory handle model-private setup: imports, config registration, checkpoint loading, tokenizer paths, device/dtype, compile flags, random-init, and metadata.
-   - Let `GenericPredictActionPolicy` handle eval-private behavior: RPC payloads, image view packing (`primary`/`head` required; both `left`+`right` → 3 views for RoboTwin; else at most one wrist view), chunk caching, action shape validation, latency, request IDs, and response format. Action unnormalization is the model's responsibility and must happen inside `predict_action()`. Models must tolerate dynamic view counts.
-   - Extra model keywords (e.g. xvla `domain_id`) are passed via RPC payload from `benchmark.domain_id`; the factory may wrap `predict_action` for type coercion only, not for reimplementing inference.
+   - Let the PayloadBuilder handle client-side payload assembly: image view packing (`primary`/`head` required; both `left`+`right` → 3 views for RoboTwin; else at most one wrist view, via `_pack_images` in `payload_builders/pi05.py`), proprio `state_encoding`, and model-extra kwargs. Let `GenericPredictActionPolicy` handle eval-private behavior: RPC payloads, chunk caching, action shape validation, latency, request IDs, and response format. Action unnormalization is the model's responsibility and must happen inside `predict_action()`. Models must tolerate dynamic view counts.
+   - Extra model keywords (e.g. xvla `domain_id`) are emitted by the PayloadBuilder into the `predict_action` kwargs (`domain_id` resolved from the `model.domain_id` YAML override or the per-benchmark default map); the factory may wrap `predict_action` for type coercion only (int → LongTensor), not for reimplementing inference.
 
 5. Define state and action semantics explicitly.
-   - Keep benchmark-native `canonical_obs["state"]` out of the model server unless it is already model-ready.
-   - Add or preserve `canonical_obs["model_state"]`; runners should forward `canonical_obs.get("model_state")` as RPC payload `state`.
-   - If a model consumes state, verify that `model_state` ordering, units, frame, shape, and `dataset_stats["observation.state"]` match training. For ee6d models set `server.state_format: ee6d` so adapters build rot6d proprio.
+   - Keep benchmark-native `canonical_obs["state"]` out of the model server unless it is already model-ready; it exists for eval/debug/trace.
+   - The adapter emits raw obs fields under `canonical_obs["state_raw"]`; the PayloadBuilder encodes them per its `state_encoding` into the `predict_action` `state` kwarg. There is no adapter `model_state` anymore.
+   - If a model consumes state, verify that the PayloadBuilder's encoded proprio ordering, units, frame, shape, and `dataset_stats["observation.state"]` match training. For ee6d models set the PayloadBuilder `state_encoding` (e.g. `ee6d` / `ee6d_calvin` / `ee6d_widowx` / `ee6d_dual`) via the YAML `model:` section so it builds rot6d proprio from `state_raw`.
    - Record dims/horizon fields that the ModelConfig actually declares (pi05: `action_dim`/`state_dim`/`action_horizon`/…; xvla: `real_action_dim`/`action_mode`/`num_actions`/…).
    - Check whether the model emits raw actions or normalized actions.
+   - **Get the per-dim normalization method from the checkpoint's bundled modality/processor config, not from the stats file.** For models with a per-embodiment modality spec (e.g. GR00T `processor_config.json`), the action dims can mix schemes (e.g. pos+rotation use mean-std via `mean_std_embedding_keys`, gripper uses min-max); mirror it exactly into the eval-side embodiment config. Assuming min-max when training used mean-std silently blows up wide-range dims (e.g. a ±2π euler action) while a narrow-range benchmark (LIBERO) hides it.
    - If normalized actions require inverse transform (e.g. pi05 q01/q99, or LeRobot mean/std), it belongs inside the training-side `predict_action()`, not in the generic eval policy. Verify the training-side implementation handles it; if it does not, report it to the user/training team as a blocker instead of implementing it on the eval side.
    - Do not reuse pi05 q01/q99 unnormalization for another model unless the model uses that exact convention.
-   - Map model output → env action with eval-side protocol knobs only: `benchmark.action_postprocess` and/or RoboTwin `benchmark.action_bridge`. Document abs vs delta control in the YAML header.
+   - Map the model's raw action chunk → env action with the ActionDecoder. The decoder key is auto-composed at startup from `payload_builder.action_encoding` × `adapter.action_space`; source == target yields `IdentityDecoder`. RoboTwin form-B selects its decoder via `benchmark.action_bridge`. Document abs vs delta control in the YAML header.
 
 6. Write YAML configs for all supported benchmarks.
    - By default, generate demos for each supported benchmark: LIBERO, CALVIN, SimplerEnv, RoboTwin, ManiSkill.
+   - **Never invent `benchmark:` / per-benchmark `env:` / `run:` fields.** These belong to the benchmark runner, not the model, and every benchmark has its own required keys. Source them by copying the `benchmark:`/`env:`/`run:` blocks from an existing model's example YAML for that same benchmark (pi05/xvla under `examples/embodied/<model>/eval/configs/<benchmark>/`) and/or by reading the runner (`orchestrator/runners/<benchmark>_runner.py` and `orchestrator/run.py::_run_<benchmark>_once`) for the keys it reads. Change only the model-specific values; keep the benchmark keys verbatim. A wrong or missing benchmark key fails the runner immediately (e.g. CALVIN raises `dataset path must be set` when `benchmark.dataset_path` is absent). Per-benchmark required keys seen in-repo (verify against the runner, do not treat as exhaustive):
+     - LIBERO: `suite`, `max_tasks`, `episodes_per_task`, `max_steps`, `num_steps_wait`, `control_mode`.
+     - CALVIN: `suite` (e.g. `task_D_D`), `dataset_path`, `calvin_config_path`, `eval_sequences_path`, `num_sequences`, `max_steps_per_subtask`, `control_hz`.
+     - SimplerEnv: `task_name`, `robot_setup`, `scene_name`, `rgb_overlay_path`, `sim_freq`, `control_freq`, `control_mode`, `rotation_mode`, `max_steps`, `robot_init_x/y`; `env.simplerenv_root` + `env.nvidia_lib_dir` + `env.nvidia_icd_json`.
+     - ManiSkill: `task_name`, `robot_uid`, `instruction`, `obs_mode`, `control_mode`, `control_freq`, `render_mode`, `sim_backend`, `render_backend`, `camera_name`, `action_scale`, `max_steps`.
+     - RoboTwin (**form-B**): put `domain_id` **and** `action_bridge` under `benchmark:`, and do **not** set `model.state_encoding` (the bridge's `_BRIDGE_WIRING` selects state_encoding + decoder). Also `task_name`, `task_config`, `start_seed`, `episodes_per_task`, `max_steps`; `env.robotwin_root` + `env.robotwin_python`.
+   - **`random_init: true` still needs a real `processor_path`/`tokenizer_path`.** Models that load an HF processor/tokenizer at init (e.g. X-VLA) require a valid processor dir even with no checkpoint weights — point `processor_path`/`tokenizer_path` at any full checkpoint dir of that model. Leaving them empty under `random_init` crashes at processor load, not at inference.
    - **Layout (pi05/xvla convention):** for each benchmark ship **exactly one public + one `_internal` pair** (e.g. `object_smoke.yaml` + `object_smoke_internal.yaml`). Public templates use `/path/to/...` placeholders; `_internal` holds machine absolute paths and is the one-click default for internal scripts. Do **not** leave extra full-suite / alternate smoke YAMLs in-tree unless the user asks (optional knobs go in comments on the single pair).
    - **Task-success vs link smoke:** only mark a config as task-success when a matching domain checkpoint was verified. If there is no domain weight, set `server.random_init: true`, empty `ckpt_path`, keep steps short, and comment clearly that it is **not** task-success (see pi05/xvla CALVIN + ManiSkill; also pi05 SimplerEnv).
    - Keep success smokes bounded by default: one task, one episode where knobs allow. Full-suite sizes belong in comments (`max_tasks: 0`, `episodes_per_task: 10`, …), not as a second YAML file.
    - Use local runner knobs where available: LIBERO `max_tasks: 1` and `episodes_per_task: 1`; CALVIN one sequence and low max steps for link smoke (raise toward official EP_LEN only with domain weights); SimplerEnv one task/episode (X-VLA WidowX task-success uses official `max_steps: 1200`); RoboTwin one task with bounded `max_steps`; ManiSkill one episode with low `max_steps` for link smoke.
-   - The `model:` section fields must correspond 1:1 to the model's `XxxModelConfig` dataclass (e.g. `Pi05ModelConfig`, `XvlaModelConfig`). Before writing the YAML, inspect `loongforge/embodied/model/<model>/model_configuration_<model>.py` to find the declared fields. Only include fields that exist in the ModelConfig; unknown fields are silently filtered out by OmegaConf merge and will not take effect. Do NOT include eval-only or runner-level fields (e.g. `name`, `action_dim` as benchmark-target dim, `num_image_views`) in `model:`. Exception: some ModelConfigs legitimately declare `action_dim`/`state_dim` (pi05); xvla uses `real_action_dim` / `action_mode` instead — follow the dataclass.
-   - Include `model.backend` and `model.model_type` in the `model:` section.
-   - Include infrastructure fields (`ckpt_path`, `tokenizer_path` / `processor_path` when needed, `dataset_statistics_path`, `use_bf16`, `loongforge_root`, `random_init`) in the `server:` section, not `model:`. Put proprio layout knobs such as `state_format: ee6d` in `server:` as well.
+   - The `model:` section carries two kinds of fields: (a) fields that correspond 1:1 to the model's `XxxModelConfig` dataclass (e.g. `Pi05ModelConfig`, `XvlaModelConfig`), consumed server-side by the factory; and (b) the per-model PayloadBuilder capability fields `state_encoding` / `action_encoding` / `domain_id` / `unnorm_key`, consumed client-side by the PayloadBuilder whitelist. Before writing the YAML, inspect `loongforge/embodied/model/<model>/model_configuration_<model>.py` for the ModelConfig fields and `payload_builders/<model>.py` for the annotated capability attrs. ModelConfig fields not declared in the dataclass are silently filtered out by OmegaConf merge and will not take effect. Do NOT include eval-only or runner-level fields (e.g. `name`, `action_dim` as benchmark-target dim, `num_image_views`) in `model:` beyond the two categories above. Exception: some ModelConfigs legitimately declare `action_dim`/`state_dim` (pi05); xvla uses `real_action_dim` / `action_mode` instead — follow the dataclass.
+    - Include `model.backend` and `model.model_type` in the `model:` section. `model.model_type` is **required** — `EvalServerArgs.model_type` has no default and `parse_eval_server_config` raises if the `model:` section omits it.
+   - Include infrastructure fields (`ckpt_path`, `tokenizer_path` / `processor_path` when needed, `dataset_statistics_path`, `use_bf16`, `loongforge_root`, `random_init`) in the `server:` section, not `model:`. Proprio layout is now a PayloadBuilder capability: set `model.state_encoding` (e.g. `ee6d`) rather than a `server.state_format` field (that field was removed).
    - Include `server.python`, `server.host`, `server.port`, `server.health_port`, `server.start_timeout_sec`, and `server.log`.
    - Use unique ports per smoke config to avoid health-port collisions during repeated runs.
    - Include `run.output_dir`, `run.seed`, `run.save_trace`, and replay flags when supported.
    - Pair each public YAML with `run_<benchmark>_eval.sh` and each `_internal` YAML with `run_<benchmark>_eval_internal.sh` under `examples/embodied/<model>/eval/`.
-   - For models that require a domain identifier (e.g. xvla), put `benchmark.domain_id` in the `benchmark:` section rather than `model:`. Domain ID is a benchmark/dataset-level concept, not a model-structure field. Known xvla domain IDs used in-repo: LIBERO=3, CALVIN=2, **SimplerEnv WidowX/Bridge=0**, RoboTwin2=6 (VLABench=8 if ever wired). Do not invent IDs; prefer official eval scripts.
+   - For models that require a domain identifier (e.g. xvla), put `domain_id` under the `model:` section (it is a PayloadBuilder capability attr, resolved from the YAML override or the per-benchmark default map). Known xvla domain IDs used in-repo: LIBERO=3, CALVIN=2, **SimplerEnv WidowX/Bridge=0**, ManiSkill=5, RoboTwin2=6 (VLABench=8 if ever wired). Do not invent IDs; prefer official eval scripts.
    - Protocol fields that are **not** ModelConfig:
-     - `benchmark.action_postprocess` — runner-side conversion (registry in `predict_action_interface.py`).
-     - `benchmark.action_bridge` — RoboTwin bridge modes in `bridges/robotwin_policy.py` (`pi05_aloha_14d`, `ee6d_dual`, …).
-     - Absolute vs delta control may be implied by postprocess/bridge (e.g. LIBERO abs EE when postprocess is set); document it in the YAML header.
+     - `model.state_encoding` / `model.action_encoding` — PayloadBuilder capability attrs; the ActionDecoder key is auto-composed `{action_encoding}_to_{action_space}` at startup, so there is no `benchmark.action_postprocess` field anymore.
+     - `benchmark.action_bridge` — RoboTwin form-B wiring selector in `bridges/robotwin_policy.py::_BRIDGE_WIRING` (`pi05_aloha_14d`, `ee6d_dual`).
+     - Absolute vs delta control may be implied by the composed decoder / bridge (e.g. LIBERO abs EE when the `ee6d_to_axis_angle` decoder is composed); document it in the YAML header.
    - Document open weight URLs and verified local paths in the YAML header comments (public vs `_internal`).
 
 7. Wire server startup only as needed.
@@ -180,15 +250,21 @@ Optional (ask once; if unanswered, apply the defaults stated below):
    - Use reusable health server binding for short repeated smoke runs when local patterns support it.
    - After model factory build and before health server startup, run a warmup `predict_action()` with a zero-filled dummy image and an empty instruction. This forces all lazy imports (including potential circular-import paths) to complete before the first real episode arrives. The call is wrapped in a try/except so a warmup exception does not abort startup, but the model must not enter a corrupted state from a warmup call.
    - Before running the smoke matrix, check for leftover orchestrator/policy-server processes and occupied server ports.
-   - Keep benchmark client Python env and model server Python env explicit. Run the top-level orchestrator with the benchmark/simulator conda environment, while YAML `server.python` starts the model server environment.
+   - Keep benchmark client Python env and model server Python env explicit. Run the top-level orchestrator with the benchmark/simulator conda environment, while YAML `server.python` starts the model server environment. **The run script that wires this up does not exist yet in a real adaptation — you author it (step 6 / deliverables) and it must bake in the env activation and all env exports (`PYTHONPATH`, `CUDA_VISIBLE_DEVICES`, `LD_LIBRARY_PATH` so `libcuda` resolves, and simulator vars). Then validate by launching through that generated run script — never a bare `python -m ...`. Running with the wrong conda env or a missing library path is the most common cause of a false failure.**
 
 8. Check runtime-specific traps.
    - For SAPIEN-based benchmarks such as SimplerEnv, RoboTwin, and ManiSkill, verify NVIDIA Vulkan with `vulkaninfo`, not just `nvidia-smi`, when visual rollout correctness matters.
    - Expected Vulkan signal is `deviceName = NVIDIA ...` and `driverName = NVIDIA`; `llvmpipe`/`lavapipe` means visual rollout is not trustworthy.
    - SAPIEN runners may need `LD_LIBRARY_PATH`, `VK_ICD_FILENAMES`, and `XDG_RUNTIME_DIR` set before importing SAPIEN/svulkan2/ManiSkill.
+   - **Point `VK_ICD_FILENAMES` at the machine's actual NVIDIA ICD json** (e.g. `/path/to/nvidia_lib/10_nvidia.json`), and add its dir to `LD_LIBRARY_PATH` — copy the exact path from an existing SAPIEN run script rather than guessing `/usr/share/vulkan/icd.d/nvidia_icd.json`. A wrong or missing ICD path makes SAPIEN silently fall back to `llvmpipe` or fail with `vk::createInstanceUnique: ErrorInitializationFailed`; that is a path mistake, not missing hardware. Verify with `VK_ICD_FILENAMES=<icd.json> vulkaninfo | grep -E 'deviceName|driverName'` → expect `NVIDIA`, and only report a Vulkan blocker after the correct ICD still fails.
    - For MuJoCo/LIBERO/CALVIN, preserve existing `MUJOCO_GL`, `PYOPENGL_PLATFORM`, and benchmark config-path patterns.
+   - **Offline VLM-backbone loading:** if the model builds a VLM/vision backbone (e.g. GR00T's Eagle) that defaults to a HuggingFace repo id + `trust_remote_code`, it will fail offline unless the backbone code/config is local. Prefer a repo-local build path (for GR00T, env `CUDA_GRAPH_IMPL=local` routes to the bundled Eagle builder) and point `model_name`/tokenizer at the local processor dir. Install the attention backend the checkpoint expects (`flash_attn`) or set the model's `use_flash_attention: false` for sdpa.
+   - **Factory `predict_action` wrappers must swallow-not-forward extra kwargs.** The runner passes generic control knobs (`cfg_scale`, `unnorm_key`, ...) that the interface filters by the callable's signature. If your factory wraps `predict_action` and declares `**kwargs`, do NOT forward them to the underlying model (whose signature has none) — absorb and drop them, else you get `unexpected keyword argument 'cfg_scale'`. Mirror the wrapped signature and pass only the known args.
+   - **CUDA false-negatives are an environment problem, not a driver rollback.** If `torch.cuda.is_available()` is `False` or you see `Found no NVIDIA driver on your system` / `Error 803: system has unsupported display driver / cuda driver combination` while `nvidia-smi -L` clearly lists GPUs, the cause is almost always that `libcuda.so` is not on `LD_LIBRARY_PATH` for the conda env being used, or you are running the wrong Python (bare system `python` instead of the run script's env). Before concluding a benchmark is `blocked` on GPU/driver grounds, re-check with the run script's exact `LD_LIBRARY_PATH` (e.g. the machine's `nvidia_lib` directory that holds `libcuda.so.<driver-version>`) and the correct conda env; confirm with a real allocation (`torch.zeros(1, device="cuda")`), not just `is_available()`. Only report a GPU/driver blocker after that check still fails.
+   - **Verify proprio is actually populated — a missing obs field silently becomes a zero state.** If the PayloadBuilder builds proprio from an adapter `state_raw` field (e.g. `tcp_pose`/`eef_pos`) and the env doesn't provide it, the encoder returns `None` and the model's `validation_zero_state` fallback feeds an all-zero proprio. This is invisible on state-dropout-trained models / forgiving tasks (they still work) but silently cripples precision tasks. Two traps seen: (a) a benchmark env variant omits the field other envs expose (e.g. a ported drawer env didn't override `_get_obs_extra` to emit `tcp_pose`, while grasp/pick envs do) — fix the env to expose it; (b) always assert the reconstructed proprio is non-zero and within the checkpoint's `statistics.json` state ranges at reset, rather than trusting the run to "not crash".
+   - **Don't kill your own shell.** Never use `pkill -f <pattern>` where the pattern also matches the command line of the run you just launched (e.g. `pkill -f loongforge_server` while your command string contains that string) — it SIGTERMs the launching shell (exit 143 at ~launch). Clean up by port or specific PID instead.
 
-9. Validate in layers.
+9. Validate in layers. **Adaptation is not complete until tests are actually executed — generating files, YAMLs, and a smoke matrix is not enough. Always finish by running the tests in the correct environment.**
    - First run local interface validation without a benchmark when possible:
 
      ```bash
@@ -207,20 +283,24 @@ Optional (ask once; if unanswered, apply the defaults stated below):
      ```
 
    - Then execute every generated benchmark demo that can run in the current environment.
-   - Use the benchmark client's conda environment for the top-level orchestrator command: LIBERO with the LIBERO env, CALVIN with the CALVIN env, SimplerEnv with the SimplerEnv env, RoboTwin with the RoboTwin env, ManiSkill with the ManiSkill env.
+   - Run each benchmark **via the run script you generated for it** (author it to activate the right conda env and export `PYTHONPATH` / `CUDA_VISIBLE_DEVICES` / `LD_LIBRARY_PATH` / simulator vars — see step 6 / deliverables; there is no pre-existing script in a real adaptation). Use the benchmark client's conda environment for the top-level orchestrator command: LIBERO with the LIBERO env, CALVIN with the CALVIN env, SimplerEnv with the SimplerEnv env, RoboTwin with the RoboTwin env, ManiSkill with the ManiSkill env; the model server uses the env in YAML `server.python`. If you invoke the orchestrator directly instead of through the script, replicate the script's env exports exactly.
+   - **Force a real run when validating — do not be fooled by cached results.** With `run.timestamped_output: false`, an orchestrator run whose `output_dir` already contains a `results.jsonl` will resume/reuse the cached record (`new_records: 0`, `elapsed_sec` ~0) instead of executing a new episode. To prove the integration actually runs now, point `output_dir` at a fresh path (or set `timestamped_output: true`) and confirm `new_records >= 1` with a non-trivial `elapsed_sec` / `avg_inference_latency_ms`.
    - Mark a benchmark `passed` only when the command exits successfully and the expected outputs prove at least one policy call or official runner completion.
-   - Mark a benchmark `blocked` when required runtime, simulator assets, checkpoint, stats, or environment support is missing; include the concrete error or missing path.
+   - Mark a benchmark `blocked` when required runtime, simulator assets, checkpoint, stats, or environment support is missing; include the concrete error or missing path. Before marking `blocked` for a GPU/driver/import reason, first re-run in the correct conda env with the run script's full env exports (see step 8 on CUDA false-negatives) — a wrong env or missing `LD_LIBRARY_PATH` must not be reported as a driver/hardware blocker.
    - Mark a benchmark `skipped` only when the user explicitly narrows scope or asks not to run it.
    - Protocol or mock smoke proves runner/server/RPC/action shape.
    - Random-init smoke proves the real model class can initialize and answer RPC, but is **not** a benchmark score and must not be reported as task-success.
    - Real-checkpoint smoke proves the real checkpoint can run one short episode.
-   - Credible / task-success requires matching domain checkpoint, matching stats when the model needs them, correct action semantics (`action_postprocess` / `action_bridge` / abs vs delta), and enough episodes to support the claim.
-   - After shared eval or model-inference changes (especially view packing / `num_images`), re-run a small known-good regression (e.g. pi05×LIBERO smoke) before claiming no impact.
+   - Credible / task-success requires matching domain checkpoint, matching stats when the model needs them, correct action semantics (PayloadBuilder `state_encoding` / `action_encoding`, the composed ActionDecoder / RoboTwin `action_bridge`, abs vs delta), and enough episodes to support the claim.
+   - **To reproduce a published success rate, run the benchmark's official/env-driven eval protocol — not hand-set init.** Many sims (SimplerEnv `prepackaged_config=True`, i.e. `simpler_env.make(task)`) apply an official visual-matching config and randomize overlay + robot/object init per episode via the env's own rng. Hand-setting a single `scene_name`/`rgb_overlay_path`/`robot_init_x/y` is off-distribution and can crater the rate (measured: eggplant 36% hand-set vs 100% prepackaged). Add/flip the runner flag to the official path before comparing to published numbers.
+   - **Report the rate over enough episodes; sampling may be stochastic.** Diffusion/flow-matching policies sample from unseeded noise, so a single episode is noisy — run ≥20 and report the fraction.
+   - **A passing narrow-action-range benchmark does NOT prove correctness on a wide-range one.** A normalization/scale bug (e.g. min-max vs mean-std over a ±2π euler action) is invisible when the action range is small (LIBERO) but blows up on wide ranges (SimplerEnv widowx). Validate on the actual target benchmark, and treat wide-range/degenerate-action symptoms as a normalization mismatch to reconcile against the checkpoint's own `processor_config.json`.
+   - After shared eval or model-inference changes (especially image view packing in the PayloadBuilder / `num_images`), re-run a small known-good regression (e.g. pi05×LIBERO smoke) before claiming no impact.
 
 10. Update docs with precise status.
     - Separate `mock`, `random-init`, `real checkpoint`, and `credible score` statuses.
     - Put user-facing usage in README/user guide; avoid filling README with internal validation logs.
-    - Put detailed interface contract and local interface-validation examples in `predict_action_interface.md`.
+    - Put detailed interface contract and local interface-validation examples in `model_integration.md`.
     - Mention missing assets directly, especially checkpoint and `dataset_statistics.json`.
     - Record runtime requirements that future users must set before import.
 
@@ -229,21 +309,24 @@ Optional (ask once; if unanswered, apply the defaults stated below):
 Use pi05 as the canonical example of the shared `predict_action` architecture:
 
 - Model interface: `PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)` in the model package.
-- Interface helpers: `loongforge/embodied/eval/servers/predict_action_interface.py`.
-- Generic eval policy: `GenericPredictActionPolicy` in `loongforge/embodied/eval/servers/loongforge_policy.py`.
-- Model factory: `PI05ModelFactory` in `loongforge/embodied/eval/factories/pi05_factory.py`.
+- Interface helpers: `loongforge/embodied/eval/servers/predict_action_interface.py` — the model-author contract only (`PredictActionModel`, `validate_predict_action_model`, `_filter_supported_kwargs`, `call_predict_action`). It contains no action-decode logic.
+- PayloadBuilder: `Pi05PayloadBuilder` in `loongforge/embodied/eval/payload_builders/pi05.py` (image packing `_pack_images`, `state_encoding` proprio, `unnorm_key`); registry `build_payload_builder` in `payload_builders/registry.py`; base class in `payload_builders/base.py`. xvla: `XVLAPayloadBuilder` in `payload_builders/xvla.py` (reuses `_pack_images`, ee6d proprio, `domain_id`).
+- ActionDecoder: `loongforge/embodied/eval/action_decoders/` — `base.py` (`ActionDecoder`, `IdentityDecoder`, `register_action_decoder`, `build_action_decoder`), `rotation.py` (rot6d math), `ee6d.py` (`ee6d_to_axis_angle` / `ee6d_to_euler` / `ee6d_to_quat` / `ee6d_to_calvin_abs` / `ee6d_to_simpler_abs_euler` / `ee6d_robotwin_ee_dual`), `joint.py` (`pi05_aloha_robotwin`). Key auto-composed by `resolve_action_decoder_key(payload_builder, adapter)` in `orchestrator/config.py`.
+- Generic eval policy: `GenericPredictActionPolicy` in `loongforge/embodied/eval/servers/loongforge_policy.py` (chunk caching, predict_action invocation, output shaping; no image packing — RPC payload v2: `images` list of views + `instructions` list[str]).
+- Model factory: `PI05ModelFactory` in `loongforge/embodied/eval/factories/pi05_factory.py`; `XVLAModelFactory` in `factories/xvla_factory.py` (still wraps `predict_action` for `domain_id` int → LongTensor).
 - Factory registry: `register_factory`, `build_model_spec` in `loongforge/embodied/eval/factories/registry.py`. New models register with `@register_factory("<model_type>")` and declare `model_config_cls = <ModelConfig>`.
-- Server config: `EvalServerArgs` dataclass and `parse_eval_server_config` in `loongforge/embodied/eval/servers/eval_server_config.py`. The YAML `server:` section is merged directly into `EvalServerArgs` via OmegaConf; the YAML `model:` section is merged into the registered `ModelConfig` (e.g. `Pi05ModelConfig`) via OmegaConf.
-- Backward-compatible wrapper: `LoongForgePI05Policy` in `loongforge/embodied/eval/factories/pi05_factory.py`, which should not be the preferred pattern for new integrations.
+- Startup consistency check: the orchestrator asserts `set(MODEL_FACTORY_REGISTRY) == set(PAYLOAD_BUILDER_REGISTRY)`, so a factory without its paired PayloadBuilder (or vice-versa) fails fast.
+- Server config: `EvalServerArgs` dataclass and `parse_eval_server_config` in `loongforge/embodied/eval/servers/eval_server_config.py` (the `state_format` field was removed; `model_type` has no default and is **required** — the parser raises when `model.model_type` is missing). The YAML `server:` section is merged directly into `EvalServerArgs` via OmegaConf; the YAML `model:` section is merged into the registered `ModelConfig` (e.g. `Pi05ModelConfig`) via OmegaConf, and its PayloadBuilder capability fields (`state_encoding` / `action_encoding` / `domain_id` / `unnorm_key`) are read by the PayloadBuilder whitelist.
+- Backward-compatible wrappers: `LoongForgePI05Policy` / `LoongForgeXVLAPolicy` in the respective factory modules, which should not be the preferred pattern for new integrations (still exist).
 - Server entrypoint: `loongforge/embodied/eval/servers/loongforge_server.py` calls `parse_eval_server_config` to get `EvalServerArgs` + `raw_model_dict`, then `build_model_spec` to load the model, then `_warmup_model()` to resolve lazy imports, then wraps in `GenericPredictActionPolicy`.
 - Routing: `loongforge/embodied/eval/orchestrator/server_manager.py` maps `loongforge`, `pi05`, and `loongforge_pi05` to the LoongForge server.
-- Adapter state boundary: benchmark adapters provide `canonical_obs["state"]` for native structured state and `canonical_obs["model_state"]` for model-ready state; runners forward only `model_state` as RPC payload `state`.
+- Adapter state boundary: benchmark adapters provide `canonical_obs["state"]` for native structured state and `canonical_obs["state_raw"]` for raw obs fields; the PayloadBuilder encodes `state_raw` per its `state_encoding` into RPC payload `state` (no adapter `model_state`). Adapters also declare `action_space` / `default_fps` / `cameras` capability class attrs.
 - YAML + scripts layout: `examples/embodied/pi05/eval/configs/<benchmark>/{smoke,object_smoke,adjust_bottle_smoke,...}.yaml` + matching `_internal.yaml`; `run_<benchmark>_eval.sh` / `_internal.sh`. Same shape under `examples/embodied/xvla/eval/`.
-- Infrastructure fields (`ckpt_path`, `tokenizer_path`, `dataset_statistics_path`, `use_bf16`, `loongforge_root`, `random_init`, `state_format`) live in `server:`; model-structure fields live in `model:` (pi05: `action_dim`, `action_horizon`, …; xvla: `action_mode`, `real_action_dim`, `num_actions`, …).
-- RoboTwin bridge: `bridges/robotwin_policy.py` — pi05 uses `action_bridge: pi05_aloha_14d` (+ stats asset under `examples/embodied/pi05/eval/assets/`); xvla uses `ee6d_dual` + `domain_id: 6`.
-- xvla extras: factory wrap for `domain_id` tensor; `benchmark.action_postprocess` for LIBERO/SimplerEnv/CALVIN; SimplerEnv abs EE may need env patch (`examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md`).
+- Infrastructure fields (`ckpt_path`, `tokenizer_path`, `dataset_statistics_path`, `use_bf16`, `loongforge_root`, `random_init`) live in `server:`; ModelConfig fields and PayloadBuilder capability fields live in `model:` (pi05: `action_dim`, `action_horizon`, `state_encoding`, …; xvla: `action_mode`, `real_action_dim`, `num_actions`, `state_encoding`, `domain_id`, …).
+- RoboTwin bridge: `bridges/robotwin_policy.py::_BRIDGE_WIRING` — pi05 uses `action_bridge: pi05_aloha_14d` → (pi05, `aloha_pi`, `pi05_aloha_robotwin`) (+ stats asset under `examples/embodied/pi05/eval/assets/`); xvla uses `ee6d_dual` → (xvla, `ee6d_dual`, `ee6d_robotwin_ee_dual`) + `domain_id: 6`.
+- xvla extras: factory wrap for `domain_id` tensor; `action_encoding: ee6d` composes decoders for LIBERO/SimplerEnv/CALVIN automatically; SimplerEnv abs EE may need env patch (`examples/embodied/xvla/eval/SIMPLERENV_PATCH_en.md`).
 
-For new models, create `loongforge/embodied/eval/factories/<model>_factory.py` with a `@register_factory("<model_type>")` class that declares `model_config_cls` and implements `build(model_cfg, server_args) -> PredictActionModelSpec`. Add the module path to `_FACTORY_MODULES` in `factories/registry.py`. No changes to `loongforge_server.py` are needed.
+For new models, create `loongforge/embodied/eval/factories/<model>_factory.py` with a `@register_factory("<model_type>")` class that declares `model_config_cls` and implements `build(model_cfg, server_args) -> PredictActionModelSpec`, and pair it with `loongforge/embodied/eval/payload_builders/<model>.py` registered via `@register_payload_builder("<model_type>")` (same key). Add an ActionDecoder under `action_decoders/` only if the model's action encoding is not already covered. Add the module paths to `_FACTORY_MODULES` / the payload-builder auto-import list in the respective registries. No changes to `loongforge_server.py` are needed.
 
 ## Required final response
 

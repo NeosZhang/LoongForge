@@ -14,9 +14,7 @@ import json
 import logging
 import os
 import pathlib
-import signal
 import time
-from contextlib import contextmanager
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -32,42 +30,23 @@ from loongforge.embodied.eval.metrics import (
     write_suite_summary_csv,
     write_summary_csv,
 )
+from loongforge.embodied.eval.action_decoders import ActionDecoder
+from loongforge.embodied.eval.orchestrator.config import (
+    build_rpc_payload,
+)
+from loongforge.embodied.eval.orchestrator.runners import _common
+from loongforge.embodied.eval.orchestrator.runners._common import StepTimeoutError, alarm_timeout, avg as _avg
+from loongforge.embodied.eval.payload_builders import PayloadBuilder
 from loongforge.embodied.eval.protocol import PROTOCOL_VERSION
 from loongforge.embodied.eval.transport import PolicyClient
 
 INFERENCE_CONFIG: dict = {}
 
 
-class StepTimeoutError(TimeoutError):
-    """Provide StepTimeoutError behavior."""
-
-    pass
-
-
 class EpisodeTimeoutError(TimeoutError):
     """Provide EpisodeTimeoutError behavior."""
 
     pass
-
-
-@contextmanager
-def _alarm_timeout(seconds: float, error_cls):
-    """Run _alarm_timeout."""
-    if seconds <= 0:
-        yield
-        return
-
-    def _handle_timeout(signum, frame):
-        """Run _handle_timeout."""
-        raise error_cls(f"Timed out after {seconds} seconds")
-
-    previous_handler = signal.signal(signal.SIGALRM, _handle_timeout)
-    signal.setitimer(signal.ITIMER_REAL, seconds)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _get_libero_env(task, resolution: int, seed: int):
@@ -96,15 +75,9 @@ def _save_replay(
     """Run _save_replay."""
     if not frames:
         return None
-
-    import imageio.v2 as imageio
-
     status = "success" if success else "fail"
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / task_suite / f"task{task_id}" / f"episode{episode_idx}"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    replay_path = artifact_dir / f"replay_{status}.gif"
-    imageio.mimsave(replay_path, frames, duration=0.1)
-    return str(replay_path)
+    return _common.write_replay_gif(frames, artifact_dir / f"replay_{status}.gif", duration=0.1)
 
 
 def _save_trace(
@@ -113,41 +86,34 @@ def _save_trace(
     """Run _save_trace."""
     if not trace:
         return None
-
     status = "success" if success else "fail"
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / task_suite / f"task{task_id}" / f"episode{episode_idx}"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = artifact_dir / f"trace_{status}.json"
-    with trace_path.open("w", encoding="utf-8") as file:
-        json.dump(trace, file, ensure_ascii=False, indent=2)
-    return str(trace_path)
+    return _common.write_trace_json(trace, artifact_dir / f"trace_{status}.json")
 
 
-def _canonical_to_policy_payload(canonical_obs: Dict[str, Any], domain_id: Optional[int] = None) -> Dict[str, Any]:
-    """Run _canonical_to_policy_payload."""
-    payload = {
-        "images": canonical_obs["images"],
-        "instruction": canonical_obs["instruction"],
-        "episode_id": canonical_obs["meta"]["episode_id"],
-        "episode_step": canonical_obs["meta"]["episode_step"],
-        "state": canonical_obs.get("model_state"),
-    }
-    if domain_id is not None:
-        payload["domain_id"] = domain_id
-    return payload
+def _build_rpc_payload(
+    payload_builder: PayloadBuilder,
+    canonical_obs: Dict[str, Any],
+    ctx: Dict[str, Any],
+    disable_action_cache: bool = False,
+    return_action_chunk: bool = False,
+) -> Dict[str, Any]:
+    """Thin wrapper preserved for tests that patch this symbol.
 
-
-def _avg(values: List[Optional[float]]) -> Optional[float]:
-    """Run _avg."""
-    numeric_values = [float(value) for value in values if value is not None]
-    if not numeric_values:
-        return None
-    return sum(numeric_values) / len(numeric_values)
+    Delegates to the shared ``build_rpc_payload`` in ``orchestrator/config``.
+    """
+    return build_rpc_payload(
+        payload_builder,
+        canonical_obs,
+        ctx,
+        disable_action_cache=disable_action_cache,
+        return_action_chunk=return_action_chunk,
+    )
 
 
 def _env_step(env, action, timeout_sec: float):
     """Run _env_step."""
-    with _alarm_timeout(timeout_sec, StepTimeoutError):
+    with alarm_timeout(timeout_sec, StepTimeoutError):
         return env.step(action)
 
 
@@ -227,6 +193,9 @@ def run_episode(
     *,
     client: PolicyClient,
     adapter: LiberoAdapter,
+    payload_builder: PayloadBuilder,
+    action_decoder: ActionDecoder,
+    action_decoder_key: str,
     task_suite_name: str,
     task_id: int,
     episode_idx: int,
@@ -250,10 +219,12 @@ def run_episode(
     env = None
 
     try:
-        with _alarm_timeout(args.per_episode_timeout_sec, EpisodeTimeoutError):
+        with alarm_timeout(args.per_episode_timeout_sec, EpisodeTimeoutError):
             env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, episode_seed)
             reset_start = time.time()
             client.reset(episode_id)
+            payload_builder.reset(episode_id)
+            action_decoder.reset()
             env.reset()
             obs = env.set_init_state(initial_state)
             reset_time_sec = time.time() - reset_start
@@ -277,7 +248,7 @@ def run_episode(
                 # Default auto: absolute when action_postprocess is set (xvla),
                 # else keep robosuite delta (pi05).
                 if raw_step == args.num_steps_wait:
-                    use_delta = _resolve_libero_use_delta(args)
+                    use_delta = _resolve_libero_use_delta(args, action_decoder_key)
                     for robot in env.env.robots:
                         robot.controller.use_delta = use_delta
 
@@ -293,29 +264,36 @@ def run_episode(
                         "ee_ori_mat": np.asarray(controller.ee_ori_mat, dtype=np.float32),
                     },
                 )
+                ctx = {
+                    "benchmark_name": "libero",
+                    "episode_id": episode_id,
+                    "episode_step": episode_step,
+                    "instruction": task_description,
+                    "ee_pos": np.asarray(controller.ee_pos, dtype=np.float32),
+                    "ee_ori_mat": np.asarray(controller.ee_ori_mat, dtype=np.float32),
+                }
                 request_start = time.perf_counter()
-                with _alarm_timeout(args.policy_call_timeout_ms / 1000.0, TimeoutError):
-                    response = client.predict_action(**_canonical_to_policy_payload(
-                        canonical_obs, domain_id=getattr(args, "domain_id", None)
-                    ))
+                with alarm_timeout(args.policy_call_timeout_ms / 1000.0, TimeoutError):
+                    response = client.predict_action(
+                        **_build_rpc_payload(payload_builder, canonical_obs, ctx)
+                    )
                 e2e_latency_ms = (time.perf_counter() - request_start) * 1000.0
                 e2e_latencies.append(e2e_latency_ms)
                 if not response.get("ok", False):
                     raise RuntimeError(f"Policy error: {response}")
 
                 data = response["data"]
+                payload_builder.update_from_response(data)
                 inference_latency_ms = data.get("inference_latency_ms")
                 inference_latencies.append(inference_latency_ms)
-                from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
                 raw_chunk = np.asarray(data["actions"], dtype=np.float32)
                 if raw_chunk.ndim == 1:
                     raw_chunk = raw_chunk.reshape(1, -1)
-                postprocess_key = getattr(args, "action_postprocess", "") or ""
-                # Log raw grip values before postprocess for debugging
-                if postprocess_key and raw_chunk.shape[-1] >= 10:
+                # Log raw grip values before decode for debugging
+                if action_decoder_key and raw_chunk.shape[-1] >= 10:
                     raw_grip = float(raw_chunk[0, 9])
                     logging.info("step %d raw grip logit/sigmoid: %.6f", episode_step, raw_grip)
-                processed = postprocess_actions(raw_chunk, postprocess_key)
+                processed = action_decoder(raw_chunk, {"benchmark_name": "libero"})
                 # Absolute targets are executed as-is when use_delta=False;
                 # delta models (pi05) keep the OSC default use_delta=True.
                 flat_action = processed[0]
@@ -451,7 +429,14 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
         suite_name=args.task_suite_name,
         episodes_per_task=args.episodes_per_task,
         continuous_gripper=getattr(args, "continuous_gripper", False),
-        state_format=getattr(args, "state_format", ""),
+    )
+    payload_builder, action_decoder_key, action_decoder = _common.build_policy_stack(args, adapter)
+    logging.info(
+        "libero runner: model_type=%s action_encoding=%s adapter.action_space=%s decoder_key=%s",
+        type(payload_builder).__name__,
+        getattr(payload_builder, "action_encoding", ""),
+        adapter.action_space,
+        action_decoder_key or "<identity>",
     )
     server_manager = getattr(args, "server_manager", None)
     if server_manager is not None:
@@ -476,6 +461,9 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
                     record = run_episode(
                         client=client,
                         adapter=adapter,
+                        payload_builder=payload_builder,
+                        action_decoder=action_decoder,
+                        action_decoder_key=action_decoder_key,
                         task_suite_name=args.task_suite_name,
                         task_id=task_id,
                         episode_idx=episode_idx,
@@ -530,17 +518,16 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
-def _resolve_libero_use_delta(args: Any) -> bool:
+def _resolve_libero_use_delta(args: Any, action_decoder_key: str = "") -> bool:
     """Resolve OSC use_delta from benchmark.control_mode (absolute|delta|auto).
 
-    auto (default): absolute when ``action_postprocess`` is set (xvla-style
-    absolute EE), otherwise delta (pi05 / robosuite default). Explicit
-    absolute/delta overrides the inference for models that need postprocess
-    while still using incremental control (or the reverse).
+    auto (default): absolute when an action decoder is composed (xvla-style
+    absolute EE via ee6d_to_axis_angle), otherwise delta (pi05 / robosuite
+    default). Explicit absolute/delta overrides the inference.
     """
     mode = str(getattr(args, "control_mode", "") or "auto").strip().lower()
     if mode in {"", "auto"}:
-        return not bool(getattr(args, "action_postprocess", "") or "")
+        return not bool(action_decoder_key)
     if mode in {"absolute", "abs", "absolute_ee", "ee_absolute"}:
         return False
     if mode in {"delta", "relative", "incremental"}:

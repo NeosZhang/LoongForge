@@ -10,7 +10,6 @@ LIBERO-native observations/actions and the Canonical protocol used by
 
 from __future__ import annotations
 
-import math
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -29,16 +28,6 @@ SUITE_MAX_STEPS = {
 }
 
 
-def quat_to_axisangle(quat: np.ndarray) -> np.ndarray:
-    """Convert LIBERO/robosuite quaternion `[x, y, z, w]` to axis-angle."""
-    quat = np.asarray(quat, dtype=np.float32).copy()
-    quat[3] = np.clip(quat[3], -1.0, 1.0)
-    den = np.sqrt(1.0 - quat[3] * quat[3])
-    if math.isclose(float(den), 0.0):
-        return np.zeros(3, dtype=np.float32)
-    return (quat[:3] * 2.0 * math.acos(float(quat[3])) / den).astype(np.float32)
-
-
 def binarize_gripper_open(open_val: np.ndarray | float) -> np.ndarray:
     """Map model open-gripper scalar to LIBERO gripper command.
 
@@ -51,60 +40,21 @@ def binarize_gripper_open(open_val: np.ndarray | float) -> np.ndarray:
     return np.asarray([1.0 - 2.0 * (value > 0.5)], dtype=np.float32)
 
 
-def quat_to_rot6d(quat: np.ndarray) -> np.ndarray:
-    """Convert LIBERO/robosuite quaternion `[x, y, z, w]` to 6D rotation representation."""
-    from scipy.spatial.transform import Rotation
-    r = Rotation.from_quat(quat)
-    mat = r.as_matrix()  # 3x3
-    # Column-major layout [R00,R10,R20, R01,R11,R21] to match X-VLA training
-    # (Mat_to_Rotate6D concatenates the first two columns).
-    return np.concatenate([mat[:, 0], mat[:, 1]]).astype(np.float32)
-
-
-def _build_model_state(
-    eef_pos,
-    eef_quat,
-    gripper,
-    state_format: str,
-    ee_ori_mat=None,
-    target_dim: int = 20,
-) -> Optional[np.ndarray]:
-    """Build model_state in the format expected by the model.
-
-    Args:
-        eef_pos: 3D end-effector position.
-        eef_quat: 4D quaternion [x, y, z, w].
-        gripper: scalar gripper value.
-        state_format: One of "ee6d", "ee_axis_angle", "" (none).
-        ee_ori_mat: Optional 3x3 rotation matrix from robot controller (preferred over quat).
-        target_dim: Final padding dimension (default 20).
-
-    Returns:
-        np.ndarray of shape [target_dim], or None if state_format is empty.
-    """
-    if not state_format:
-        return None
-    # Original xvla client uses gripper=0.0, not the real gripper value.
-    grip = np.array([0.0], dtype=np.float32)
-    if state_format == "ee6d":
-        if ee_ori_mat is not None:
-            # Column-major: first two columns of the rotation matrix (X-VLA layout).
-            rot = np.concatenate([ee_ori_mat[:, 0], ee_ori_mat[:, 1]]).astype(np.float32)  # 6D
-        else:
-            rot = quat_to_rot6d(eef_quat)  # 6D
-        proprio = np.concatenate([eef_pos, rot, grip])  # 10D
-    elif state_format == "ee_axis_angle":
-        rot = quat_to_axisangle(eef_quat)  # 3D
-        proprio = np.concatenate([eef_pos, rot, grip])  # 7D
-    else:
-        return None
-    state = np.zeros(target_dim, dtype=np.float32)
-    state[:len(proprio)] = proprio
-    return state
-
-
 class LiberoAdapter(BaseBenchmarkAdapter):
-    """Provide LiberoAdapter behavior."""
+    """LIBERO obs/action adapter.
+
+    The adapter never encodes proprio state — it exposes raw end-effector
+    fields under ``canonical["state_raw"]`` and the per-model PayloadBuilder
+    is responsible for whatever encoding the model consumes
+    (``ee6d`` / ``axis_angle`` / no state / ...).
+    """
+
+    # Capability declarations for orchestrator M×N matching. LIBERO expects
+    # a 7D delta OSC action (pos + axis_angle + gripper) in canonical form,
+    # decoded from whatever ``model.action_encoding`` the model emits.
+    action_space: str = "axis_angle"
+    default_fps: int = 20
+    cameras: tuple = ("primary", "wrist")
 
     def __init__(
         self,
@@ -114,9 +64,8 @@ class LiberoAdapter(BaseBenchmarkAdapter):
         episodes_per_task: int = 50,
         resolution: int = LIBERO_ENV_RESOLUTION,
         continuous_gripper: bool = False,
-        state_format: str = "",
     ) -> None:
-        """Run __init__."""
+        """Initialize the LIBERO adapter."""
         if suite_name not in SUITE_MAX_STEPS:
             raise ValueError(f"Unknown LIBERO suite {suite_name!r}; choose one of {sorted(SUITE_MAX_STEPS)}")
         self.suite_name = suite_name
@@ -125,10 +74,9 @@ class LiberoAdapter(BaseBenchmarkAdapter):
         self.episodes_per_task = episodes_per_task
         self.resolution = resolution
         self.continuous_gripper = continuous_gripper
-        self.state_format = state_format
 
     def obs_to_canonical(self, env_obs: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Run obs_to_canonical."""
+        """Convert a LIBERO obs into a benchmark-neutral canonical dict."""
         primary = np.ascontiguousarray(env_obs["agentview_image"][::-1, ::-1])
         wrist = np.ascontiguousarray(env_obs["robot0_eye_in_hand_image"][::-1, ::-1])
 
@@ -137,15 +85,25 @@ class LiberoAdapter(BaseBenchmarkAdapter):
         gripper_qpos = np.asarray(env_obs.get("robot0_gripper_qpos"), dtype=np.float32).reshape(-1)
         gripper = float(gripper_qpos[0]) if gripper_qpos.size else None
 
-        # Prefer controller's ee_pos and ee_ori_mat if available (matches original xvla client).
+        # Prefer controller's ee_pos / ee_ori_mat if available (matches the
+        # original X-VLA LIBERO client, which reads them from the robosuite
+        # OSC controller rather than the raw obs).
         ctrl_ee_pos = context.get("ee_pos")
         ctrl_ee_ori_mat = context.get("ee_ori_mat")
         if ctrl_ee_pos is not None:
             eef_pos = ctrl_ee_pos[:3]
-        model_state = _build_model_state(
-            eef_pos, eef_quat, gripper, self.state_format,
-            ee_ori_mat=ctrl_ee_ori_mat,
-        )
+
+        state_raw = {
+            "eef_pos": np.asarray(eef_pos, dtype=np.float32),
+            "eef_quat": np.asarray(eef_quat, dtype=np.float32),
+            "gripper": gripper,
+            # Full 2-DoF finger qpos (Panda: [+finger, -finger]); models needing
+            # the native 2D gripper state (e.g. GR00T libero_panda) read this.
+            "gripper_qpos": np.asarray(gripper_qpos, dtype=np.float32),
+            "ee_ori_mat": (
+                np.asarray(ctrl_ee_ori_mat, dtype=np.float32) if ctrl_ee_ori_mat is not None else None
+            ),
+        }
 
         return {
             "instruction": str(context["instruction"]),
@@ -164,7 +122,7 @@ class LiberoAdapter(BaseBenchmarkAdapter):
                 "frame": "base",
                 "units": {"pos": "m", "rot": "rad"},
             },
-            "model_state": model_state,
+            "state_raw": state_raw,
             "meta": {
                 "benchmark": "libero",
                 "robot_setup": self.robot_setup,

@@ -1,0 +1,67 @@
+# GR00T-N1.6 × SimplerEnv WidowX (Bridge) smoke — public template.
+#
+# Fill in the /path/to/... placeholders. Uses the official
+# nvidia/GR00T-N1.6-bridge weights (embodiment oxe_widowx). Bounded smoke.
+# For a credible score, switch to a delta EE control_mode and verify gripper sign.
+
+benchmark:
+  name: simplerenv
+  task_name: widowx_stack_cube
+  robot_setup: widowx
+  scene_name: bridge_table_1_v1
+  rgb_overlay_path: /path/to/SimplerEnv/ManiSkill2_real2sim/data/real_inpainting/bridge_real_eval_1.png
+  sim_freq: 500
+  control_freq: 5
+  control_mode: arm_pd_ee_target_base_pose_gripper_pd_joint_pos
+  action_scale: 1.0
+  rotation_mode: euler
+  max_steps: 120
+  success_settle_steps: 0
+  robot_init_x: 0.147
+  robot_init_y: 0.028
+
+model:
+  backend: loongforge
+  model_type: Gr00tN1d6
+  base_model_path: /path/to/eagle3-processor-groot-n1d6
+  model_name: /path/to/eagle3-processor-groot-n1d6
+  vlm_tokenizer_path: /path/to/eagle3-processor-groot-n1d6
+  state_encoding: simpler_widowx
+  action_encoding: simpler_abs_euler
+  use_flash_attention: true
+
+server:
+  host: 127.0.0.1
+  port: 13221
+  health_port: 13222
+  python: /path/to/envs/loongforge/bin/python
+  log: /path/to/reports/groot_n1_6/simplerenv/widowx_stack_cube_smoke/policy_server.log
+  start_timeout_sec: 2400
+  random_init: false
+  ckpt_path: /path/to/GR00T-N1.6-bridge
+  dataset_statistics_path: /path/to/GR00T-N1.6-bridge/statistics.json
+  embodiment_tag: oxe_widowx
+  use_bf16: true
+  loongforge_root: /path/to/LoongForge-VLA
+
+env:
+  eval_root: /path/to/LoongForge-VLA/loongforge/embodied/eval
+  simplerenv_root: /path/to/SimplerEnv
+  ld_library_path: /path/to/nvidia_lib
+  nvidia_lib_dir: /path/to/nvidia_lib
+  nvidia_icd_json: /path/to/nvidia_lib/10_nvidia.json
+
+run:
+  output_dir: /path/to/reports/groot_n1_6/simplerenv/widowx_stack_cube_smoke
+  seed: 7
+  episode_idx: 0
+  obj_episode_id: 0
+  save_trace: false
+  save_replay: false
+  disable_action_cache: false
+  timestamped_output: false
+
+timeouts:
+  policy_call_ms: 600000
+  per_step_sec: 600
+  per_episode_sec: 3600
