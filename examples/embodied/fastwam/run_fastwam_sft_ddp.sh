@@ -21,8 +21,10 @@ TOKENIZER_PATH=${TOKENIZER_PATH:-"/path/to/tokenizer"}
 
 MASTER_PORT=${MASTER_PORT:-29519}
 
+MODEL_NAME=${MODEL_NAME:-"fastwam"}
+
 TRAINING_ARGS=(
-  --model-name fastwam
+  --model-name "$MODEL_NAME"
   --trainer-type FinetuneTrainer
   --distributed-strategy ddp
   --dtype bfloat16
