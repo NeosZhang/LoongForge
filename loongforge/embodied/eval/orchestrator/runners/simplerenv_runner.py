@@ -9,7 +9,6 @@ import argparse
 import json
 import os
 import pathlib
-import stat
 import sys
 import time
 from collections import deque
@@ -20,85 +19,46 @@ import numpy as np
 from loongforge.embodied.eval.adapters.simplerenv import (
     SIMPLERENV_DEFAULT_MAX_STEPS,
     SimplerEnvAdapter,
-    build_widowx_initial_model_state,
 )
 from loongforge.embodied.eval.metrics.results import append_jsonl, write_suite_summary_csv, write_summary_csv
-from loongforge.embodied.eval.orchestrator.config import load_config
+from loongforge.embodied.eval.orchestrator.config import (
+    build_rpc_payload,
+    load_config,
+)
+from loongforge.embodied.eval.orchestrator.runners import _common
+from loongforge.embodied.eval.payload_builders import PayloadBuilder
 from loongforge.embodied.eval.transport import PolicyClient
-
-
-def _canonical_to_legacy_payload(
-    canonical_obs: Dict[str, Any],
-    args: argparse.Namespace,
-    state_override: Any = None,
-) -> Dict[str, Any]:
-    """Run _canonical_to_legacy_payload."""
-    payload = {
-        "images": canonical_obs["images"],
-        "instruction": canonical_obs["instruction"],
-        "episode_id": canonical_obs["meta"]["episode_id"],
-        "episode_step": canonical_obs["meta"]["episode_step"],
-        "state": state_override if state_override is not None else canonical_obs.get("model_state"),
-        "disable_action_cache": args.disable_action_cache,
-        "return_action_chunk": args.action_ensemble,
-        "cfg_scale": args.cfg_scale,
-    }
-    domain_id = getattr(args, "domain_id", None)
-    if domain_id is not None:
-        payload["domain_id"] = domain_id
-    return payload
-
-
-def _vulkan_runtime_env(args: argparse.Namespace) -> Dict[str, str]:
-    """Return environment variables needed by SAPIEN's Vulkan renderer."""
-    env = os.environ.copy()
-    library_paths = env.get("LD_LIBRARY_PATH", "").split(":") if env.get("LD_LIBRARY_PATH") else []
-    for path in reversed([args.nvidia_lib_dir or "/ssd1/opt/nvidia_lib", "/usr/lib64"]):
-        if path and path not in library_paths:
-            library_paths.insert(0, path)
-    env["LD_LIBRARY_PATH"] = ":".join(library_paths)
-    env["VK_ICD_FILENAMES"] = args.nvidia_icd_json or env.get("VK_ICD_FILENAMES", "/ssd1/opt/nvidia_lib/10_nvidia.json")
-    runtime_dir = pathlib.Path(env.get("XDG_RUNTIME_DIR") or f"/tmp/runtime-{os.getuid()}")
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    runtime_dir.chmod(stat.S_IRWXU)
-    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
-    return env
-
-
-def _setup_simplerenv_runtime(args: argparse.Namespace) -> None:
-    """Run _setup_simplerenv_runtime."""
-    os.environ.update(_vulkan_runtime_env(args))
 
 
 def _ensure_vulkan_runtime(args: argparse.Namespace) -> None:
     """Re-exec once so LD_LIBRARY_PATH takes effect before importing SAPIEN."""
-    marker = "LOONGFORGE_SIMPLERENV_RUNTIME_READY"
-    if os.environ.get(marker) == "1":
-        return
-    env = _vulkan_runtime_env(args)
-    env[marker] = "1"
-    os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
+    _common.ensure_vulkan_runtime(args, "LOONGFORGE_SIMPLERENV_RUNTIME_READY")
 
 
-def _build_env(args: argparse.Namespace) -> Tuple[Any, str]:
+def _build_env(args: argparse.Namespace, adapter: SimplerEnvAdapter) -> Tuple[Any, str]:
     """Run _build_env."""
     import simpler_env
     from simpler_env.utils.env.env_builder import build_maniskill2_env
 
     simpler_env_root = pathlib.Path(simpler_env.__file__).resolve().parents[1]
+
+    # Official / strict path: let the env apply its own prepackaged visual-matching
+    # config (scene, overlay set, robot, control_mode) and randomize overlay +
+    # robot/object init per episode via its episode_rng -- matching the official
+    # SimplerEnv eval (`simpler_env.make(task)` sets prepackaged_config=True).
+    if getattr(args, "prepackaged_config", False):
+        env = build_maniskill2_env(
+            adapter.env_name,
+            obs_mode="rgbd",
+            prepackaged_config=True,
+            max_episode_steps=args.max_steps if args.max_steps > 0 else SIMPLERENV_DEFAULT_MAX_STEPS,
+        )
+        return env, adapter.env_name
+
     overlay_path = args.rgb_overlay_path
     if overlay_path is None and args.robot_setup.startswith("widowx"):
         overlay_path = str(simpler_env_root / "ManiSkill2_real2sim/data/real_inpainting/bridge_sink.png")
 
-    adapter = SimplerEnvAdapter(
-        task_name=args.task_name,
-        robot_setup=args.robot_setup,
-        control_hz=args.control_freq,
-        max_steps=args.max_steps if args.max_steps > 0 else SIMPLERENV_DEFAULT_MAX_STEPS,
-        camera_name=args.camera_name,
-        action_scale=args.action_scale,
-        rotation_mode=args.rotation_mode,
-    )
     kwargs: Dict[str, Any] = {
         "obs_mode": "rgbd",
         "robot": args.robot_setup,
@@ -119,6 +79,14 @@ def _build_env(args: argparse.Namespace) -> Tuple[Any, str]:
 
 def _reset_env(env: Any, args: argparse.Namespace) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Run _reset_env."""
+    # Prepackaged (official) path: reset with only a per-episode seed and let the
+    # env randomize overlay + robot/object init itself (do NOT pin robot_init).
+    if getattr(args, "prepackaged_config", False):
+        reset_result = env.reset(seed=args.seed + args.episode_idx)
+        if isinstance(reset_result, tuple) and len(reset_result) == 2:
+            return reset_result
+        return reset_result, {}
+
     reset_options: Dict[str, Any] = {
         "robot_init_options": {
             "init_xy": np.asarray([args.robot_init_x, args.robot_init_y], dtype=np.float32),
@@ -148,26 +116,16 @@ def _save_replay(frames: List[np.ndarray], output_dir: str, task_name: str, epis
     """Run _save_replay."""
     if not frames:
         raise ValueError("Cannot save replay with no frames")
-
-    import imageio.v2 as imageio
-
     status = "success" if success else "fail"
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / "simplerenv" / task_name
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    replay_path = artifact_dir / f"ep{episode_idx}_{status}.gif"
-    imageio.mimsave(replay_path, frames, duration=0.2)
-    return str(replay_path)
+    return _common.write_replay_gif(frames, artifact_dir / f"ep{episode_idx}_{status}.gif", duration=0.2)
 
 
 def _save_trace(trace: List[Dict[str, Any]], output_dir: str, task_name: str, episode_idx: int, success: bool) -> str:
     """Run _save_trace."""
     status = "success" if success else "fail"
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / "simplerenv" / task_name
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = artifact_dir / f"ep{episode_idx}_{status}_trace.json"
-    with trace_path.open("w", encoding="utf-8") as file:
-        json.dump(trace, file, ensure_ascii=False, indent=2)
-    return str(trace_path)
+    return _common.write_trace_json(trace, artifact_dir / f"ep{episode_idx}_{status}_trace.json")
 
 
 def _append_replay_frame(adapter: SimplerEnvAdapter, obs: Dict[str, Any], frames: List[np.ndarray]) -> None:
@@ -194,17 +152,7 @@ def _ensemble_action(action_history: deque[np.ndarray], current_actions: np.ndar
 
 def _json_safe(value: Any) -> Any:
     """Run _json_safe."""
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, (np.integer, np.floating)):
-        return value.item()
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
+    return _common.json_safe(value)
 
 
 def _write_standard_outputs(output_dir: str, record: Dict[str, Any]) -> None:
@@ -230,11 +178,14 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
         action_scale=args.action_scale,
         rotation_mode=args.rotation_mode,
     )
-    env, env_name = _build_env(args)
+    payload_builder, action_decoder_key, action_decoder = _common.build_policy_stack(args, adapter)
+    env, env_name = _build_env(args, adapter)
     client = PolicyClient(host=args.host, port=args.port)
 
     episode_id = f"simplerenv/{args.task_name}/episode={args.episode_idx}"
     client.reset(episode_id)
+    payload_builder.reset(episode_id)
+    action_decoder.reset()
     obs, reset_info = _reset_env(env, args)
     instruction = _get_instruction(env, args.instruction or args.task_name.replace("_", " "))
 
@@ -247,11 +198,6 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
     action_trace: List[Dict[str, Any]] = []
     action_history: deque[np.ndarray] = deque(maxlen=args.action_ensemble_horizon)
     start_time = time.time()
-
-    postprocess_key = getattr(args, "action_postprocess", "") or ""
-    # X-VLA protocol: initial proprio from the env, then closed-loop backfill
-    # with the raw predicted action (official client: proprio[:10] = action[:10]).
-    proprio = build_widowx_initial_model_state(obs) if postprocess_key else None
 
     try:
         for episode_step in range(max_steps):
@@ -266,23 +212,38 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
             if args.save_replay:
                 _append_replay_frame(adapter, obs, replay_frames)
 
+            ctx = {
+                "benchmark_name": "simplerenv",
+                "episode_id": episode_id,
+                "episode_step": episode_step,
+                "instruction": instruction,
+            }
+            extra_control = {
+                "cfg_scale": args.cfg_scale,
+            }
             response = client.predict_action(
-                **_canonical_to_legacy_payload(canonical_obs, args, state_override=proprio)
+                **build_rpc_payload(
+                    payload_builder,
+                    canonical_obs,
+                    ctx,
+                    disable_action_cache=args.disable_action_cache,
+                    return_action_chunk=args.action_ensemble,
+                    extra_control=extra_control,
+                )
             )
             if not response.get("ok", False):
                 raise RuntimeError(f"Policy error: {response}")
 
-            raw_chunk = np.asarray(response["data"]["actions"], dtype=np.float32)
+            data = response["data"]
+            raw_chunk = np.asarray(data["actions"], dtype=np.float32)
             if raw_chunk.ndim == 1:
                 raw_chunk = raw_chunk.reshape(1, -1)
-            if postprocess_key:
-                from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
-
-                raw_row = raw_chunk[0]
-                if proprio is not None and raw_row.size >= 10:
-                    proprio[:10] = raw_row[:10]
-                env_action = postprocess_actions(raw_chunk[0:1], postprocess_key)[0].astype(np.float32)
-                flat_action = raw_row
+            # Feed the response back into the PayloadBuilder so stateful
+            # encodings (ee6d_widowx) can backfill proprio[:10] = action[:10].
+            payload_builder.update_from_response(data)
+            if action_decoder_key:
+                env_action = action_decoder(raw_chunk[0:1], {"benchmark_name": "simplerenv"})[0].astype(np.float32)
+                flat_action = raw_chunk[0]
             else:
                 action_chunk = raw_chunk.reshape(-1, 7)
                 flat_action = action_chunk[0]
@@ -370,14 +331,13 @@ def _apply_config(args: argparse.Namespace, config: Dict[str, Any]) -> argparse.
         (benchmark, "instruction", "instruction"),
         (benchmark, "scene_name", "scene_name"),
         (benchmark, "rgb_overlay_path", "rgb_overlay_path"),
+        (benchmark, "prepackaged_config", "prepackaged_config"),
         (benchmark, "sim_freq", "sim_freq"),
         (benchmark, "control_freq", "control_freq"),
         (benchmark, "control_mode", "control_mode"),
         (benchmark, "action_scale", "action_scale"),
         (benchmark, "rotation_mode", "rotation_mode"),
         (benchmark, "max_steps", "max_steps"),
-        (benchmark, "domain_id", "domain_id"),
-        (benchmark, "action_postprocess", "action_postprocess"),
         (benchmark, "success_settle_steps", "success_settle_steps"),
         (benchmark, "success_settle_gripper", "success_settle_gripper"),
         (benchmark, "robot_init_x", "robot_init_x"),
@@ -419,13 +379,12 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--instruction", default=None)
     parser.add_argument("--scene-name", default="bridge_table_1_v2")
     parser.add_argument("--rgb-overlay-path", default=None)
+    parser.add_argument("--prepackaged-config", action="store_true")
     parser.add_argument("--sim-freq", type=int, default=500)
     parser.add_argument("--control-freq", type=int, default=5)
     parser.add_argument("--control-mode", default="arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos")
     parser.add_argument("--action-scale", type=float, default=1.0)
     parser.add_argument("--rotation-mode", choices=["euler", "axis_angle"], default="euler")
-    parser.add_argument("--domain-id", type=int, default=None)
-    parser.add_argument("--action-postprocess", default="")
     parser.add_argument("--disable-action-cache", action="store_true")
     parser.add_argument("--action-ensemble", action="store_true")
     parser.add_argument("--action-ensemble-horizon", type=int, default=7)
@@ -447,9 +406,9 @@ def build_argparser() -> argparse.ArgumentParser:
         default="/workspace/LoongForge-VLA/loongforge/embodied/eval/reports/manual/simplerenv/smoke",
     )
     parser.add_argument("--simplerenv-root", default="")
-    parser.add_argument("--nvidia-lib-dir", default=os.environ.get("NVIDIA_LIB_DIR", "/ssd1/opt/nvidia_lib"))
+    parser.add_argument("--nvidia-lib-dir", default=os.environ.get("NVIDIA_LIB_DIR", "/path/to/nvidia_lib"))
     parser.add_argument(
-        "--nvidia-icd-json", default=os.environ.get("NVIDIA_ICD_JSON", "/ssd1/opt/nvidia_lib/10_nvidia.json")
+        "--nvidia-icd-json", default=os.environ.get("NVIDIA_ICD_JSON", "/path/to/nvidia_lib/10_nvidia.json")
     )
     return parser
 

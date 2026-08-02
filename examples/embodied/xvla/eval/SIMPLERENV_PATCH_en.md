@@ -99,10 +99,13 @@ See `configs/simplerenv/widowx_stack_cube_smoke.yaml`:
 benchmark:
   control_mode: arm_pd_ee_target_base_pose_gripper_pd_joint_pos  # needs patch 1
   max_steps: 1200          # official horizon
-  domain_id: 0             # WidowX (Bridge)
-  action_postprocess: ee6d_to_simpler_abs_euler  # rot6d->euler + [0, pi/2, 0], grip<0.91
   robot_init_x: 0.147
   robot_init_y: 0.028
+model:
+  model_type: xvla
+  state_encoding: ee6d_widowx   # WidowX proprio (closed-loop backfill)
+  action_encoding: ee6d         # decoder auto-composed → ee6d_to_simpler_abs_euler
+  domain_id: 0                  # WidowX (Bridge)
 ```
 
 ## Rollback

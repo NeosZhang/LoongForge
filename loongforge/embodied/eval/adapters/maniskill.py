@@ -71,7 +71,20 @@ def _extract_agent_state(env_obs: Any) -> Dict[str, Any]:
 
 
 class ManiSkillAdapter(BaseBenchmarkAdapter):
-    """Convert ManiSkill observations/actions to the canonical eval schema."""
+    """ManiSkill obs/action adapter.
+
+    Refactor note: proprio encoding is delegated to the per-model
+    PayloadBuilder. This adapter exposes raw Panda ``qpos`` under
+    ``canonical["state_raw"]["joint"]``; the ``passthrough`` state encoding
+    in ``Pi05PayloadBuilder`` / ``XVLAPayloadBuilder`` picks it up.
+    """
+
+    # Capability declarations for orchestrator M×N matching. ManiSkill
+    # ``pd_ee_delta_pose`` expects a 7D delta OSC action (pos + axis_angle +
+    # gripper) — same as LIBERO's ``axis_angle``.
+    action_space: str = "axis_angle"
+    default_fps: int = 5
+    cameras: tuple = ("primary",)
 
     def __init__(
         self,
@@ -103,14 +116,16 @@ class ManiSkillAdapter(BaseBenchmarkAdapter):
         qpos = _to_numpy(agent_state.get("qpos", [])).astype(np.float32).reshape(-1)
         qvel = _to_numpy(agent_state.get("qvel", [])).astype(np.float32).reshape(-1)
 
-        # Panda qpos is 9D (7 arm + 2 finger). RLinf/openpi ManiSkill stats use 8D:
-        # 7 arm joints + single gripper width (mean of the two finger joints).
+        # Panda qpos is 9D (7 arm + 2 finger). RLinf/openpi ManiSkill stats
+        # use 8D: 7 arm joints + single gripper width (mean of the two
+        # finger joints). PayloadBuilder ``passthrough`` mode reads
+        # ``state_raw.joint`` directly and forwards it as ``state``.
         if qpos.size >= 9:
-            model_state = np.concatenate([qpos[:7], np.array([float(qpos[7:9].mean())], dtype=np.float32)])
+            joint = np.concatenate([qpos[:7], np.array([float(qpos[7:9].mean())], dtype=np.float32)])
         elif qpos.size:
-            model_state = qpos
+            joint = qpos
         else:
-            model_state = None
+            joint = None
 
         state: Dict[str, Any] = {
             "eef_pos": None,
@@ -133,7 +148,11 @@ class ManiSkillAdapter(BaseBenchmarkAdapter):
                 "head": None,
             },
             "state": state,
-            "model_state": model_state.tolist() if model_state is not None else None,
+            "state_raw": {
+                "joint": joint,       # 8D joint proprio for PayloadBuilder passthrough
+                "qpos": qpos if qpos.size else None,
+                "qvel": qvel if qvel.size else None,
+            },
             "meta": {
                 "benchmark": "maniskill",
                 "robot_setup": self.robot_uid,

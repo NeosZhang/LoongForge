@@ -61,14 +61,22 @@ class GenericPredictActionPolicy:
 
     def predict_action(
         self,
-        images: Dict[str, np.ndarray],
-        instruction: str,
+        images: list,
+        instructions: list,
         episode_id: str = "default",
         episode_step: int = 0,
         state: Optional[np.ndarray] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Handle an eval RPC predict_action request with chunk caching."""
+        """Handle an eval RPC predict_action request with chunk caching.
+
+        Payload schema (produced by every per-model ``PayloadBuilder``):
+        ``images`` is a list of views ordered per model expectation and
+        ``instructions`` is a list-of-str batch (batch=1). RPC-control fields
+        (``disable_action_cache`` / ``return_action_chunk``) live at top level.
+        The value handed to ``model.predict_action`` is a batch-of-1
+        list-of-list of views: ``[[view_primary, view_wrist]]``.
+        """
         disable_action_cache = bool(kwargs.pop("disable_action_cache", False))
         return_action_chunk = bool(kwargs.pop("return_action_chunk", False))
         cache_entry = None if disable_action_cache else self._chunk_cache.get(episode_id)
@@ -83,12 +91,11 @@ class GenericPredictActionPolicy:
                     "request_id": self._request_id(episode_id, episode_step),
                 }
 
-        image_input = self._build_image_input(images)
         start_time = time.perf_counter()
         chunk = call_predict_action(
             self._model,
-            images=[image_input],
-            instructions=[instruction],
+            images=[images],
+            instructions=instructions,
             state=state,
             dataset_stats=self._dataset_stats,
             action_dim=int(self._metadata["action_dim"]),
@@ -106,32 +113,6 @@ class GenericPredictActionPolicy:
     def _request_id(self, episode_id: str, episode_step: int) -> str:
         """Build a stable request id for eval responses."""
         return f"{self._request_id_prefix}-{episode_id}-{episode_step}"
-
-    @staticmethod
-    def _build_image_input(images: Dict[str, np.ndarray]) -> list[np.ndarray]:
-        """Convert canonical eval image views into the common predict_action image input."""
-        primary = images.get("primary")
-        if primary is None:
-            primary = images.get("head")
-        if primary is None:
-            raise ValueError("images.primary or images.head is required for predict_action inference")
-        image_input = [np.asarray(primary)]
-
-        left = images.get("left")
-        right = images.get("right")
-        if left is not None and right is not None:
-            # Bimanual benchmarks (RoboTwin): official X-VLA client sends
-            # image0=head, image1=left, image2=right.
-            image_input.append(np.asarray(left))
-            image_input.append(np.asarray(right))
-            return image_input
-
-        wrist = images.get("wrist")
-        if wrist is None:
-            wrist = right if right is not None else left
-        if wrist is not None:
-            image_input.append(np.asarray(wrist))
-        return image_input
 
     @staticmethod
     def _load_dataset_stats(path: str) -> Optional[Dict[str, Any]]:

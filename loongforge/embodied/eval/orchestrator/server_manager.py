@@ -175,7 +175,7 @@ def build_argparser() -> argparse.ArgumentParser:
         default="/workspace/LoongForge-VLA/loongforge/embodied/eval/reports/manual/policy_server.log",
     )
     parser.add_argument("--action-dim", type=int, default=7)
-    parser.add_argument("--server-python", default="/workspace/miniconda3/envs/loongforge/bin/python")
+    parser.add_argument("--server-python", default="/path/to/conda/envs/loongforge/bin/python")
     parser.add_argument("--loongforge-root", default="/workspace/LoongForge-VLA")
     parser.add_argument("--eval-root", default="/workspace/LoongForge-VLA/loongforge/embodied/eval")
     parser.add_argument("--libero-config-path", default="")

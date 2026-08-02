@@ -511,16 +511,164 @@ LIBERO_PANDA_MODALITY_CONFIG = {
     "language": ModalityConfig(delta_indices=[0], modality_keys=["annotation.human.action.task_description"]),
 }
 
+"""Behavior R1 Pro modality metadata configuration"""
+BEHAVIOR_R1_PRO_MODALITY_META = {
+    "state": {
+        "robot_pos": {"start": 0, "end": 3},
+        "robot_ori_cos": {"start": 3, "end": 6},
+        "robot_ori_sin": {"start": 6, "end": 9},
+        "robot_2d_ori": {"start": 9, "end": 10},
+        "robot_2d_ori_cos": {"start": 10, "end": 11},
+        "robot_2d_ori_sin": {"start": 11, "end": 12},
+        "robot_lin_vel": {"start": 12, "end": 15},
+        "robot_ang_vel": {"start": 15, "end": 18},
+        "arm_left_qpos": {"start": 18, "end": 25},
+        "arm_left_qpos_sin": {"start": 25, "end": 32},
+        "arm_left_qpos_cos": {"start": 32, "end": 39},
+        "eef_left_pos": {"start": 39, "end": 42},
+        "eef_left_quat": {"start": 42, "end": 46},
+        "gripper_left_qpos": {"start": 46, "end": 48},
+        "arm_right_qpos": {"start": 48, "end": 55},
+        "arm_right_qpos_sin": {"start": 55, "end": 62},
+        "arm_right_qpos_cos": {"start": 62, "end": 69},
+        "eef_right_pos": {"start": 69, "end": 72},
+        "eef_right_quat": {"start": 72, "end": 76},
+        "gripper_right_qpos": {"start": 76, "end": 78},
+        "trunk_qpos": {"start": 78, "end": 82},
+    },
+    "action": {
+        "base": {"start": 0, "end": 3},
+        "torso": {"start": 3, "end": 7},
+        "left_arm": {"start": 7, "end": 14},
+        "left_gripper": {"start": 14, "end": 15},
+        "right_arm": {"start": 15, "end": 22},
+        "right_gripper": {"start": 22, "end": 23},
+    },
+}
+
+"""Behavior R1 Pro modality configuration"""
+BEHAVIOR_R1_PRO_MODALITY_CONFIG = {
+    "video": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["rgb.head_256_256", "rgb.left_wrist_256_256", "rgb.right_wrist_256_256"],
+    ),
+    "state": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=[
+            "robot_pos",
+            "robot_ori_cos",
+            "robot_ori_sin",
+            "robot_2d_ori",
+            "robot_2d_ori_cos",
+            "robot_2d_ori_sin",
+            "robot_lin_vel",
+            "robot_ang_vel",
+            "arm_left_qpos",
+            "arm_left_qpos_sin",
+            "arm_left_qpos_cos",
+            "eef_left_pos",
+            "eef_left_quat",
+            "gripper_left_qpos",
+            "arm_right_qpos",
+            "arm_right_qpos_sin",
+            "arm_right_qpos_cos",
+            "eef_right_pos",
+            "eef_right_quat",
+            "gripper_right_qpos",
+            "trunk_qpos",
+        ],
+    ),
+    "action": ModalityConfig(
+        delta_indices=list(range(32)),
+        modality_keys=["base", "torso", "left_arm", "left_gripper", "right_arm", "right_gripper"],
+        action_configs=[
+            ActionConfig(rep=ActionRepresentation.ABSOLUTE, type=ActionType.NON_EEF, format=ActionFormat.DEFAULT),
+            ActionConfig(
+                rep=ActionRepresentation.RELATIVE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+                state_key="trunk_qpos",
+            ),
+            ActionConfig(
+                rep=ActionRepresentation.RELATIVE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+                state_key="arm_left_qpos",
+            ),
+            ActionConfig(rep=ActionRepresentation.ABSOLUTE, type=ActionType.NON_EEF, format=ActionFormat.DEFAULT),
+            ActionConfig(
+                rep=ActionRepresentation.RELATIVE,
+                type=ActionType.NON_EEF,
+                format=ActionFormat.DEFAULT,
+                state_key="arm_right_qpos",
+            ),
+            ActionConfig(rep=ActionRepresentation.ABSOLUTE, type=ActionType.NON_EEF, format=ActionFormat.DEFAULT),
+        ],
+    ),
+}
+
+"""OXE WidowX (Bridge) modality metadata configuration"""
+OXE_WIDOWX_MODALITY_META = {
+    "state": {
+        "x": {"start": 0, "end": 1},
+        "y": {"start": 1, "end": 2},
+        "z": {"start": 2, "end": 3},
+        "roll": {"start": 3, "end": 4},
+        "pitch": {"start": 4, "end": 5},
+        "yaw": {"start": 5, "end": 6},
+        "pad": {"start": 6, "end": 7},
+        "gripper": {"start": 7, "end": 8},
+    },
+    "action": {
+        "x": {"start": 0, "end": 1},
+        "y": {"start": 1, "end": 2},
+        "z": {"start": 2, "end": 3},
+        "roll": {"start": 3, "end": 4},
+        "pitch": {"start": 4, "end": 5},
+        "yaw": {"start": 5, "end": 6},
+        "gripper": {"start": 6, "end": 7},
+    },
+}
+
+"""OXE WidowX (Bridge) modality configuration"""
+OXE_WIDOWX_MODALITY_CONFIG = {
+    "video": ModalityConfig(delta_indices=[0], modality_keys=["image"]),
+    "state": ModalityConfig(
+        delta_indices=[0],
+        modality_keys=["x", "y", "z", "roll", "pitch", "yaw", "pad", "gripper"],
+    ),
+    "action": ModalityConfig(
+        delta_indices=list(range(0, 8)),
+        modality_keys=["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
+        # Matches the bridge checkpoint's processor_config.json: action horizon
+        # is 8 (delta_indices [0..7]) and pos+rotation use mean-std normalization
+        # (gripper stays min-max). Without mean-std the euler action is min-max'd
+        # over the huge ±2pi range and blows up.
+        mean_std_embedding_keys=["x", "y", "z", "roll", "pitch", "yaw"],
+    ),
+    "language": ModalityConfig(delta_indices=[0], modality_keys=["annotation.human.action.task_description"]),
+}
+
 """Modality configurations mapping"""
 MODALITY_CONFIGS = {
     "new_embodiment": SO100_MODALITY_CONFIG,
     "libero_panda": LIBERO_PANDA_MODALITY_CONFIG,
+    "behavior_r1_pro": BEHAVIOR_R1_PRO_MODALITY_CONFIG,
+    "oxe_widowx": OXE_WIDOWX_MODALITY_CONFIG,
 }
 
 """Embodiment statistics configurations"""
 EMBODIMENT_STAT_CONFIGS = {
     "new_embodiment": {"modality_meta": SO100_MODALITY_META, "modality_config": SO100_MODALITY_CONFIG},
     "libero_panda": {"modality_meta": LIBERO_PANDA_MODALITY_META, "modality_config": LIBERO_PANDA_MODALITY_CONFIG},
+    "behavior_r1_pro": {
+        "modality_meta": BEHAVIOR_R1_PRO_MODALITY_META,
+        "modality_config": BEHAVIOR_R1_PRO_MODALITY_CONFIG,
+    },
+    "oxe_widowx": {
+        "modality_meta": OXE_WIDOWX_MODALITY_META,
+        "modality_config": OXE_WIDOWX_MODALITY_CONFIG,
+    },
 }
 
 

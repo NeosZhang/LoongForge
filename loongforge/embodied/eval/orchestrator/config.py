@@ -8,8 +8,102 @@ from __future__ import annotations
 import copy
 import itertools
 import json
+import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from loongforge.embodied.eval.payload_builders import PayloadBuilder, build_payload_builder
+
+
+def build_payload_builder_from_config(
+    raw_config: Dict[str, Any], model_type_override: Optional[str] = None
+) -> PayloadBuilder:
+    """Instantiate the per-model PayloadBuilder from a raw eval-YAML dict.
+
+    Reads ``model:`` / ``server:`` / ``benchmark:`` sections and passes them
+    to the per-model builder's ``__init__``. New-schema YAMLs put all
+    capability fields (``state_encoding`` / ``action_encoding`` / ``domain_id``
+    / ``unnorm_key``) directly under ``model:``.
+    """
+    yaml_model = dict(raw_config.get("model") or {})
+    yaml_server = dict(raw_config.get("server") or {})
+    yaml_benchmark = dict(raw_config.get("benchmark") or {})
+
+    model_type = str(
+        model_type_override or yaml_model.get("model_type") or "pi05"
+    ).lower()
+    return build_payload_builder(
+        model_type,
+        yaml_model=yaml_model,
+        yaml_server=yaml_server,
+        yaml_benchmark=yaml_benchmark,
+    )
+
+
+def resolve_action_decoder_key(
+    payload_builder: PayloadBuilder,
+    adapter: Any,
+) -> str:
+    """Compose the ActionDecoder key for this (model, benchmark).
+
+    Auto-composed from ``payload_builder.action_encoding × adapter.action_space``.
+    Returns ``""`` (no decoder — the runner uses a no-op passthrough / the
+    benchmark adapter's native action conversion) when:
+
+    - source == target (identity), or
+    - the composed key has no registered decoder. This is the case for models
+      whose action already matches the benchmark's native (relative) action
+      that ``adapter.action_from_canonical`` consumes directly — e.g. pi05's
+      7D delta on CALVIN/SimplerEnv, where the adapter converts rather than an
+      absolute-EE decoder. A warning is logged so a genuinely mis-declared
+      encoding is still visible.
+    """
+    from loongforge.embodied.eval.action_decoders import is_action_decoder_registered
+
+    src = str(getattr(payload_builder, "action_encoding", "") or "").strip()
+    dst = str(getattr(adapter, "action_space", "") or "").strip()
+    if not src or not dst or src == dst:
+        return ""
+    key = f"{src}_to_{dst}"
+    if not is_action_decoder_registered(key):
+        logging.warning(
+            "No ActionDecoder registered for %r (model action_encoding=%r × "
+            "adapter action_space=%r); falling back to the benchmark adapter's "
+            "native action conversion.",
+            key, src, dst,
+        )
+        return ""
+    return key
+
+
+def build_rpc_payload(
+    payload_builder: PayloadBuilder,
+    canonical_obs: Dict[str, Any],
+    ctx: Dict[str, Any],
+    disable_action_cache: bool = False,
+    return_action_chunk: bool = False,
+    extra_control: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Assemble the transport-level RPC dict from a PayloadBuilder's kwargs.
+
+    RPC-control fields (``episode_id`` / ``episode_step`` / cache flags plus
+    any ``extra_control``) are added around the model kwargs so the server
+    side policy can consume them without leaking into
+    ``model.predict_action``.
+    """
+    model_kwargs = payload_builder.build(canonical_obs, ctx)
+    rpc: Dict[str, Any] = {
+        "episode_id": ctx.get("episode_id", canonical_obs.get("meta", {}).get("episode_id", "default")),
+        "episode_step": int(
+            ctx.get("episode_step", canonical_obs.get("meta", {}).get("episode_step", 0))
+        ),
+        "disable_action_cache": bool(disable_action_cache),
+        "return_action_chunk": bool(return_action_chunk),
+    }
+    if extra_control:
+        rpc.update(extra_control)
+    rpc.update(model_kwargs)
+    return rpc
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -51,7 +145,6 @@ CONFIG_MAPPING = {
     "server.dataset_statistics_path": "dataset_statistics_path",
     "server.use_bf16": "use_bf16",
     "server.random_init": "random_init",
-    "server.state_format": "state_format",
     "server.host": "host",
     "server.port": "port",
     "server.health_port": "health_port",
@@ -76,9 +169,8 @@ CONFIG_MAPPING = {
     "benchmark.num_steps_wait": "num_steps_wait",
     "benchmark.max_steps": "max_steps",
     "benchmark.continuous_gripper": "continuous_gripper",
-    "benchmark.domain_id": "domain_id",
-    "benchmark.action_postprocess": "action_postprocess",
-    # LIBERO OSC: auto | absolute | delta (auto ≈ absolute when action_postprocess set)
+    # LIBERO OSC: auto | absolute | delta (auto ≈ absolute when the composed
+    # action decoder key is non-identity — capability matching drives this).
     "benchmark.control_mode": "control_mode",
     "server.chunk_execute_steps": "chunk_execute_steps",
     "benchmark.dataset_path": "dataset_path",

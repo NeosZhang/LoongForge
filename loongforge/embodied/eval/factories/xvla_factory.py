@@ -104,7 +104,6 @@ class XVLAModelFactory:
             "action_horizon": model_cfg.action_horizon,
             "chunk_execute_steps": _chunk_execute_steps if _chunk_execute_steps > 0 else None,
             "dataset_statistics_path": server_args.dataset_statistics_path,
-            "state_format": server_args.state_format,
         }
         return PredictActionModelSpec(model=model, metadata=metadata)
 

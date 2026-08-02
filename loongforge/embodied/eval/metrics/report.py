@@ -312,7 +312,7 @@ def _memory_info() -> Dict[str, Optional[int]]:
 
 def _disk_info() -> Dict[str, Dict[str, int]]:
     """Run _disk_info."""
-    paths = [Path("/workspace"), Path("/ssd1")]
+    paths = [Path(p) for p in os.environ.get("DISK_MONITOR_PATHS", "/workspace").split(":") if p]
     info: Dict[str, Dict[str, int]] = {}
     for path in paths:
         if not path.exists():

@@ -8,7 +8,6 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 import numpy as np
-from transforms3d.euler import euler2axangle
 
 from loongforge.embodied.eval.adapters.base import BaseBenchmarkAdapter
 
@@ -40,6 +39,9 @@ TASK_TO_ENV_NAME = {
     "widowx_carrot_on_plate": "PutCarrotOnPlateInScene-v0",
     "widowx_stack_cube": "StackGreenCubeOnYellowCubeBakedTexInScene-v0",
     "widowx_put_eggplant_in_basket": "PutEggplantInBasketScene-v0",
+    # WidowX small-drawer tasks (ported from NVIDIA's pinned SimplerEnv fork).
+    "widowx_open_drawer": "OpenSmallDrawerCustomInScene-v0",
+    "widowx_close_drawer": "CloseSmallDrawerCustomInScene-v0",
 }
 
 
@@ -68,33 +70,23 @@ def _extract_agent_state(env_obs: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def build_widowx_initial_model_state(env_obs: Dict[str, Any], target_dim: int = 20) -> Optional[np.ndarray]:
-    """Build the initial 20D proprio used by the official X-VLA WidowX client.
-
-    Official layout: [ee_pos_wrt_base(3), 1, 0, 0, 1, 0, 0 (identity rot6d,
-    interleaved), 0 (gripper)] padded with zeros to ``target_dim``. Subsequent
-    steps overwrite the first 10 dims with the last consumed action
-    (closed-loop backfill handled by the runner).
-    """
-    try:
-        from sapien.core import Pose
-
-        agent = env_obs["agent"]
-        extra = env_obs["extra"]
-        base_pose = np.asarray(agent["base_pose"], dtype=np.float64).reshape(-1)
-        tcp_pose = np.asarray(extra["tcp_pose"], dtype=np.float64).reshape(-1)
-        ee_pose_wrt_base = Pose(p=base_pose[:3], q=base_pose[3:]).inv() * Pose(p=tcp_pose[:3], q=tcp_pose[3:])
-        pos = np.asarray(ee_pose_wrt_base.p, dtype=np.float32)
-    except Exception:
-        return None
-    proprio = np.concatenate([pos, np.array([1, 0, 0, 1, 0, 0, 0], dtype=np.float32)])
-    state = np.zeros(target_dim, dtype=np.float32)
-    state[: proprio.size] = proprio
-    return state
-
-
 class SimplerEnvAdapter(BaseBenchmarkAdapter):
-    """Provide SimplerEnvAdapter behavior."""
+    """SimplerEnv obs/action adapter.
+
+    Refactor note: this adapter no longer builds any proprio itself. The
+    WidowX initial-state pose fields (``base_pose`` / ``tcp_pose``) are
+    exposed under ``canonical["state_raw"]`` and the per-model PayloadBuilder
+    (currently ``XVLAPayloadBuilder``'s ``ee6d_widowx`` encoding) is
+    responsible for building the closed-loop-backfilled 20D proprio.
+    """
+
+    # Capability declarations for orchestrator M×N matching. The active
+    # decoder is chosen by ``payload_builder.action_encoding × action_space``
+    # — for xvla ee6d × ``simpler_abs_euler`` the composed registry key is
+    # ``ee6d_to_simpler_abs_euler``.
+    action_space: str = "simpler_abs_euler"
+    default_fps: int = 5
+    cameras: tuple = ("primary",)
 
     def __init__(
         self,
@@ -122,11 +114,25 @@ class SimplerEnvAdapter(BaseBenchmarkAdapter):
         self.rotation_mode = rotation_mode
 
     def obs_to_canonical(self, env_obs: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-        """Run obs_to_canonical."""
+        """Convert a SimplerEnv obs into a benchmark-neutral canonical dict."""
         image = np.ascontiguousarray(env_obs["image"][self.camera_name]["rgb"])
         agent_state = _extract_agent_state(env_obs)
         qpos = np.asarray(agent_state.get("qpos", []), dtype=np.float32).reshape(-1)
         qvel = np.asarray(agent_state.get("qvel", []), dtype=np.float32).reshape(-1)
+
+        # base_pose / tcp_pose are needed by ``XVLAPayloadBuilder``'s
+        # ``ee6d_widowx`` encoding to compute the initial 20D proprio; expose
+        # them under ``state_raw`` (raw, no encoding) so the per-model builder
+        # can consume them without importing SAPIEN here in the adapter.
+        base_pose = agent_state.get("base_pose") if isinstance(agent_state, dict) else None
+        tcp_pose = None
+        extra = env_obs.get("extra") if isinstance(env_obs, dict) else None
+        if isinstance(extra, dict):
+            tcp_pose = extra.get("tcp_pose")
+        # Official GR00T WidowX wrapper builds proprio from ``agent.eef_pos``
+        # ([x,y,z, quat_wxyz(4), gripper]); expose it raw for the per-model
+        # PayloadBuilder (GR00T oxe_widowx) to encode.
+        eef_pos = agent_state.get("eef_pos") if isinstance(agent_state, dict) else None
 
         state: Dict[str, Any] = {
             "eef_pos": None,
@@ -149,7 +155,12 @@ class SimplerEnvAdapter(BaseBenchmarkAdapter):
                 "head": None,
             },
             "state": state,
-            "model_state": None,
+            "state_raw": {
+                "base_pose": np.asarray(base_pose, dtype=np.float32) if base_pose is not None else None,
+                "tcp_pose": np.asarray(tcp_pose, dtype=np.float32) if tcp_pose is not None else None,
+                "eef_pos": np.asarray(eef_pos, dtype=np.float32) if eef_pos is not None else None,
+                "joint": qpos if qpos.size else None,
+            },
             "meta": {
                 "benchmark": "simplerenv",
                 "robot_setup": self.robot_setup,
@@ -195,6 +206,12 @@ class SimplerEnvAdapter(BaseBenchmarkAdapter):
         """Run _convert_rotation."""
         if self.rotation_mode == "axis_angle":
             return rotation_delta.astype(np.float32)
+        # Lazy import: ``transforms3d`` is only available in the simplerenv
+        # env; keeping the top-level module import-clean lets loongforge-env
+        # unit tests exercise the adapter (only ``action_from_canonical``
+        # actually uses this helper).
+        from transforms3d.euler import euler2axangle
+
         roll, pitch, yaw = rotation_delta.astype(np.float64)
         axis, angle = euler2axangle(roll, pitch, yaw)
         return np.asarray(axis * angle, dtype=np.float32)
