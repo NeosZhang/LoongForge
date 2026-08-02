@@ -50,7 +50,7 @@ def _write_deploy_policy(args: argparse.Namespace, path: pathlib.Path) -> None:
         "control_hz": args.control_hz,
         "disable_action_cache": args.disable_action_cache,
         "return_action_chunk": args.return_action_chunk,
-        "action_bridge": getattr(args, "action_bridge", "strict_14d"),
+        "action_bridge": getattr(args, "action_bridge", "ee6d_dual"),
         "domain_id": getattr(args, "domain_id", None),
         "trace_path": str(_robotwin_artifact_dir(args) / "trace.json"),
     }

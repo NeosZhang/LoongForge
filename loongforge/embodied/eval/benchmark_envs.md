@@ -11,11 +11,11 @@ User-editable benchmark configs live under `examples/embodied/pi05/eval/configs`
 Current benchmark environments:
 
 ```text
-LIBERO      /path/to/miniconda3/envs/libero
-CALVIN      /path/to/miniconda3/envs/calvin
-SimplerEnv  /path/to/miniconda3/envs/simplerenv
-RoboTwin    /path/to/miniconda3/envs/robotwin
-ManiSkill   /path/to/miniconda3/envs/maniskill
+LIBERO      /path/to/conda/envs/libero
+CALVIN      /path/to/conda/envs/calvin
+SimplerEnv  /path/to/conda/envs/simplerenv
+RoboTwin    /path/to/conda/envs/robotwin
+ManiSkill   /path/to/conda/envs/maniskill
 ```
 
 No benchmark currently uses uv for environment isolation.
@@ -31,7 +31,7 @@ conda 26.3.2
 Runtime Python:
 
 ```text
-/path/to/miniconda3/envs/libero/bin/python
+/path/to/conda/envs/libero/bin/python
 ```
 
 Selected dependency versions:
@@ -63,7 +63,7 @@ examples/embodied/pi05/eval/configs/libero/*.yaml
 Runtime Python:
 
 ```text
-/path/to/miniconda3/envs/calvin/bin/python
+/path/to/conda/envs/calvin/bin/python
 ```
 
 CALVIN evaluation uses the original-format CALVIN validation dataset and config assets, including `validation/.hydra/merged_config.yaml`, `calvin_models/conf`, and `eval_sequences.json`. LeRobot-format CALVIN datasets are useful for training/statistics but are not sufficient by themselves for official online long-horizon rollout.
@@ -71,7 +71,7 @@ CALVIN evaluation uses the original-format CALVIN validation dataset and config 
 Current CALVIN status:
 
 ```text
-benchmark env:       /path/to/miniconda3/envs/calvin
+benchmark env:       /path/to/conda/envs/calvin
 repo/config assets:  /path/to/calvin
 validation dataset:  /path/to/calvin_debug_dataset
 pi05 configs:        only smoke.yaml
@@ -98,7 +98,7 @@ VK_ICD_FILENAMES=/path/to/nvidia_icd.json
 XDG_RUNTIME_DIR=/tmp/runtime-<uid>
 ```
 
-Example host values:
+A concrete example:
 
 ```text
 LD_LIBRARY_PATH=/path/to/nvidia_lib:/usr/lib64:$LD_LIBRARY_PATH
@@ -122,7 +122,7 @@ Expected signal: `deviceName = NVIDIA ...` and `driverName = NVIDIA`. If the out
 Runtime Python:
 
 ```text
-/path/to/miniconda3/envs/simplerenv/bin/python
+/path/to/conda/envs/simplerenv/bin/python
 ```
 
 Selected dependency versions:
@@ -168,7 +168,7 @@ examples/embodied/xvla/eval/configs/simplerenv/*.yaml
 Runtime Python:
 
 ```text
-/path/to/miniconda3/envs/robotwin/bin/python
+/path/to/conda/envs/robotwin/bin/python
 ```
 
 Selected dependency versions:
@@ -190,7 +190,7 @@ pyyaml            6.0.3
 Video logging dependency:
 
 ```text
-/path/to/miniconda3/envs/robotwin/bin/ffmpeg
+/path/to/conda/envs/robotwin/bin/ffmpeg
 ffmpeg version 7.0.2-static
 ```
 
@@ -200,7 +200,7 @@ Current RoboTwin status (2026-07-21):
 
 ```text
 Official evaluator:    script/eval_policy.py via robotwin_runner + bridges/robotwin_policy.py
-action_bridge modes:   strict_14d | duplicate_7d | pi05_aloha_14d | ee6d_dual
+action_bridge modes:   pi05_aloha_14d | ee6d_dual
 pi05 RoboTwin2:        task success (adjust_bottle demo_clean)
                        action_bridge=pi05_aloha_14d, action_dim=14, action_horizon=32
                        checkpoint example: /path/to/pi0.5_robotwin2
@@ -209,7 +209,7 @@ pi05 RoboTwin2:        task success (adjust_bottle demo_clean)
 xvla RoboTwin2:        task success (adjust_bottle demo_clean)
                        action_bridge=ee6d_dual, domain_id=6
                        checkpoint example: /path/to/X-VLA-RoboTwin2
-Smoke-only:            edit adjust_bottle_smoke*.yaml (random_init / duplicate_7d); no separate YAML
+Smoke-only:            edit adjust_bottle_smoke*.yaml (random_init); no separate YAML
 ```
 
 Used by:
@@ -224,7 +224,7 @@ examples/embodied/xvla/eval/configs/robotwin/*.yaml
 Runtime Python:
 
 ```text
-/path/to/miniconda3/envs/maniskill/bin/python
+/path/to/conda/envs/maniskill/bin/python
 ```
 
 Current ManiSkill status:
@@ -249,28 +249,28 @@ examples/embodied/pi05/eval/configs/maniskill/*.yaml
 ```text
 examples/embodied/pi05/eval/configs/libero/*.yaml
 examples/embodied/xvla/eval/configs/libero/*.yaml
-  benchmark env: /path/to/miniconda3/envs/libero
-  runtime:       /path/to/miniconda3/envs/libero/bin/python
+  benchmark env: /path/to/conda/envs/libero
+  runtime:       /path/to/conda/envs/libero/bin/python
 
 examples/embodied/pi05/eval/configs/calvin/*.yaml
 examples/embodied/xvla/eval/configs/calvin/*.yaml
-  benchmark env: /path/to/miniconda3/envs/calvin
-  runtime:       /path/to/miniconda3/envs/calvin/bin/python
+  benchmark env: /path/to/conda/envs/calvin
+  runtime:       /path/to/conda/envs/calvin/bin/python
 
 examples/embodied/pi05/eval/configs/simplerenv/*.yaml
 examples/embodied/xvla/eval/configs/simplerenv/*.yaml
-  benchmark env: /path/to/miniconda3/envs/simplerenv
-  runtime:       /path/to/miniconda3/envs/simplerenv/bin/python
+  benchmark env: /path/to/conda/envs/simplerenv
+  runtime:       /path/to/conda/envs/simplerenv/bin/python
 
 examples/embodied/pi05/eval/configs/robotwin/*.yaml
 examples/embodied/xvla/eval/configs/robotwin/*.yaml
-  benchmark env: /path/to/miniconda3/envs/robotwin
-  runtime:       /path/to/miniconda3/envs/robotwin/bin/python
+  benchmark env: /path/to/conda/envs/robotwin
+  runtime:       /path/to/conda/envs/robotwin/bin/python
 
 examples/embodied/pi05/eval/configs/maniskill/*.yaml
 examples/embodied/xvla/eval/configs/maniskill/*.yaml
-  benchmark env: /path/to/miniconda3/envs/maniskill
-  runtime:       /path/to/miniconda3/envs/maniskill/bin/python
+  benchmark env: /path/to/conda/envs/maniskill
+  runtime:       /path/to/conda/envs/maniskill/bin/python
 ```
 
 ## Re-check Commands
@@ -278,9 +278,9 @@ examples/embodied/xvla/eval/configs/maniskill/*.yaml
 Use these commands to refresh version information after environment changes:
 
 ```bash
-/path/to/miniconda3/bin/conda list -n libero
-/path/to/miniconda3/bin/conda list -n calvin
-/path/to/miniconda3/bin/conda list -n simplerenv
-/path/to/miniconda3/bin/conda list -n robotwin
-/path/to/miniconda3/bin/conda list -n maniskill
+/path/to/conda/bin/conda list -n libero
+/path/to/conda/bin/conda list -n calvin
+/path/to/conda/bin/conda list -n simplerenv
+/path/to/conda/bin/conda list -n robotwin
+/path/to/conda/bin/conda list -n maniskill
 ```

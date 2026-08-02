@@ -9,27 +9,27 @@ This directory contains the LoongForge-Embodied offline evaluation module. It ru
 | Doc | Content |
 |---|---|
 | [user_guide_en.md](user_guide_en.md) | User guide (YAML, benchmarks, bridges, verified runs) |
-| [model_integration_guide.md](model_integration_guide.md) | New-model integration checklist (pi05 vs xvla) |
-| [predict_action_interface.md](predict_action_interface.md) | **For model owners:** `predict_action` contract, unnorm ownership, postprocess vs model |
+| [model_integration.md](model_integration.md) | New-model integration checklist + `predict_action` contract (pi05 vs xvla) |
 | [benchmark_envs.md](benchmark_envs.md) | Per-benchmark conda envs and dependencies |
 
 ## Scope
 
-- `loongforge.embodied.eval.protocol`: canonical observation/action/result schema.
-- `loongforge.embodied.eval.transport`: WebSocket RPC client/server utilities.
-- `loongforge.embodied.eval.adapters`: benchmark-side adapters.
-- `loongforge.embodied.eval.bridges`: RoboTwin official evaluator policy bridge (`action_bridge`).
-- `loongforge.embodied.eval.orchestrator`: unified YAML entry (`run.py`), server manager, runners.
-- `loongforge.embodied.eval.servers.loongforge_server`: LoongForge policy server entrypoint.
-- `loongforge.embodied.eval.servers.loongforge_policy`: generic `predict_action` eval policy (`GenericPredictActionPolicy`) and shared data types.
-- `loongforge.embodied.eval.servers.eval_server_config`: `EvalServerArgs` dataclass and `parse_eval_server_config` YAML parser.
-- `loongforge.embodied.eval.servers.predict_action_interface`: shared model interface checks, action shape normalization, `ACTION_POSTPROCESS_REGISTRY`.
-- `loongforge.embodied.eval.servers.mock_policy` / `mock_server`: lightweight protocol mock for tests.
-- `loongforge.embodied.eval.factories.registry`: model factory registry (`MODEL_FACTORY_REGISTRY`, `register_factory`, `build_model_spec`).
-- `loongforge.embodied.eval.factories.pi05_factory`: PI05 model factory (`PI05ModelFactory`).
-- `loongforge.embodied.eval.factories.xvla_factory`: XVLA model factory (`XVLAModelFactory`).
+The runtime eval chain decouples the model from the benchmark via four independently-registered stages:
 
-LoongForge training source under the repo root is not patched by this eval module. Model-specific load/build logic lives in `eval/factories`; generic RPC and interface helpers live in `eval/servers`.
+**Adapter → PayloadBuilder → `model.predict_action` → ActionDecoder**
+
+Top-level packages under `loongforge.embodied.eval`:
+
+- `adapters` (per-benchmark): env obs → canonical dict (raw fields under `state_raw`); declares matching capabilities (`action_space`, `default_fps`, `cameras`).
+- `payload_builders` (per-model): canonical dict → `predict_action(**kwargs)`; capabilities declared as class attributes (`state_encoding` / `action_encoding` / `action_dim` / ...).
+- `action_decoders` (registry): raw model action chunk → benchmark env action space; an identity match yields an `IdentityDecoder` no-op.
+- `factories` (per-model): thin model load/build, registered via `@register_factory("<model_type>")`.
+- `servers`: LoongForge policy server, the generic `predict_action` policy, and the model-author `predict_action` interface contract.
+- `orchestrator`: unified YAML entry (`run.py`), server manager, runners, and RPC/config assembly.
+- `bridges`: RoboTwin official-evaluator policy bridge.
+- `protocol` / `transport`: canonical schema + WebSocket RPC utilities.
+
+Model-specific load/build lives in `factories`; per-model payload assembly in `payload_builders`; generic RPC and the `predict_action` contract in `servers`. Training-tree source under the repo root is not patched by this eval module. See `model_integration.md` for per-file detail.
 
 ## Quick Start: pi05 on LIBERO / CALVIN / SimplerEnv / RoboTwin / ManiSkill
 
@@ -76,7 +76,7 @@ See `user_guide_en.md` §2.1–2.3 / §9 / §11 for examples, open weights, brid
 The pi05 configs use:
 
 - `model.backend: loongforge`
-- `model.model_type: pi05`
+- `model.model_type: pi05` (**required**; no default — the eval server raises if the `model:` section omits `model_type`)
 - `model.action_dim`, `model.action_horizon`, etc.: Pi05ModelConfig structure fields
 - `server.ckpt_path`: checkpoint directory or `model.safetensors`, unless `server.random_init: true` is set for a smoke run
 - `server.dataset_statistics_path`: dataset stats passed through to model `predict_action()` for model-owned normalization or unnormalization
@@ -88,7 +88,7 @@ For protocol/debug smoke testing, copy an existing YAML and set `model.backend: 
 
 ## Model Interface
 
-LoongForge model servers prefer a shared `predict_action` interface instead of a separate full policy adapter for every model. A reusable `GenericPredictActionPolicy` handles eval RPC behavior: canonical image view selection, `predict_action` invocation, action shape validation, action-dim truncation, chunk caching, latency reporting, metadata, and dataset statistics loading. Model-specific normalization and unnormalization should happen inside the model's `predict_action()` implementation.
+LoongForge model servers prefer a shared `predict_action` interface instead of a separate full policy adapter for every model. A reusable `GenericPredictActionPolicy` handles eval RPC behavior: `predict_action` invocation, action shape validation, action-dim truncation, chunk caching, latency reporting, metadata, and dataset statistics loading. Client-side payload assembly (image view ordering, proprio `state_encoding`, `domain_id`) lives in the per-model `PayloadBuilder`; env-side action decoding lives in the `ActionDecoder`. Model-specific normalization and unnormalization should happen inside the model's `predict_action()` implementation.
 
 Model-specific logic should be kept in a thin factory under `eval/factories/`. The current pi05 path is:
 
@@ -106,18 +106,30 @@ loongforge_server.py
   -> PI05Policy.predict_action(images, instructions, state=None, dataset_stats=None)
 ```
 
-To add a new model, create `eval/factories/<model>_factory.py`, implement a factory class with `model_config_cls` and a `build(model_cfg, server_args)` classmethod, decorate it with `@register_factory("<model_type>")`, and ensure the factory module is imported so registration runs (see existing factories and `eval/factories/registry.py`). No changes needed in `loongforge_server.py`.
+To add a new model, create `eval/factories/<model>_factory.py`, implement a factory class with `model_config_cls` and a `build(model_cfg, server_args)` classmethod, decorate it with `@register_factory("<model_type>")`, and ensure the factory module is imported so registration runs (see existing factories and `eval/factories/registry.py`). Pair it with a `eval/payload_builders/<model>.py` registered via `@register_payload_builder("<model_type>")` (the orchestrator asserts the factory and payload-builder registries have identical keys). No changes needed in `loongforge_server.py`.
 
-Beyond the factory, a new model usually needs model-semantic decisions (action space, absolute vs delta control, action post-processing, proprio state format, normalization ownership, model-specific request fields such as `domain_id`, chunk length, eval horizon). See `model_integration_guide.md` for the full checklist derived from the pi05 and xvla integrations.
+Beyond the factory and payload builder, a new model usually needs model-semantic decisions (action space, absolute vs delta control, action decoding, proprio `state_encoding`, normalization ownership, model-specific request fields such as `domain_id`, chunk length, eval horizon). See `model_integration.md` for the full checklist derived from the pi05 and xvla integrations.
 
-RoboTwin-specific `benchmark.action_bridge` values (implemented in `bridges/robotwin_policy.py`; set in YAML only):
+At runtime every benchmark drives the same 4-component chain:
 
-- `strict_14d` — default 14D joint actions
-- `duplicate_7d` — 7D→14D smoke only
-- `pi05_aloha_14d` — openpi Aloha for pi0.5 RoboTwin (adapt_to_pi + delta→abs)
-- `ee6d_dual` — official X-VLA RoboTwin EE control
+```text
+Adapter.obs_to_canonical(env_obs)      # env obs -> canonical dict (state_raw)
+  -> PayloadBuilder.build(canonical)   # canonical -> predict_action kwargs
+  -> model.predict_action(**kwargs)    # RPC to the policy server
+  -> ActionDecoder(action_chunk, ctx)  # raw model chunk -> env action space
+```
 
-The xvla path additionally uses `benchmark.domain_id`, `benchmark.action_postprocess` (e.g. `ee6d_to_axis_angle`, `ee6d_to_simpler_abs_euler`, `ee6d_to_calvin_abs`) and `server.state_format: ee6d`; configs live under `examples/embodied/xvla/eval/configs/`.
+The ActionDecoder key is auto-composed at orchestrator startup by
+`resolve_action_decoder_key(payload_builder, adapter)` =
+`"{model.action_encoding}_to_{adapter.action_space}"`; an identity match
+(source == target) yields an empty key and an `IdentityDecoder` no-op.
+
+RoboTwin-specific `benchmark.action_bridge` values (form-B; implemented in `bridges/robotwin_policy.py`, set in YAML only) wire a fixed `(model_type, state_encoding, decoder)` triple:
+
+- `pi05_aloha_14d` — openpi Aloha for pi0.5 RoboTwin (`Pi05PayloadBuilder(state_encoding="aloha_pi")` + `pi05_aloha_robotwin` decoder)
+- `ee6d_dual` — official X-VLA RoboTwin EE control (`XVLAPayloadBuilder(state_encoding="ee6d_dual")` + `ee6d_robotwin_ee_dual` decoder)
+
+The xvla path additionally uses `model.domain_id` (per-benchmark, e.g. LIBERO=3, CALVIN=2, SimplerEnv=0, ManiSkill=5; omit to auto-resolve from the benchmark name), `model.state_encoding` (e.g. `ee6d`, `ee6d_calvin`, `ee6d_widowx`, `passthrough`) and `model.action_encoding` (`ee6d`, which composes decoder keys such as `ee6d_to_axis_angle` / `ee6d_to_calvin_abs` / `ee6d_to_simpler_abs_euler`); configs live under `examples/embodied/xvla/eval/configs/`.
 
 ## Outputs
 
@@ -138,4 +150,4 @@ A benchmark run writes:
 - Prefer adding YAML configs over command-line parameter sprawl.
 - Use `model.backend` in YAML for backend selection and `benchmark.name` for benchmark selection.
 - New model factories should ensure their `predict_action()` tolerates a warmup call with a zero-filled dummy image and an empty instruction string (`_warmup_model` in `loongforge_server.py` runs this before serving).
-- After changing shared runner / adapter / bridge / generic policy code, regression-test at least pi05 × LIBERO.
+- After changing shared runner / adapter / payload builder / action decoder / bridge / generic policy code, regression-test at least pi05 × LIBERO.

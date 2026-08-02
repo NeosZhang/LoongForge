@@ -10,7 +10,6 @@ import copy
 import json
 import os
 import pathlib
-import signal
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +17,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from loongforge.embodied.eval.adapters.calvin import CALVIN_MAX_STEPS_PER_SUBTASK, CalvinAdapter
+from loongforge.embodied.eval.action_decoders import ActionDecoder
 from loongforge.embodied.eval.metrics import append_jsonl, load_jsonl
+from loongforge.embodied.eval.orchestrator.config import (
+    build_rpc_payload,
+)
+from loongforge.embodied.eval.orchestrator.runners import _common
+from loongforge.embodied.eval.orchestrator.runners._common import StepTimeoutError, alarm_timeout, avg as _avg
+from loongforge.embodied.eval.payload_builders import PayloadBuilder
 from loongforge.embodied.eval.protocol import PROTOCOL_VERSION
 from loongforge.embodied.eval.transport import PolicyClient
 
@@ -29,72 +35,10 @@ INFERENCE_CONFIG = {
 }
 
 
-class StepTimeoutError(TimeoutError):
-    """Provide StepTimeoutError behavior."""
-
-    pass
-
-
 class SequenceTimeoutError(TimeoutError):
     """Provide SequenceTimeoutError behavior."""
 
     pass
-
-
-class _AlarmTimeout:
-    """Signal-based timeout context for simulator calls."""
-
-    def __init__(self, seconds: float, error_cls):
-        self.seconds = seconds
-        self.error_cls = error_cls
-        self.previous_handler = None
-
-    def __enter__(self):
-        if self.seconds <= 0:
-            return self
-
-        def _handle_timeout(signum, frame):
-            raise self.error_cls(f"Timed out after {self.seconds} seconds")
-
-        self.previous_handler = signal.signal(signal.SIGALRM, _handle_timeout)
-        signal.setitimer(signal.ITIMER_REAL, self.seconds)
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        if self.seconds > 0:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-            signal.signal(signal.SIGALRM, self.previous_handler)
-        return False
-
-
-def _canonical_to_policy_payload(
-    canonical_obs: Dict[str, Any],
-    unnorm_key: Optional[str],
-    domain_id: Optional[int] = None,
-    state_override: Optional[Any] = None,
-) -> Dict[str, Any]:
-    """Run _canonical_to_policy_payload."""
-    payload = {
-        "images": canonical_obs["images"],
-        "instruction": canonical_obs["instruction"],
-        "episode_id": canonical_obs["meta"]["episode_id"],
-        "episode_step": canonical_obs["meta"]["episode_step"],
-        "state": state_override if state_override is not None else canonical_obs.get("model_state"),
-        **INFERENCE_CONFIG,
-    }
-    if unnorm_key is not None:
-        payload["unnorm_key"] = unnorm_key
-    if domain_id is not None:
-        payload["domain_id"] = domain_id
-    return payload
-
-
-def _avg(values: List[Optional[float]]) -> Optional[float]:
-    """Run _avg."""
-    numeric_values = [float(value) for value in values if value is not None]
-    if not numeric_values:
-        return None
-    return sum(numeric_values) / len(numeric_values)
 
 
 def _make_env(dataset_path: str):
@@ -213,13 +157,8 @@ def _save_replay(frames: List[np.ndarray], output_dir: str, sequence_idx: int, s
     """Run _save_replay."""
     if not frames:
         return None
-    import imageio.v2 as imageio
-
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / "calvin" / f"sequence{sequence_idx}"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    replay_path = artifact_dir / f"replay_successes{success_count}.gif"
-    imageio.mimsave(replay_path, frames, duration=0.1)
-    return str(replay_path)
+    return _common.write_replay_gif(frames, artifact_dir / f"replay_successes{success_count}.gif", duration=0.1)
 
 
 def _save_trace(trace: List[Dict[str, Any]], output_dir: str, sequence_idx: int, success_count: int) -> Optional[str]:
@@ -227,11 +166,7 @@ def _save_trace(trace: List[Dict[str, Any]], output_dir: str, sequence_idx: int,
     if not trace:
         return None
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / "calvin" / f"sequence{sequence_idx}"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = artifact_dir / f"trace_successes{success_count}.json"
-    with trace_path.open("w", encoding="utf-8") as file:
-        json.dump(trace, file, ensure_ascii=False, indent=2)
-    return str(trace_path)
+    return _common.write_trace_json(trace, artifact_dir / f"trace_successes{success_count}.json")
 
 
 def _classify_exception(exc: Exception) -> str:
@@ -307,6 +242,9 @@ def run_sequence(
     *,
     client: PolicyClient,
     adapter: CalvinAdapter,
+    payload_builder: PayloadBuilder,
+    action_decoder: ActionDecoder,
+    action_decoder_key: str,
     env,
     task_oracle,
     val_annotations,
@@ -329,7 +267,7 @@ def run_sequence(
     sequence_start = time.time()
 
     try:
-        with _AlarmTimeout(args.per_sequence_timeout_sec, SequenceTimeoutError):
+        with alarm_timeout(args.per_sequence_timeout_sec, SequenceTimeoutError):
             robot_obs, scene_obs = _initial_condition_to_obs(initial_state)
             reset_start = time.time()
             env.reset(robot_obs=robot_obs, scene_obs=scene_obs)
@@ -340,12 +278,11 @@ def run_sequence(
                 obs = env.get_obs()
                 lang_annotation = str(val_annotations[subtask][0]).split("\n")[0].replace("\u2019", "'")
                 start_info = env.get_info()
-                client.reset(f"{episode_id}/subtask={subtask_idx}")
+                subtask_episode_id = f"{episode_id}/subtask={subtask_idx}"
+                client.reset(subtask_episode_id)
+                payload_builder.reset(subtask_episode_id)
+                action_decoder.reset()
                 subtask_success = False
-                # Official X-VLA calvin client: proprio starts from the current
-                # observation and is then backfilled with the raw predicted
-                # action (closed-loop: proprio[:10] = action[:10]).
-                proprio = None
 
                 for step in range(args.max_steps_per_subtask):
                     if args.save_replay:
@@ -354,18 +291,32 @@ def run_sequence(
                         obs,
                         {
                             "instruction": lang_annotation,
-                            "episode_id": f"{episode_id}/subtask={subtask_idx}",
+                            "episode_id": subtask_episode_id,
                             "episode_step": step,
                         },
                     )
+                    ctx = {
+                        "benchmark_name": "calvin",
+                        "episode_id": subtask_episode_id,
+                        "episode_step": step,
+                        "instruction": lang_annotation,
+                    }
+                    # CALVIN passes a few inference-time tuning knobs
+                    # (do_sample / use_ddim / num_ddim_steps) plus optional
+                    # ``unnorm_key`` as extra control fields — model
+                    # predict_action signatures drop unknown kwargs with a
+                    # WARNING log via ``_filter_supported_kwargs``.
+                    extra_control = dict(INFERENCE_CONFIG)
+                    if args.unnorm_key is not None:
+                        extra_control["unnorm_key"] = args.unnorm_key
                     request_start = time.perf_counter()
-                    with _AlarmTimeout(args.policy_call_timeout_ms / 1000.0, TimeoutError):
+                    with alarm_timeout(args.policy_call_timeout_ms / 1000.0, TimeoutError):
                         response = client.predict_action(
-                            **_canonical_to_policy_payload(
+                            **build_rpc_payload(
+                                payload_builder,
                                 canonical_obs,
-                                args.unnorm_key,
-                                domain_id=getattr(args, "domain_id", None),
-                                state_override=proprio,
+                                ctx,
+                                extra_control=extra_control,
                             )
                         )
                     e2e_latency_ms = (time.perf_counter() - request_start) * 1000.0
@@ -374,30 +325,19 @@ def run_sequence(
                         raise RuntimeError(f"Policy error: {response}")
 
                     data = response["data"]
+                    payload_builder.update_from_response(data)
                     inference_latency_ms = data.get("inference_latency_ms")
                     inference_latencies.append(inference_latency_ms)
-                    postprocess_key = getattr(args, "action_postprocess", "") or ""
                     raw_chunk = np.asarray(data["actions"], dtype=np.float32)
                     if raw_chunk.ndim == 1:
                         raw_chunk = raw_chunk.reshape(1, -1)
-                    if postprocess_key and raw_chunk.shape[-1] >= 10:
-                        if proprio is None:
-                            base_state = canonical_obs.get("model_state")
-                            proprio = (
-                                np.array(base_state, dtype=np.float32)
-                                if base_state is not None
-                                else np.zeros(20, dtype=np.float32)
-                            )
-                        proprio[:10] = raw_chunk[0, :10]
-                    if postprocess_key:
+                    if action_decoder_key:
                         # Absolute-pose models (X-VLA ee6d): decode to
                         # pos(3)+quat(4)+grip(1) and step the env with the
                         # (pos, orn, gripper) tuple accepted by calvin_env
                         # robot.apply_action (len==3 -> absolute mode),
                         # matching the official calvin client.
-                        from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
-
-                        processed = postprocess_actions(raw_chunk, postprocess_key)
+                        processed = action_decoder(raw_chunk, {"benchmark_name": "calvin"})
                         flat_action = processed[0]
                         env_action = (
                             np.array(flat_action[:3], dtype=np.float64),
@@ -410,7 +350,7 @@ def run_sequence(
                         if not env_action.flags.writeable:
                             env_action = np.array(env_action, copy=True)
 
-                    with _AlarmTimeout(args.per_step_timeout_sec, StepTimeoutError):
+                    with alarm_timeout(args.per_step_timeout_sec, StepTimeoutError):
                         obs, _, _, current_info = env.step(env_action)
                     steps += 1
                     current_task_info = task_oracle.get_task_info_for_set(start_info, current_info, {subtask})
@@ -547,8 +487,8 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
         control_hz=args.control_hz,
         max_steps_per_subtask=args.max_steps_per_subtask,
         continuous_gripper=args.continuous_gripper,
-        state_format=getattr(args, "state_format", ""),
     )
+    payload_builder, action_decoder_key, action_decoder = _common.build_policy_stack(args, adapter)
     task_oracle, val_annotations = _load_task_oracle(args.calvin_config_path)
     env = _make_env(args.dataset_path)
     server_manager = getattr(args, "server_manager", None)
@@ -567,6 +507,9 @@ def run_batch(args: argparse.Namespace) -> Dict[str, Any]:
             record = run_sequence(
                 client=client,
                 adapter=adapter,
+                payload_builder=payload_builder,
+                action_decoder=action_decoder,
+                action_decoder_key=action_decoder_key,
                 env=env,
                 task_oracle=task_oracle,
                 val_annotations=val_annotations,

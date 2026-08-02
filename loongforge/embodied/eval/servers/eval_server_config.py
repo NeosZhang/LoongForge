@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict
 
+from omegaconf import MISSING
+
 
 @dataclass
 class EvalServerArgs:
@@ -52,17 +54,20 @@ class EvalServerArgs:
     # Working directory
     loongforge_root: str = ""
 
-    # Model type (used for registry lookup)
-    model_type: str = "pi05"
-
-    # State format expected by the model (e.g. "ee6d", "ee_axis_angle", "")
-    # Adapter uses this to construct model_state in the correct rotation representation.
-    state_format: str = ""
+    # Model type (used for registry lookup). Required — no default; must be
+    # provided via the ``model.model_type`` YAML field.
+    model_type: str = MISSING
 
     # How many action steps from a model chunk to keep before replan (eval-side).
     # 0 = model-factory default (xvla uses 10 to match official clients).
     # Positive N = truncate to N. Negative = no truncation.
     chunk_execute_steps: int = 0
+
+    # Embodiment tag for multi-embodiment models (e.g. GR00T-N1.6). Selects the
+    # modality/state/action layout the model's predict_action decodes for. The
+    # per-benchmark value (LIBERO -> ``libero_panda``) is set in the YAML
+    # ``server:`` section; models that ignore it keep the default.
+    embodiment_tag: str = "behavior_r1_pro"
 
 
 def parse_eval_server_config(config_path: str) -> tuple[EvalServerArgs, Dict[str, Any]]:
@@ -92,9 +97,14 @@ def parse_eval_server_config(config_path: str) -> tuple[EvalServerArgs, Dict[str
     # This avoids passing unknown server: keys (host, python, log, etc.) to OmegaConf structured merge.
     _EVAL_SERVER_FIELDS = {f.name for f in __import__("dataclasses").fields(EvalServerArgs)}
     server_known = {k: v for k, v in server.items() if k in _EVAL_SERVER_FIELDS}
+    model_type = model.get("model_type")
+    if not model_type:
+        raise ValueError(
+            f"'model.model_type' is required in the eval config but was missing: {config_path}"
+        )
     server_with_extras = {
         **server_known,
-        "model_type": str(model.get("model_type", "pi05")).lower(),
+        "model_type": str(model_type).lower(),
     }
     merged = OmegaConf.merge(OmegaConf.structured(EvalServerArgs), server_with_extras)
     server_args: EvalServerArgs = OmegaConf.to_object(merged)

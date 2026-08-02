@@ -80,6 +80,9 @@ def _run_libero_once(config: Dict[str, Any], config_path: str = "") -> Dict[str,
     args = libero_runner.build_argparser().parse_args([])
     args = apply_config(args, config)
     args.config = config_path
+    # Pass the raw YAML dict through so the runner can build the
+    # per-model PayloadBuilder (which reads model / server / benchmark).
+    args.raw_config = config
     server_args = _server_args(config, config_path)
     ensure_libero_config(server_args)
     original = {
@@ -109,6 +112,9 @@ def _run_calvin_once(config: Dict[str, Any], config_path: str = "") -> Dict[str,
     args = calvin_runner.build_argparser().parse_args([])
     args = apply_config(args, config)
     args.config = config_path
+    # Raw YAML dict forwarded so the runner can build the per-model
+    # PayloadBuilder (reads ``model:`` / ``server:`` / ``benchmark:`` sections).
+    args.raw_config = config
     if hasattr(args, "per_episode_timeout_sec"):
         args.per_sequence_timeout_sec = args.per_episode_timeout_sec
     if not args.dataset_path:
@@ -149,6 +155,7 @@ def _run_simplerenv_once(config: Dict[str, Any], config_path: str = "") -> Dict[
 
     args = simplerenv_runner.build_argparser().parse_args([])
     args = simplerenv_runner._apply_config(args, config)
+    args.raw_config = config
     simplerenv_runner._ensure_vulkan_runtime(args)
     if args.simplerenv_root:
         root_paths = [args.simplerenv_root, str(pathlib.Path(args.simplerenv_root) / "ManiSkill2_real2sim")]
@@ -200,6 +207,7 @@ def _run_maniskill_once(config: Dict[str, Any], config_path: str = "") -> Dict[s
 
     args = maniskill_runner.build_argparser().parse_args([])
     args = maniskill_runner._apply_config(args, config)
+    args.raw_config = config
     maniskill_runner._ensure_vulkan_runtime(args)
     if not args.task_name:
         raise ValueError("task name must be set by benchmark.task_name in YAML")

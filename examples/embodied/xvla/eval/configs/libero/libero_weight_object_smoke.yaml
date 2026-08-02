@@ -2,8 +2,13 @@
 # Task-success verified with official 2toINF/X-VLA-LIBERO (or local mirror).
 #
 # Open weight: https://huggingface.co/2toINF/X-VLA-LIBERO
-# Protocol: domain_id=3, action_postprocess=ee6d_to_axis_angle, state_format=ee6d,
+# Protocol: domain_id=3, action_encoding=ee6d, state_encoding=ee6d,
 #   control_mode=absolute (LIBERO OSC), chunk_execute_steps=10 (open-loop).
+#
+# PayloadBuilder capability fields (state_encoding / action_encoding /
+# domain_id) live under ``model:`` — the LIBERO adapter's action_space is
+# ``axis_angle`` (class attribute), so the runner auto-composes decoder key
+# ``ee6d_to_axis_angle``.
 #
 # Optional overrides (edit this file or copy it):
 #   suite: libero_object | libero_spatial | libero_goal | libero_10
@@ -18,9 +23,7 @@ benchmark:
   max_steps: 800
   num_steps_wait: 10
   continuous_gripper: true
-  domain_id: 3
-  action_postprocess: ee6d_to_axis_angle
-  control_mode: absolute  # LIBERO OSC; auto|absolute|delta (auto≈absolute when postprocess set)
+  control_mode: absolute  # LIBERO OSC; auto|absolute|delta
 
 model:
   backend: loongforge
@@ -30,6 +33,10 @@ model:
   action_horizon: 30
   max_action_dim: 20
   real_action_dim: 20
+  # PayloadBuilder capability declarations.
+  state_encoding: ee6d
+  action_encoding: ee6d
+  domain_id: 3
 
 server:
   host: 127.0.0.1
@@ -44,7 +51,6 @@ server:
   dataset_statistics_path: ""
   use_bf16: false
   loongforge_root: /path/to/LoongForge-VLA
-  state_format: ee6d
   chunk_execute_steps: 10  # official X-VLA open-loop; 0=default 10; -1=no truncate
 
 env:
