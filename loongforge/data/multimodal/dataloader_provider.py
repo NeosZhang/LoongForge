@@ -21,7 +21,7 @@ from megatron.core.models.multimodal import context_parallel
 from megatron.core.transformer.enums import AttnMaskType
 from megatron.training import get_args
 from megatron.training.checkpointing import get_checkpoint_name
-from loongforge.utils import constants, get_model_config
+from loongforge.utils import constants, get_model_config, print_rank_0
 from .base.task_encoder import print_error_handler
 from loongforge.train.get_position_idx_func import get_position_ids
 
@@ -307,6 +307,26 @@ class VLMPretrainCollator:
         batch["loss_mask"] = loss_mask
 
 
+def _energon_read_order_kwargs(args):
+    """Resolve optional Energon sample-order controls from CLI flags.
+
+    ``shuffle_buffer_size`` adds sample-level shuffling before cooking and
+    encoding. For an offline-packed dataset, each raw sample is a complete pack,
+    so this randomizes pack order without changing pack contents.
+    ``max_samples_per_sequence`` targets shorter runs from each shard slice,
+    giving Energon more sequences to mix through its parallel shard iterators.
+    Disabled values are passed as ``None`` to preserve Energon's defaults.
+    """
+    shuffle_buffer_size = getattr(args, "data_shuffle_buffer_size", 0) or 0
+    max_samples_per_sequence = getattr(args, "data_max_samples_per_sequence", 0) or 0
+    return {
+        "shuffle_buffer_size": shuffle_buffer_size if shuffle_buffer_size > 1 else None,
+        "max_samples_per_sequence": (
+            max_samples_per_sequence if max_samples_per_sequence > 0 else None
+        ),
+    }
+
+
 def get_train_dataset(task_encoder):
     """Get the training dataset"""
     args = get_args()
@@ -318,6 +338,13 @@ def get_train_dataset(task_encoder):
         worker_debug_path=None,
         worker_log_level=0,
     )
+    shuffle_kwargs = _energon_read_order_kwargs(args)
+    print_rank_0(
+        f"> Energon read order: shuffle_buffer_size="
+        f"{shuffle_kwargs['shuffle_buffer_size']}, max_samples_per_sequence="
+        f"{shuffle_kwargs['max_samples_per_sequence']}",
+        args.rank,
+    )
 
     if len(args.data_path) == 1:
         train_ds = energon.get_train_dataset(
@@ -325,11 +352,10 @@ def get_train_dataset(task_encoder):
             batch_size=args.micro_batch_size,
             task_encoder=task_encoder,
             worker_config=worker_config,
-            max_samples_per_sequence=None,
-            shuffle_buffer_size=None,
             packing_buffer_size=args.packing_buffer_size,
             handler=print_error_handler,
             image_decode="pil",
+            **shuffle_kwargs,
         )
     else:
         data_paths, data_weights = get_blend_from_list(args.data_path)
@@ -339,11 +365,10 @@ def get_train_dataset(task_encoder):
             batch_size=args.micro_batch_size,
             task_encoder=task_encoder,
             worker_config=worker_config,
-            max_samples_per_sequence=None,
-            shuffle_buffer_size=None,
             packing_buffer_size=args.packing_buffer_size,
             handler=print_error_handler,
             image_decode="pil",
+            **shuffle_kwargs,
         )
     return train_ds
 
