@@ -21,7 +21,7 @@ from megatron.core.packed_seq_params import PackedSeqParams
 
 from megatron.legacy.data.data_samplers import MegatronPretrainingRandomSampler
 
-from loongforge.utils import get_args, get_tokenizer, constants
+from loongforge.utils import get_args, get_model_config, get_tokenizer, constants
 from loongforge.data import DataCollatorForSupervisedDataset
 from loongforge.tokenizer import AutoTokenizerFromHF
 from loongforge.train.checkpointing import get_checkpoint_name, read_tracker_iteration
@@ -1404,6 +1404,18 @@ def get_batch_on_this_cp_rank(batch: Dict[str, Any]):
     if cp_size > 1:
         packed_seq_params = batch.get('packed_seq_params', None)
         cp_rank = parallel_state.get_context_parallel_rank()
+        # DSv4 CSA consumes a contiguous CP row partition (rank r owns global
+        # rows [r * l_local, (r + 1) * l_local)), matching the Megatron-LM
+        # cp_partition_mode='contiguous' contract. All other models keep TE's
+        # zigzag (load-balanced) THD layout.
+        model_config = get_model_config()
+        cp_partition_mode = (
+            'contiguous'
+            if getattr(model_config, 'csa_compress_ratios', None) is not None
+            else 'zigzag'
+        )
+        if packed_seq_params is not None:
+            packed_seq_params.cp_partition_mode = cp_partition_mode
         for key, val in batch.items():
             if val is not None:
                 if key == 'packed_seq_params':
@@ -1417,6 +1429,17 @@ def get_batch_on_this_cp_rank(batch: Dict[str, Any]):
           
                 seq_dim = 1 if key != 'attention_mask' else 2
                 if packed_seq_params is not None and packed_seq_params.qkv_format == 'thd':
+                    if cp_partition_mode == 'contiguous':
+                        total_tokens = val.shape[seq_dim]
+                        assert total_tokens % cp_size == 0, (
+                            f"Contiguous CP slicing requires total_tokens="
+                            f"{total_tokens} to be divisible by cp_size={cp_size}."
+                        )
+                        local_rows = total_tokens // cp_size
+                        batch[key] = val.narrow(
+                            seq_dim, cp_rank * local_rows, local_rows
+                        ).contiguous()
+                        continue
                     #assert get_accelerator_backend() == "NvidiaGpu", "Only NvidiaGPU supports packed_seq_params."
                     import transformer_engine_torch as tex
                     # assume cu_seqlens_q == cu_seqlens_kv

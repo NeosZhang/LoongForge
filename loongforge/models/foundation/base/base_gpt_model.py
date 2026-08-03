@@ -737,6 +737,17 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                     else:
                         mtp_loss = loss_mask * mtp_loss
 
+                    # Zero-safe normalization (ports the Megatron-LM MTP CP fix):
+                    # a CP rank whose local shard contains no valid
+                    # (loss_mask > 0) tokens has num_tokens == 0. Dividing the
+                    # all-zero masked mtp_loss by it yields 0/0 = NaN, and the
+                    # division backward injects Inf into every position's
+                    # gradient through MTPLossAutoScaler, flooding the whole
+                    # backward pass with non-finite values.
+                    if torch.is_tensor(num_tokens):
+                        num_tokens_safe = num_tokens.clamp(min=1)
+                    else:
+                        num_tokens_safe = max(num_tokens, 1)
 
                     # Log MTP loss during training; for chunkpipe, only log during
                     # forward recomputation in backward pass (chunkpipe_forward=False)
@@ -748,7 +759,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                         # TODO(shifangx): remove the use of parallel_state here
                         # after moving loss logging to loss_func in pretrain_gpt.py
                         
-                        mtp_log_loss = torch.sum(mtp_loss) / num_tokens
+                        mtp_log_loss = torch.sum(mtp_loss) / num_tokens_safe
                         if getattr(self.config, 'sft_chunkpipe_mode', False):
                             step_num_groups = 1.0
                             if mtp_step_num_groups is not None:
@@ -779,7 +790,7 @@ class BaseGPTModel(BaseMegatronLanguageModule):
                         )
                     else:
                         hidden_states = MTPLossAutoScaler.apply(
-                            hidden_states, mtp_loss_scale * mtp_loss / num_tokens
+                            hidden_states, mtp_loss_scale * mtp_loss / num_tokens_safe
                         )
                         
                 return hidden_states  
