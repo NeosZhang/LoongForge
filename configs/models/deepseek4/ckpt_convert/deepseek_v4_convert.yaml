@@ -200,6 +200,7 @@ name_map:
       extra: true
       fp8: true
       fp8_ignore_tp: true
+      ignore_tp: true
     attention.kv_norm:
       name: self_attention.kv_layernorm
       extra: true
@@ -248,6 +249,7 @@ name_map:
       fp8: true
       extra: true
       fp8_ignore_tp: true
+      ignore_tp: true
     post_attention_layernorm: pre_mlp_layernorm
     moe.gate: mlp.router
     moe.gate.bias:

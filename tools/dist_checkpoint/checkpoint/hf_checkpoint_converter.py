@@ -40,6 +40,8 @@ class HfCheckpointConverter:
         self.args.moe_grouped_gemm = parallel_config.moe_grouped_gemm
         self.args.fp8_force_no_requant = parallel_config.fp8_force_no_requant
         self.args.force_pow_2_scales = parallel_config.force_pow_2_scales
+        self.args.fp8_param_gather = parallel_config.fp8_param_gather
+        self.args.params_dtype = parallel_config.params_dtype
         self.args.amax_epsilon = parallel_config.amax_epsilon
         self.args.quant_method = parallel_config.quant_method
         self.args.pretrain_as_fp8 = parallel_config.pretrain_as_fp8

@@ -5,6 +5,8 @@
 from dataclasses import dataclass
 from typing import Optional
 
+import torch
+
 
 @dataclass
 class ParallelConfig:
@@ -28,6 +30,9 @@ class ParallelConfig:
     max_workers: int = 1
     fp8_force_no_requant: bool = False
     force_pow_2_scales: bool = False
+    # None preserves standalone converter behavior.
+    fp8_param_gather: Optional[bool] = None
+    params_dtype: Optional[torch.dtype] = None
     amax_epsilon: float = 0.0
     quant_method: str = "te"
     pretrain_as_fp8: bool = False
