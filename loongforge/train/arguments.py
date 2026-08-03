@@ -615,6 +615,39 @@ def _add_extra_sft_args(parser: argparse.ArgumentParser):
         )
 
     group.add_argument(
+        "--data-shuffle-buffer-size",
+        type=int,
+        default=0,
+        help="Size of the Energon shuffle buffer applied BEFORE cooking/encoding, i.e. "
+             "it shuffles whole samples as they are read from the WebDataset shards. "
+             "For an offline-packed dataset one 'sample' is one full packed sequence, so "
+             "this shuffles pack order. "
+             "Set this when the shards are written in a length-correlated order "
+             "(e.g. produced by best-fit-decreasing packing): without it the loader reads "
+             "packs strictly in shard order, so early iterations see only long samples and "
+             "later ones only short samples, which shows up as a curriculum-shaped kink in "
+             "the loss curve. "
+             "The buffer must be a sizeable fraction of the dataset to break that "
+             "correlation - a buffer much smaller than the length-sorted run only shuffles "
+             "locally and barely changes the read order. "
+             "Costs memory: the buffer holds undecoded samples. "
+             "0 or 1 disables shuffling (default, preserves previous behaviour)."
+    )
+
+    group.add_argument(
+        "--data-max-samples-per-sequence",
+        type=int,
+        default=0,
+        help="How many samples are read sequentially from one shard slice before the "
+             "loader switches to another (Energon max_samples_per_sequence). Shards are "
+             "split into ceil(shard_size / this) slices, and parallel_shard_iters slices "
+             "are interleaved, so it breaks up long ordered runs at the source. "
+             "Useful when the dataset is too large for --data-shuffle-buffer-size to cover "
+             "a meaningful fraction of it. 0 keeps Energon's default (read each shard "
+             "slice contiguously). Default: 0"
+    )
+
+    group.add_argument(
         "--use-fixed-seq-lengths",
         action="store_true",
         help="Pad all sequences to exactly --seq-length. Currently only supported "
