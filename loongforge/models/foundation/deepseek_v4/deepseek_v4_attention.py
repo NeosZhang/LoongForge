@@ -143,6 +143,7 @@ class DSv4HybridAttention(Attention):
             compress_ratio = self.config.csa_compress_ratios[layer_idx]
         else:
             compress_ratio = self.config.csa_compress_ratios[layer_number - 1]
+        self.compress_ratio = compress_ratio
         rope_base = self.config.rotary_base
         if compress_ratio > 1:
             rope_base = self.config.csa_compress_rotary_base
@@ -300,12 +301,36 @@ class DSv4HybridAttention(Attention):
         # =====================
         # Get the query, key and value tensors based on the type of attention -
         # self or cross attn.
-        query, key, value, q_compressed, kv_compressed = self.get_query_key_value_tensors(
-            hidden_states,
-            key_value_states,
-            position_ids,
-            packed_seq_params,
-            inference_context=inference_context,
+
+        # --- Context Parallel: left-boundary window exchange ---
+        cp_size = self.pg_collection.cp.size() if self.pg_collection.cp is not None else 1
+        use_thd_cp = (
+            cp_size > 1
+            and packed_seq_params is not None
+            and getattr(packed_seq_params, 'qkv_format', None) == 'thd'
+        )
+        boundary_hidden = None
+        boundary_kv = None
+        if use_thd_cp:
+            from megatron.core.transformer.experimental_attention_variant.csa_cp_utils import (
+                exchange_cp_boundary_hidden,
+            )
+            boundary_hidden = exchange_cp_boundary_hidden(
+                hidden_states,
+                self.compress_ratio,
+                self.config.csa_window_size,
+                self.pg_collection.cp,
+            )
+
+        query, key, value, q_compressed, kv_compressed, boundary_kv = (
+            self.get_query_key_value_tensors(
+                hidden_states,
+                key_value_states,
+                position_ids,
+                packed_seq_params,
+                inference_context=inference_context,
+                boundary_hidden=boundary_hidden,
+            )
         )
 
         # TODO: Currently, TE can only accept contiguous tensors for MLA
@@ -329,6 +354,8 @@ class DSv4HybridAttention(Attention):
                 packed_seq_params=packed_seq_params,
                 x=kv_compressed,
                 qr=q_compressed,
+                boundary_hidden=boundary_hidden if use_thd_cp else None,
+                boundary_kv=boundary_kv if use_thd_cp else None,
             )
         core_attn_out = core_attn_manager.group_offload(
             core_attn_out, forced_released_tensors=[query, key, value]
@@ -390,20 +417,51 @@ class DSv4HybridAttention(Attention):
         if self._dsv4_apply_rope_fusion:
             if packed_seq:
                 core_attn_out = core_attn_out.squeeze(1)
-            core_attn_out = fused_mla_rope_inplace(
+            if use_thd_cp:
+                from megatron.core.transformer.experimental_attention_variant.csa_cp_utils import (
+                    apply_thd_cp_local_rope_fused,
+                )
+                global_start = self.pg_collection.cp.rank() * core_attn_out.shape[0]
+                core_attn_out = apply_thd_cp_local_rope_fused(
+                    core_attn_out,
+                    rotary_pos_cos,
+                    rotary_pos_sin,
+                    nope_dim,
+                    pos_dim,
+                    cu_seqlens_kv,
+                    global_start,
+                    inverse=True,
+                )
+            else:
+                core_attn_out = fused_mla_rope_inplace(
+                    core_attn_out,
+                    rotary_pos_cos,
+                    rotary_pos_sin,
+                    nope_dim,
+                    pos_dim,
+                    cu_seqlens_kv,
+                    self.pg_collection.cp.rank(),
+                    self.pg_collection.cp.size(),
+                    inverse=True,
+                    remove_interleaving=True,
+                )
+            if packed_seq:
+                core_attn_out = core_attn_out.unsqueeze(1)
+        elif use_thd_cp:
+            from megatron.core.transformer.experimental_attention_variant.csa_cp_utils import (
+                apply_thd_cp_local_rope_unfused,
+            )
+            global_start = self.pg_collection.cp.rank() * core_attn_out.shape[0]
+            core_attn_out = apply_thd_cp_local_rope_unfused(
                 core_attn_out,
-                rotary_pos_cos,
-                rotary_pos_sin,
+                rotary_pos_emb,
                 nope_dim,
                 pos_dim,
                 cu_seqlens_kv,
-                self.pg_collection.cp.rank(),
-                self.pg_collection.cp.size(),
+                global_start,
+                self.config,
                 inverse=True,
-                remove_interleaving=True,
             )
-            if packed_seq:
-                core_attn_out = core_attn_out.unsqueeze(1)
         else:
             content_part, rot_part = torch.split(
                 core_attn_out, [core_attn_out.size(-1) - pos_dim, pos_dim], dim=-1
@@ -563,6 +621,7 @@ class DSv4HybridSelfAttention(DSv4HybridAttention):
         inference_context=None,
         *,
         inference_params=None,
+        boundary_hidden=None,
     ):
         """
         Derives `query`, `key` and `value` tensors from `hidden_states`.
@@ -576,6 +635,11 @@ class DSv4HybridSelfAttention(DSv4HybridAttention):
         assert (
             inference_context is None and inference_params is None
         ), "Inference is not supported for DSv4HybridSelfAttention."
+
+        from megatron.core.transformer.experimental_attention_variant.csa_cp_utils import (
+            apply_thd_cp_local_rope_fused,
+            apply_thd_cp_local_rope_unfused,
+        )
 
         # =========================================
         # Prepare RoPE and seqlen related params
@@ -681,31 +745,81 @@ class DSv4HybridSelfAttention(DSv4HybridAttention):
             if k_pos_emb is not None:
                 k_pos_emb = torch.unsqueeze(k_pos_emb, -2)
 
+            _cp = self.pg_collection.cp
+            _cp_size = _cp.size() if _cp is not None else 1
+            _cp_rank = _cp.rank() if _cp is not None else 0
+            # Contiguous CP partition: rank r owns global rows
+            # [r * l_local, (r + 1) * l_local). Q/K RoPE must use these positions
+            # (NOT the zigzag / load-balanced layout) so they stay consistent with
+            # the contiguous CP attention path in the CSA module.
+            _use_thd_cp = packed_seq and _cp_size > 1
+            _global_start = _cp_rank * q.shape[0]
+
             if self._dsv4_apply_rope_fusion:
-                cp_rank = self.pg_collection.cp.rank()
-                cp_size = self.pg_collection.cp.size()
-                query = fused_mla_rope_inplace(
+                if _use_thd_cp:
+                    query = apply_thd_cp_local_rope_fused(
+                        q,
+                        rotary_pos_cos,
+                        rotary_pos_sin,
+                        self.config.qk_head_dim,
+                        self.config.qk_pos_emb_head_dim,
+                        cu_seqlens_q,
+                        _global_start,
+                    )
+                    kv = kv.unsqueeze(-2)
+                    kv = apply_thd_cp_local_rope_fused(
+                        kv,
+                        rotary_pos_cos,
+                        rotary_pos_sin,
+                        self.config.qk_head_dim,
+                        self.config.qk_pos_emb_head_dim,
+                        cu_seqlens_kv,
+                        _global_start,
+                    )
+                else:
+                    query = fused_mla_rope_inplace(
+                        q,
+                        rotary_pos_cos,
+                        rotary_pos_sin,
+                        self.config.qk_head_dim,
+                        self.config.qk_pos_emb_head_dim,
+                        cu_seqlens_q,
+                        _cp_rank,
+                        _cp_size,
+                        remove_interleaving=True,
+                    )
+                    kv = kv.unsqueeze(-2)
+                    kv = fused_mla_rope_inplace(
+                        kv,
+                        rotary_pos_cos,
+                        rotary_pos_sin,
+                        self.config.qk_head_dim,
+                        self.config.qk_pos_emb_head_dim,
+                        cu_seqlens_q,
+                        _cp_rank,
+                        _cp_size,
+                        remove_interleaving=True,
+                    )
+                key = kv
+                value = kv
+            elif _use_thd_cp:
+                query = apply_thd_cp_local_rope_unfused(
                     q,
-                    rotary_pos_cos,
-                    rotary_pos_sin,
+                    rotary_pos_emb,
                     self.config.qk_head_dim,
                     self.config.qk_pos_emb_head_dim,
                     cu_seqlens_q,
-                    cp_rank,
-                    cp_size,
-                    remove_interleaving=True,
+                    _global_start,
+                    self.config,
                 )
-                kv = kv.unsqueeze(-2)
-                kv = fused_mla_rope_inplace(
-                    kv,
-                    rotary_pos_cos,
-                    rotary_pos_sin,
+                kv = apply_thd_cp_local_rope_unfused(
+                    kv.unsqueeze(-2),
+                    rotary_pos_emb,
                     self.config.qk_head_dim,
                     self.config.qk_pos_emb_head_dim,
-                    cu_seqlens_q,
-                    cp_rank,
-                    cp_size,
-                    remove_interleaving=True,
+                    cu_seqlens_kv,
+                    _global_start,
+                    self.config,
                 )
                 key = kv
                 value = kv
@@ -778,7 +892,51 @@ class DSv4HybridSelfAttention(DSv4HybridAttention):
                 q_compressed, kv_compressed_for_core_attention, k_pos_emb, rotary_pos_emb
             )
 
-        return query, key, value, q_compressed_for_core_attention, kv_compressed_for_core_attention
+        # --- Context Parallel: project + RoPE the left-boundary window KV using
+        # contiguous global positions [global_start - d_window, global_start). ---
+        boundary_kv = None
+        _cp = self.pg_collection.cp
+        if (
+            packed_seq
+            and _cp is not None
+            and _cp.size() > 1
+            and boundary_hidden is not None
+        ):
+            boundary_rows = boundary_hidden.shape[0]
+            global_start = _cp.rank() * query.shape[0]
+            bkv, _ = self.linear_kv_proj(boundary_hidden)
+            bkv = self.kv_layernorm(bkv)
+            if bkv.ndim == 3 and bkv.shape[1] == 1:
+                bkv = bkv.squeeze(1)
+            if self._dsv4_apply_rope_fusion:
+                boundary_kv = apply_thd_cp_local_rope_fused(
+                    bkv,
+                    rotary_pos_cos,
+                    rotary_pos_sin,
+                    self.config.qk_head_dim,
+                    self.config.qk_pos_emb_head_dim,
+                    cu_seqlens_kv,
+                    global_start - boundary_rows,
+                )
+            else:
+                boundary_kv = apply_thd_cp_local_rope_unfused(
+                    bkv.unsqueeze(-2),
+                    rotary_pos_emb,
+                    self.config.qk_head_dim,
+                    self.config.qk_pos_emb_head_dim,
+                    cu_seqlens_kv,
+                    global_start - boundary_rows,
+                    self.config,
+                ).squeeze(-2)
+
+        return (
+            query,
+            key,
+            value,
+            q_compressed_for_core_attention,
+            kv_compressed_for_core_attention,
+            boundary_kv,
+        )
 
     def backward_dw(self) -> NoReturn:
         """Execute weight gradient computation"""

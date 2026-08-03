@@ -184,7 +184,11 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
     losses = output_tensor.view(-1).float()
     loss_mask = loss_mask.view(-1).float()
 
-    loss = torch.sum(losses * loss_mask)
+    # Explicitly zero masked-out positions before summing. ``sum(losses * mask)``
+    # turns a non-finite masked loss into NaN via ``inf * 0``; masked tokens must
+    # contribute exactly 0. This keeps the loss (and its backward gradients)
+    # finite on CP ranks whose shard contains only/mostly masked tokens.
+    loss = torch.sum(torch.where(loss_mask > 0, losses, torch.zeros_like(losses)) * loss_mask)
 
     # Check individual rank losses are not NaN prior to DP all-reduce.
     rerun_state_machine = get_rerun_state_machine()
@@ -259,8 +263,21 @@ def loss_func(loss_mask: torch.Tensor, output_tensor: torch.Tensor):
 
     reporting_loss = torch.cat([loss.clone().detach().view(1), num_tokens.view(1)])
 
+    # With context parallelism each CP rank only sees a shard of every sample,
+    # and a contiguous-CP shard can contain zero valid tokens (all supervised
+    # tokens live on the other rank). Reporting the local [S, n] pair would
+    # then make training_utils compute S/n = 0/0 = NaN and silently drop
+    # 'lm loss' from the log line. Aggregate the reporting pair across the CP
+    # group first (same as Megatron-LM's loss_func) so downstream reporting
+    # always divides whole-sample sums. The backward `loss` and the returned
+    # `num_tokens` stay local and are NOT touched.
+    if args.context_parallel_size > 1:
+        torch.distributed.all_reduce(
+            reporting_loss, group=mpu.get_context_parallel_group()
+        )
+
     loss_reduced_dict = {'lm loss': reporting_loss if not args.legacy_reporting_loss_reduction
-                         else reporting_loss[0] / num_tokens}
+                         else reporting_loss[0] / reporting_loss[1].clamp(min=1)}
 
     # calculate the number of tokens for this micro-batch
     if args.variable_seq_lengths:
