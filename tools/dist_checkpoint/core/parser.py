@@ -136,8 +136,11 @@ class Parser:
         param_dict['vpp_scheduler'] = getattr(args, 'vpp_scheduler', None) #
         param_dict['safetensors'] = getattr(args, 'safetensors', True) #
         param_dict['max_workers'] = getattr(args, 'max_workers', 1) #
-        param_dict['fp8_force_no_requant'] = getattr(args, 'fp8_force_no_requant', False) # 
-        param_dict['force_pow_2_scales'] = getattr(args, 'force_pow_2_scales', False) # 
+        param_dict['fp8_force_no_requant'] = getattr(args, 'fp8_force_no_requant', False) #
+        param_dict['force_pow_2_scales'] = getattr(args, 'force_pow_2_scales', False) #
+        # Destination parameter representation for online HF loading.
+        param_dict['fp8_param_gather'] = getattr(args, 'fp8_param_gather', None)
+        param_dict['params_dtype'] = getattr(args, 'params_dtype', None)
         param_dict['amax_epsilon'] = getattr(args, 'amax_epsilon', 0.0) #
         # ============================================================================
 
@@ -147,8 +150,7 @@ class Parser:
         param_dict['hf_dequantize_mxfp4'] = getattr(args, 'hf_dequantize_mxfp4', False)
         param_dict['hf_dequantize_dtype'] = getattr(args, 'hf_dequantize_dtype', 'bfloat16')
         param_dict['hf_quant_config_file'] = getattr(args, 'hf_quant_config_file', None)
-        # fp8 conversion method used by mcore converter (bf16->fp8 during bridge load
-        # when training is fp8). Default 'te' matches TransformerEngine-based training.
+        # Used when destination parameters are FP8.
         param_dict['quant_method'] = getattr(args, 'quant_method', 'te')
         param_dict['pretrain_as_fp8'] = getattr(args, 'pretrain_as_fp8', False)
 
@@ -168,6 +170,7 @@ class Parser:
             'moe_grouped_gemm', 'vpp_scheduler', 'tp_ranks', 'pp_ranks', 'ep_ranks',
             'etp_ranks', 'safetensors', 'custom_pipeline_layers',
             'max_workers', 'fp8_force_no_requant', 'force_pow_2_scales',
+            'fp8_param_gather', 'params_dtype',
             'amax_epsilon', 'mtp_num_layers', 'lora_alpha', 'lora_dim', 'enable_full_hetero_dp',
             'hf_dequantize_int4', 'hf_dequantize_mxfp4', 'hf_dequantize_dtype', 'hf_quant_config_file',
             'quant_method', 'pretrain_as_fp8',

@@ -401,6 +401,25 @@ class McoreBase:
                            ignore_tp=False, quant_type=None, clear_source=True):
         if weight is None:
             return None, None
+        # Online loading follows the destination model's parameter storage.
+        # None keeps the standalone converter's YAML-driven behavior.
+        target_uses_fp8_params = getattr(self.args, "fp8_param_gather", None)
+        if target_uses_fp8_params is False:
+            if weight_scale is not None:
+                source_weight = weight
+                source_scale = weight_scale
+                target_dtype = getattr(self.args, "params_dtype", None) or self.dtype
+                weight = convert_fp8_to_bf16(weight, weight_scale, dtype=target_dtype)
+                if clear_source:
+                    source_weight.data = torch.empty(
+                        0, dtype=source_weight.dtype, device=source_weight.device
+                    )
+                    source_scale.data = torch.empty(
+                        0, dtype=source_scale.dtype, device=source_scale.device
+                    )
+                weight_scale = None
+            # Keep plain or dequantized tensors in params_dtype.
+            quant_type = None
         need_transpose = (m_tp > 1 and self.transpose_mlp_dense and \
                 name in [MLP_DENSE_H_TO_4H, MOE_EXPERT_H_TO_4H])
         chunk_dim = self.tensor_parallel_dim.get(f"{name}.{WEIGHT}", None)
