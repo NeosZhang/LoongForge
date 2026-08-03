@@ -1183,6 +1183,29 @@ def _add_extra_multimodal_args(parser):
     )
 
     group.add_argument(
+        "--data-shuffle-buffer-size",
+        type=int,
+        default=0,
+        help="Size of the Energon sample shuffle buffer applied before cooking and "
+             "encoding. For an offline-packed dataset, each sample is one complete "
+             "packed sequence, so this randomizes pack order without changing pack "
+             "contents. Use this to reduce length correlation when shards are ordered "
+             "by sample length. Larger buffers increase cross-sample mixing and worker "
+             "memory use. 0 or 1 disables the sample-level buffer (default)."
+    )
+
+    group.add_argument(
+        "--data-max-samples-per-sequence",
+        type=int,
+        default=0,
+        help="Target size of each shard sequence used by Energon for parallel "
+             "iteration. Large worker shard ranges are divided into sequences of roughly "
+             "this many samples, creating more sequences that Energon can interleave. "
+             "Use this when --data-shuffle-buffer-size cannot cover long ordered runs. "
+             "0 leaves Energon's limit unset (default)."
+    )
+
+    group.add_argument(
         "--packing-pretrain-data",
         action="store_true",
         help="Pack multiple pretraining samples into single sequence. Default: False"
