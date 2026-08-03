@@ -7,10 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
-import stat
-import sys
 import time
 from typing import Any, Dict, List, Tuple
 
@@ -18,48 +15,18 @@ import numpy as np
 
 from loongforge.embodied.eval.adapters.maniskill import MANISKILL_DEFAULT_MAX_STEPS, ManiSkillAdapter
 from loongforge.embodied.eval.metrics.results import append_jsonl, write_suite_summary_csv, write_summary_csv
-from loongforge.embodied.eval.orchestrator.config import load_config
+from loongforge.embodied.eval.orchestrator.config import (
+    build_rpc_payload,
+    load_config,
+)
+from loongforge.embodied.eval.orchestrator.runners import _common
+from loongforge.embodied.eval.payload_builders import PayloadBuilder
 from loongforge.embodied.eval.transport import PolicyClient
-
-
-def _canonical_to_legacy_payload(canonical_obs: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
-    """Build the policy RPC payload from a canonical observation."""
-    return {
-        "images": canonical_obs["images"],
-        "instruction": canonical_obs["instruction"],
-        "episode_id": canonical_obs["meta"]["episode_id"],
-        "episode_step": canonical_obs["meta"]["episode_step"],
-        "state": canonical_obs.get("model_state"),
-        "disable_action_cache": args.disable_action_cache,
-        "return_action_chunk": False,
-        "cfg_scale": args.cfg_scale,
-    }
-
-
-def _vulkan_runtime_env(args: argparse.Namespace) -> Dict[str, str]:
-    """Build environment variables required before importing SAPIEN."""
-    env = os.environ.copy()
-    library_paths = env.get("LD_LIBRARY_PATH", "").split(":") if env.get("LD_LIBRARY_PATH") else []
-    for path in reversed([args.nvidia_lib_dir or "/ssd1/opt/nvidia_lib", "/usr/lib64"]):
-        if path and path not in library_paths:
-            library_paths.insert(0, path)
-    env["LD_LIBRARY_PATH"] = ":".join(library_paths)
-    env["VK_ICD_FILENAMES"] = args.nvidia_icd_json or env.get("VK_ICD_FILENAMES", "/ssd1/opt/nvidia_lib/10_nvidia.json")
-    runtime_dir = pathlib.Path(env.get("XDG_RUNTIME_DIR") or f"/tmp/runtime-{os.getuid()}")
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    runtime_dir.chmod(stat.S_IRWXU)
-    env["XDG_RUNTIME_DIR"] = str(runtime_dir)
-    return env
 
 
 def _ensure_vulkan_runtime(args: argparse.Namespace) -> None:
     """Restart the process once so Vulkan library paths are loaded early."""
-    marker = "LOONGFORGE_MANISKILL_RUNTIME_READY"
-    if os.environ.get(marker) == "1":
-        return
-    env = _vulkan_runtime_env(args)
-    env[marker] = "1"
-    os.execvpe(sys.executable, [sys.executable, *sys.argv], env)
+    _common.ensure_vulkan_runtime(args, "LOONGFORGE_MANISKILL_RUNTIME_READY")
 
 
 def _patch_maniskill_pci_backend_parser(render_backend: str) -> None:
@@ -160,25 +127,16 @@ def _save_replay(frames: List[np.ndarray], output_dir: str, task_name: str, epis
     """Write replay frames to a GIF artifact and return its path."""
     if not frames:
         raise ValueError("Cannot save replay with no frames")
-    import imageio.v2 as imageio
-
     status = "success" if success else "fail"
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / "maniskill" / task_name
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    replay_path = artifact_dir / f"ep{episode_idx}_{status}.gif"
-    imageio.mimsave(replay_path, frames, duration=0.2)
-    return str(replay_path)
+    return _common.write_replay_gif(frames, artifact_dir / f"ep{episode_idx}_{status}.gif", duration=0.2)
 
 
 def _save_trace(trace: List[Dict[str, Any]], output_dir: str, task_name: str, episode_idx: int, success: bool) -> str:
     """Write the per-step action trace artifact and return its path."""
     status = "success" if success else "fail"
     artifact_dir = pathlib.Path(output_dir) / "artifacts" / "maniskill" / task_name
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    trace_path = artifact_dir / f"ep{episode_idx}_{status}_trace.json"
-    with trace_path.open("w", encoding="utf-8") as file:
-        json.dump(trace, file, ensure_ascii=False, indent=2)
-    return str(trace_path)
+    return _common.write_trace_json(trace, artifact_dir / f"ep{episode_idx}_{status}_trace.json")
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -198,19 +156,7 @@ def _to_scalar(value: Any) -> Any:
 
 def _json_safe(value: Any) -> Any:
     """Convert tensors and arrays in nested values to JSON-safe objects."""
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if hasattr(value, "detach") and hasattr(value, "cpu"):
-        return value.detach().cpu().numpy().tolist()
-    if isinstance(value, (np.integer, np.floating)):
-        return value.item()
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
+    return _common.json_safe(value)
 
 
 def _write_standard_outputs(output_dir: str, record: Dict[str, Any]) -> None:
@@ -238,10 +184,13 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
     """Run one ManiSkill episode against a policy server."""
     np.random.seed(args.seed)
     env, adapter = _build_env(args)
+    payload_builder, action_decoder_key, action_decoder = _common.build_policy_stack(args, adapter)
     client = PolicyClient(host=args.host, port=args.port)
 
     episode_id = f"maniskill/{args.task_name}/episode={args.episode_idx}"
     client.reset(episode_id)
+    payload_builder.reset(episode_id)
+    action_decoder.reset()
     obs, reset_info = _reset_env(env, args)
     instruction = _get_instruction(args)
 
@@ -268,23 +217,37 @@ def run_evaluation(args: argparse.Namespace) -> Dict[str, Any]:
             if args.save_replay:
                 replay_frames.append(_render_frame(env, obs, adapter))
 
-            response = client.predict_action(**_canonical_to_legacy_payload(canonical_obs, args))
+            ctx = {
+                "benchmark_name": "maniskill",
+                "episode_id": episode_id,
+                "episode_step": episode_step,
+                "instruction": instruction,
+            }
+            extra_control = {"cfg_scale": args.cfg_scale}
+            response = client.predict_action(
+                **build_rpc_payload(
+                    payload_builder,
+                    canonical_obs,
+                    ctx,
+                    disable_action_cache=args.disable_action_cache,
+                    extra_control=extra_control,
+                )
+            )
             if not response.get("ok", False):
                 raise RuntimeError(f"Policy error: {response}")
 
-            # X-VLA ee6d is 20D; pi05 is already 7D. Optional postprocess converts
-            # model space → ManiSkill 7D (pos3 + rot_delta3 + grip1) for pd_ee_delta_pose.
-            from loongforge.embodied.eval.servers.predict_action_interface import postprocess_actions
-
+            # X-VLA ee6d is 20D; pi05 is already 7D. Composed decoder key
+            # (payload_builder.action_encoding × adapter.action_space) selects
+            # the right converter — IdentityDecoder is a no-op passthrough for pi05.
             raw_chunk = np.asarray(response["data"]["actions"], dtype=np.float32)
             if raw_chunk.ndim == 1:
                 raw_chunk = raw_chunk.reshape(1, -1)
-            postprocess_key = getattr(args, "action_postprocess", "") or ""
-            processed = postprocess_actions(raw_chunk, postprocess_key)
+            payload_builder.update_from_response(response["data"])
+            processed = action_decoder(raw_chunk, {"benchmark_name": "maniskill"})
             if processed.shape[-1] < 7:
                 raise ValueError(
-                    f"ManiSkill expects >=7D after postprocess, got shape {processed.shape} "
-                    f"(action_postprocess={postprocess_key!r})"
+                    f"ManiSkill expects >=7D after decode, got shape {processed.shape} "
+                    f"(decoder_key={action_decoder_key!r})"
                 )
             flat_action = processed[0, :7].astype(np.float32)
             env_action = adapter.action_from_canonical({"actions": flat_action})
@@ -372,7 +335,6 @@ def _apply_config(args: argparse.Namespace, config: Dict[str, Any]) -> argparse.
         (benchmark, "allow_dummy_image", "allow_dummy_image"),
         (benchmark, "max_steps", "max_steps"),
         (benchmark, "success_reward_threshold", "success_reward_threshold"),
-        (benchmark, "action_postprocess", "action_postprocess"),
         (server, "host", "host"),
         (server, "port", "port"),
         (run, "seed", "seed"),
@@ -416,11 +378,6 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-dummy-image", action="store_true")
     parser.add_argument("--disable-action-cache", action="store_true")
     parser.add_argument("--cfg-scale", type=float, default=1.5)
-    parser.add_argument(
-        "--action-postprocess",
-        default="",
-        help="Optional key from ACTION_POSTPROCESS_REGISTRY (e.g. ee6d_to_axis_angle for X-VLA)",
-    )
     parser.add_argument("--episode-idx", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--seed", type=int, default=7)

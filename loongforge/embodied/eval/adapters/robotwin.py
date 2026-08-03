@@ -17,6 +17,7 @@ import numpy as np
 from loongforge.embodied.eval.adapters.base import BaseBenchmarkAdapter
 
 ROBOTWIN_ACTION_DIM = 14
+ROBOTWIN_EE6D_ACTION_DIM = 20
 ROBOTWIN_DEFAULT_MAX_STEPS = 400
 ROBOTWIN_ACTION_REORDER = np.asarray([0, 1, 2, 3, 4, 5, 12, 6, 7, 8, 9, 10, 11, 13], dtype=np.int64)
 SUPPORTED_ACTION_MODES = {"abs", "delta", "rel"}
@@ -62,6 +63,11 @@ class RoboTwinAdapter(BaseBenchmarkAdapter):
         right = np.ascontiguousarray(observation["right_camera"]["rgb"])
         joint = _as_flat_float_array(env_obs["joint_action"]["vector"], "joint state")
 
+        # Raw endpose (dual-arm ee pose + measured grippers) for per-model
+        # PayloadBuilder consumption (X-VLA ``ee6d_dual`` proprio). Absent for
+        # joint-only observations, so guard with ``.get``.
+        endpose = env_obs.get("endpose")
+
         return {
             "instruction": str(context["instruction"]),
             "images": {
@@ -79,7 +85,13 @@ class RoboTwinAdapter(BaseBenchmarkAdapter):
                 "frame": "base",
                 "units": {"joint": "normalized"},
             },
-            "model_state": joint.copy(),
+            # Raw robot state for per-model PayloadBuilder consumption:
+            #   pi05 ``aloha_pi``  reads ``joint``
+            #   xvla ``ee6d_dual`` reads ``endpose``
+            "state_raw": {
+                "joint": joint.copy(),
+                "endpose": endpose,
+            },
             "meta": {
                 "benchmark": "robotwin",
                 "robot_setup": self.robot_setup,

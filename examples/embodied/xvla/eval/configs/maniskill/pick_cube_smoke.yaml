@@ -6,7 +6,7 @@
 #   obs_mode: rgbd | state   (state + allow_dummy_image for no-camera smoke)
 #   max_steps: short for smoke; raise when using a real domain ckpt
 #   server.random_init: false + ckpt_path / tokenizer_path for real eval
-#   action_postprocess: ee6d_to_axis_angle required for X-VLA 20D → ManiSkill 7D
+#   decoder auto-composed to ee6d_to_axis_angle (action_encoding: ee6d × adapter axis_angle)
 #   processor_path / tokenizer_path: any full X-VLA dir (needed even under random_init)
 
 benchmark:
@@ -23,7 +23,6 @@ benchmark:
   camera_name: base_camera
   action_scale: 1.0
   max_steps: 20
-  action_postprocess: ee6d_to_axis_angle  # X-VLA ee6d → pos3+axis_angle3+grip1
   # allow_dummy_image: true  # optional with obs_mode: state
 
 model:
@@ -34,6 +33,13 @@ model:
   action_horizon: 30
   max_action_dim: 20
   real_action_dim: 20
+  # PayloadBuilder capability declarations. Decoder key auto-composes to
+  # ``ee6d_to_axis_angle`` (ManiSkillAdapter.action_space=axis_angle).
+  # ``passthrough`` forwards ManiSkill 8D Panda qpos as-is (adapter emits it
+  # under ``state_raw.joint``).
+  state_encoding: passthrough
+  action_encoding: ee6d
+  domain_id: 5
 
 server:
   host: 127.0.0.1
@@ -49,7 +55,6 @@ server:
   dataset_statistics_path: ""
   use_bf16: false
   loongforge_root: /path/to/LoongForge-VLA
-  state_format: ee6d
 
 timeouts:
   policy_call_ms: 20000

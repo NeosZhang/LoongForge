@@ -6,7 +6,7 @@
 #   suite: task_D_D | other CALVIN suites
 #   num_sequences / max_steps_per_subtask (30 short smoke; 720 official EP_LEN)
 #   server.random_init: false + ckpt_path / tokenizer_path for real eval
-#   domain_id: 2 (official Calvin) + action_postprocess: ee6d_to_calvin_abs
+#   domain_id: 2 (official Calvin); decoder auto-composed to ee6d_to_calvin_abs
 
 benchmark:
   name: calvin
@@ -17,8 +17,6 @@ benchmark:
   num_sequences: 1
   max_steps_per_subtask: 30  # short smoke; 720 for full subtask budget
   control_hz: 30
-  domain_id: 2
-  action_postprocess: ee6d_to_calvin_abs
 
 model:
   backend: loongforge
@@ -28,6 +26,11 @@ model:
   action_horizon: 30
   max_action_dim: 20
   real_action_dim: 20
+  # PayloadBuilder capability declarations. Decoder key auto-composes to
+  # ``ee6d_to_calvin_abs`` from ``action_encoding × adapter.action_space``.
+  state_encoding: ee6d_calvin   # closed-loop backfilled by XVLAPayloadBuilder
+  action_encoding: ee6d
+  domain_id: 2
 
 server:
   host: 127.0.0.1
@@ -43,7 +46,6 @@ server:
   dataset_statistics_path: ""
   use_bf16: false
   loongforge_root: /path/to/LoongForge-VLA
-  state_format: ee6d
 
 env:
   eval_root: /path/to/LoongForge-VLA/loongforge/embodied/eval
