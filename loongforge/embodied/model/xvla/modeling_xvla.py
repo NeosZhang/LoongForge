@@ -252,7 +252,7 @@ class XVLAPolicy(torch.nn.Module):
             # end-of-epoch tail batches could otherwise differ.
             compiled = torch.compile(
                 self.model,
-                mode="reduce-overhead",
+                mode=config.torch_compile_mode,
                 fullgraph=False,
                 dynamic=False,
             )
