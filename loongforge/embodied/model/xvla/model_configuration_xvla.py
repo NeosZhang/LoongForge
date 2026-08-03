@@ -327,6 +327,7 @@ class XVLAConfig(PretrainedConfig):
         action_mode: str = "ee6d",
         use_proprio: bool = True,
         enable_torch_compile: bool = False,
+        torch_compile_mode: str = "default",
         robot_type: str = "",
         **kwargs,
     ):
@@ -358,6 +359,7 @@ class XVLAConfig(PretrainedConfig):
         self.action_mode = action_mode
         self.use_proprio = use_proprio
         self.enable_torch_compile = enable_torch_compile
+        self.torch_compile_mode = torch_compile_mode
         # Embodiment/domain key. Resolved to a domain id via ``DOMAIN_ID_MAP``
         # at inference time (see ``XVLAPolicy.predict_action``), mirroring the
         # training path where the dataset maps ``robot_type`` -> domain id.
@@ -468,6 +470,7 @@ class XvlaModelConfig:
     real_action_dim: int = 20
 
     enable_torch_compile: bool = False
+    torch_compile_mode: str = "default"
 
     # Embodiment/domain key, resolved to a domain id via ``DOMAIN_ID_MAP`` at
     # inference time (see XVLAConfig.robot_type). Set per benchmark/embodiment.

@@ -72,6 +72,7 @@ Optimizations are enabled by default, in `configs/models/embodied/xvla.yaml`:
 
 ```yaml
 enable_torch_compile: true
+torch_compile_mode: default
 ```
 ### 2.2 Key Arguments
 The main arguments in the script are grouped as follows.

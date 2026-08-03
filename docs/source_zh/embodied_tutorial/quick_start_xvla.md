@@ -72,6 +72,7 @@ bash examples/embodied/xvla/run_xvla_ddp_finetune.sh
 
 ```yaml
 enable_torch_compile: true
+torch_compile_mode: default
 ```
 ### 2.2 关键参数说明
 脚本内主要参数分组如下。
