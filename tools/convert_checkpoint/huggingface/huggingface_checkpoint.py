@@ -602,13 +602,26 @@ class HuggingFaceCheckpoint(AbstractCheckpoint):
         # would reach mcore conversion still as int8 with a stale scale.
         self.dequantize_mxfp4_if_needed()
 
-        # DeepSeek-V4 key preprocessing: add model. prefix, rename FP8 scales,
-        # restructure MTP keys, split hyper-connection scale into alpha_pre/alpha_post/alpha_res
+        # DeepSeek-V4 preprocessing for native and HF-Transformers key layouts.
+        # HF-Transformers checkpoints prefix every key with "model." (e.g.
+        # "model.layers.0...", "model.embed_tokens.weight"); native DSV4
+        # checkpoints don't. Strip that prefix once up front so every rule
+        # below only has to handle the native layout, instead of every rule
+        # separately special-casing an optional "model." prefix.
+        _MODEL_PREFIX = 'model.'
+
+        def _strip_model_prefix(key):
+            if key.startswith(_MODEL_PREFIX):
+                return key[len(_MODEL_PREFIX):]
+            return key
+
         if (is_dsv4_hybrid_config(c_config) and self.state_dict
-                and any(k.startswith('layers.') or k.startswith('mtp.') or k == 'embed.weight' for k in self.state_dict.keys())):
+                and any(_strip_model_prefix(k).startswith(('layers.', 'mtp.'))
+                        or _strip_model_prefix(k) == 'embed.weight'
+                        for k in self.state_dict.keys())):
             new_sd = {}
             for key, value in self.state_dict.items():
-                new_key = key
+                new_key = _strip_model_prefix(key)
                 # Rename FP8 scale keys: *.scale -> *.weight_scale_inv
                 if new_key.endswith('.scale'):
                     new_key = new_key[:-len('.scale')] + '.weight_scale_inv'
