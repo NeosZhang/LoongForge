@@ -135,7 +135,7 @@
 <a id="models"></a>
 ## 🏛️ 支持的模型
 
-LoongForge 已支持 LLM、VLM、Diffusion 与 Embodied 等类别的广泛模型家族。点击模型名称可查看对应的训练示例；完整的模型变体请参阅[模型支持矩阵](https://loongforge.readthedocs.io/zh-cn/latest/get_started/support_model.html)。
+LoongForge 已支持 LLM、VLM、Diffusion 与 Embodied 等类别的广泛模型家族。点击模型名称可查看对应的训练示例；完整的使用说明请参阅[用户手册](https://loongforge.readthedocs.io/zh-cn/latest/index.html)，模型变体请参阅[模型支持矩阵](https://loongforge.readthedocs.io/zh-cn/latest/get_started/support_model.html)。
 
 <table width="100%" style="table-layout: fixed; border-collapse: collapse;">
 <colgroup>

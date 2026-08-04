@@ -136,7 +136,7 @@ Open-source models trained with LoongForge or its predecessor AIAK-Training-LLM:
 <a id="models"></a>
 ## 🏛️ Supported Models
 
-LoongForge supports a broad range of model families across LLM, VLM, diffusion, and embodied. Select a model below to open its training examples, or see the full [model support matrix](https://loongforge.readthedocs.io/en/latest/get_started/support_model.html) for supported variants.
+LoongForge supports a broad range of model families across LLM, VLM, diffusion, and embodied. Select a model below to open its training examples. For complete usage instructions, see the [User Guide](https://loongforge.readthedocs.io/en/latest/index.html) and the full [model support matrix](https://loongforge.readthedocs.io/en/latest/get_started/support_model.html).
 
 <table width="100%" style="table-layout: fixed; border-collapse: collapse;">
 <colgroup>
