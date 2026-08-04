@@ -93,3 +93,6 @@ swanlog/
 *.prof
 nsys_*/
 nsight_*/
+
+# Launch / marketing kit (local only, not for publishing)
+/launch-kit/
