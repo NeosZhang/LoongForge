@@ -137,7 +137,13 @@
 
 LoongForge 已支持 LLM、VLM、Diffusion 与 Embodied 等类别的广泛模型家族。点击模型名称可查看对应的训练示例；完整的模型变体请参阅[模型支持矩阵](https://loongforge.readthedocs.io/zh-cn/latest/get_started/support_model.html)。
 
-<table style="width: 100%; table-layout: auto; border-collapse: collapse;">
+<table style="width: 100%; table-layout: fixed; border-collapse: collapse;">
+<colgroup>
+<col style="width: 25%;">
+<col style="width: 25%;">
+<col style="width: 25%;">
+<col style="width: 25%;">
+</colgroup>
 <thead align="center" valign="bottom">
 <tr><th>LLM</th><th>VLM</th><th>Diffusion</th><th>Embodied</th></tr>
 </thead>
