@@ -252,12 +252,26 @@ LoongForge 基于 [Apache License 2.0](https://github.com/baidu-baige/LoongForge
 
 ## 📝 引用
 
+如果您觉得 LoongForge 对您的工作有帮助，请引用本项目：
+
 ```bibtex
 @software{LoongForge2026,
   title  = {LoongForge: A unified, high-performance framework for training LLMs, VLMs, diffusion, and embodied models},
   author = {{The LoongForge Authors}},
   year   = {2026},
   url    = {https://github.com/baidu-baige/LoongForge}
+}
+```
+
+如果您在 LoongForge 中使用 TAOT 进行 MoE 训练，可以引用我们的论文：
+
+```bibtex
+@article{zhang2026taot,
+  title   = {{TAOT}: Topology-Aware Optimal Transport for Dynamic Expert Replica Placement in {MoE} Training},
+  author  = {Zhang, Lingyun and Zhang, Henghua and Gu, Shilei and Mo, Kai and Han, Shuai and Li, Shiyong and Wang, Yanpeng and Shen, Dou},
+  journal = {arXiv preprint arXiv:2608.03676},
+  year    = {2026},
+  url     = {https://arxiv.org/abs/2608.03676}
 }
 ```
 
