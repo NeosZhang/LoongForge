@@ -6,8 +6,8 @@ Run these scripts from the repository root.
 | --- | --- |
 | `prepare_dreamzero_dataset.sh` | Validate LeRobot data and generate required DreamZero metadata. |
 | `precompute_dreamzero_cache.sh` | Generate and validate DreamZero feature cache artifacts. |
-| `run_dreamzero_wan22_5b_full_finetune.sh` | Run Wan2.2 5B full fine-tuning with DDP and ZeRO-1. |
-| `run_dreamzero_wan21_14b_full_finetune.sh` | Run Wan2.1 14B full fine-tuning with FSDP. |
+| `run_dreamzero_wan22_5b_full_ddp_zero1_finetune.sh` | Run Wan2.2 5B full fine-tuning with DDP and ZeRO-1. |
+| `run_dreamzero_wan21_14b_full_fsdp_finetune.sh` | Run Wan2.1 14B full fine-tuning with FSDP. |
 
 ## Paths
 
@@ -59,9 +59,9 @@ Omit `CACHE_DIR` to compute features online. When using a cache, keep
 ```bash
 CACHE_DIR=/path/to/dreamzero/cache/dreamzero_full_wan22_5b \
 SAMPLE_TRANSFORM_SEED=0 \
-  bash examples/embodied/dreamzero/run_dreamzero_wan22_5b_full_finetune.sh
+  bash examples/embodied/dreamzero/run_dreamzero_wan22_5b_full_ddp_zero1_finetune.sh
 
 CACHE_DIR=/path/to/dreamzero/cache/dreamzero_full_wan21_14b \
 SAMPLE_TRANSFORM_SEED=0 \
-  bash examples/embodied/dreamzero/run_dreamzero_wan21_14b_full_finetune.sh
+  bash examples/embodied/dreamzero/run_dreamzero_wan21_14b_full_fsdp_finetune.sh
 ```

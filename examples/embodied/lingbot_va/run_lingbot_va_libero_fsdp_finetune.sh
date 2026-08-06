@@ -3,13 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # ═══════════════════════════════════════════════════════════════
-# run_groot_n1_7_ddp_finetune.sh - GR00T-N1.7 Training Launch Script (DDP)
+# run_lingbot_va_libero_fsdp_finetune.sh - LingBot-VA LIBERO-Long post-training
+# with baseline-aligned data semantics.
+#
+# Set all data and checkpoint paths to existing local files; this script runs offline.
 #
 # Usage:
-#   bash run_groot_n1_7_ddp_finetune.sh
-#   TRAIN_ITERS=50 bash run_groot_n1_7_ddp_finetune.sh            # override via env
-#   bash run_groot_n1_7_ddp_finetune.sh --train-iters 500         # override a training param (flag form)
-#   bash run_groot_n1_7_ddp_finetune.sh model.action_horizon=32   # override YAML model:/data: fields (dotlist form)
+#   bash run_lingbot_va_libero_fsdp_finetune.sh
+#   TRAIN_ITERS=50 bash run_lingbot_va_libero_fsdp_finetune.sh   # override via env
+#   bash run_lingbot_va_libero_fsdp_finetune.sh --train-iters 50 # override a training param (flag form)
 # ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -35,102 +37,104 @@ DISTRIBUTED_ARGS=(
     --master_port "$MASTER_PORT"
 )
 
-export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
-export FLASH_ATTENTION_DETERMINISTIC="${FLASH_ATTENTION_DETERMINISTIC:-1}"
-export NCCL_ALGO="${NCCL_ALGO:-Ring}"
-export NVTE_ALLOW_NONDETERMINISTIC_ALGO="${NVTE_ALLOW_NONDETERMINISTIC_ALGO:-0}"
-export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-8}"
-
-export COSMOS_LOCAL_PATH="${COSMOS_LOCAL_PATH:-$LOCAL_VLA_ARTIFACTS_ROOT/groot_n1_7/models/Cosmos-Reason2-2B}"
-export TOKENIZER_PATH="${TOKENIZER_PATH:-$COSMOS_LOCAL_PATH}"
-
 # ── Paths ─────────────────────────────────────────────────────
-CHECKPOINT_PATH=${CHECKPOINT_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/groot_n1_7/models/GR00T-N1.7-3B"}
-DATA_PATH=${DATA_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/groot_n1_7/datasets/cube_to_bowl_5"}
-OUTPUT_DIR=${OUTPUT_DIR:-"$LOONGFORGE_PATH/outputs/groot_n1_7"}
-TENSORBOARD_DIR=${TENSORBOARD_DIR:-"$OUTPUT_DIR/tensorboard"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/lingbot_va/models/lingbot-va-posttrain-libero-long"}
+DATA_PATH=${DATA_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/lingbot_va/datasets/libero-long-lerobot"}
+EMPTY_EMB_PATH=${EMPTY_EMB_PATH:-"$DATA_PATH/empty_emb.pt"}
+OUTPUT_DIR=${OUTPUT_DIR:-"$LOONGFORGE_PATH/outputs/lingbot_va_libero"}
+
+export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
+export HF_DATASETS_OFFLINE=1
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export WANDB_MODE=${WANDB_MODE:-disabled}
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
+# User-selectable LingBot features.
+export LINGBOT_SAMPLE_META_EXPORT=${LINGBOT_SAMPLE_META_EXPORT:-0}       # Export per-sample metadata for diagnosis.
+export LINGBOT_SKIP_FINAL_CHECKPOINT=${LINGBOT_SKIP_FINAL_CHECKPOINT:-0} # Skip only the final checkpoint save.
+export LINGBOT_BASELINE_LOSS_LOG=${LINGBOT_BASELINE_LOSS_LOG:-1}         # Emit baseline-compatible loss lines.
+export LINGBOT_BALANCED_SAMPLER=${LINGBOT_BALANCED_SAMPLER:-1}           # Balance variable-shape samples across ranks.
+export LINGBOT_LAYERWISE_COMPILE=${LINGBOT_LAYERWISE_COMPILE:-1}         # Compile layerwise norm/residual kernels.
+export LINGBOT_SAMPLE_META_EXPORT_DIR=${LINGBOT_SAMPLE_META_EXPORT_DIR:-$OUTPUT_DIR/sample_meta}
 
 # ── Model config ──────────────────────────────────────────────
-MODEL_NAME=${MODEL_NAME:-"groot_n1_7"}
+MODEL_NAME=${MODEL_NAME:-"lingbot_va_libero"}
 MODEL_CONFIG_ARGS=(
     --model-name "$MODEL_NAME"
 )
 
 # ── Data params ───────────────────────────────────────────────
-NUM_WORKERS=${NUM_WORKERS:-4}
+NUM_WORKERS=${NUM_WORKERS:-16}
 DATA_ARGS=(
     --dataset-format lerobot_datasets
-    --dataset-strategy groot_n1_7
-    --dataset-path "$DATA_PATH"
-    --lerobotdataset-version v2.1
-    --video-backend torchcodec
-    --num-workers "$NUM_WORKERS"
+    --dataset-strategy lingbot_va
+    --dataloader-seed-workers
     --dataloader-multiprocessing-context fork
-    --distributed-sampler-mode block
+    --num-workers "$NUM_WORKERS"
 )
 
 # ── Training params ───────────────────────────────────────────
 TRAIN_ITERS=${TRAIN_ITERS:-20}
-PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-4}
-GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-1}
+PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-1}
+GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-10}
 SAVE_INTERVAL=${SAVE_INTERVAL:-0}
 SEED=${SEED:-42}
 
 TRAINING_ARGS=(
-    --trainer-type GrootN1d7Trainer
+    --trainer-type LingBotFinetuneTrainer
     --train-iters "$TRAIN_ITERS"
     --per-device-batch-size "$PER_DEVICE_BATCH_SIZE"
     --gradient-accumulation-steps "$GRADIENT_ACCUMULATION_STEPS"
     --seed "$SEED"
     --output-dir "$OUTPUT_DIR"
     # Learning rate
-    --lr-base 1.0e-4
-    --lr-decay-style cosine_with_min_lr
-    --lr-warmup-iters 5
+    --lr-base 1e-5
     --min-lr 0.0
-    #--optimizer AdamW
-    --optimizer TEFusedAdamW
-    --clip-grad 1.0
-    --weight-decay 1.0e-5
-    --weight-decay-grouping bias_norm
+    --lr-warmup-iters 10
+    --lr-decay-style constant_with_warmup
+    # Optimizer
+    --optimizer TorchFusedAdamW
     --adam-beta1 0.9
-    --adam-beta2 0.999
-    --adam-eps 1e-8
+    --adam-beta2 0.95
+    --weight-decay 0.1
+    --clip-grad 2.0
     # Checkpoint
     --save-interval "$SAVE_INTERVAL"
+    --save-format dcp
+    --no-async-save
     --pretrained-checkpoint "$CHECKPOINT_PATH"
-    #--deterministic-mode
-    --cuda-graph-impl local
-    --cuda-graph-scope per_microbatch
-    --cuda-graph-warmup-steps 3
-    --cuda-graph-pad-length 0
-    --no-cuda-graph-ddp-sync-in-graph
-    --cuda-graph-grad-sync-bucket-mb 400
-    --cuda-graph-grad-sync-impl coalesced
-    --cuda-graph-grad-sync-dtype bf16
-    --no-check-for-nan-in-loss-and-grad
 )
 
 DISTRIBUTED_TRAINING_ARGS=(
-    --distributed-strategy ddp
+    --distributed-strategy fsdp
     --dtype bfloat16
-    --ddp-bucket-cap-mb 100
-    --no-ddp-find-unused-parameters
-    --ddp-static-graph
-    # --dataloader-seed-workers
+    --fsdp-wrap-modules WanTransformerBlock
+    --fsdp-min-num-params 1000000000000000
+    --fsdp-leftover-min-num-params 1000000000000000
+    --fsdp-reshard-default none
+    --fsdp-reshard-root true
 )
 
 # ── Logging params ────────────────────────────────────────────
 LOGGING_ARGS=(
     --log-interval 1
-    --loss-log-rank -1
-    --wandb-mode disabled
-    --tensorboard-dir "$TENSORBOARD_DIR"
+)
+
+# ── Model/data dotlist overrides ──────────────────────────────
+MODEL_DATA_OVERRIDES=(
+    "data.dataset_path=$DATA_PATH"
+    "data.empty_emb_path=$EMPTY_EMB_PATH"
+    model.num_layers=30
+    model.recompute_granularity=full
+    model.recompute_method=block
+    model.recompute_num_layers=30
+    model.lingbot_va_use_flex_attention=true
 )
 
 # ── Launch ────────────────────────────────────────────────────
 echo "════════════════════════════════════════════════════════════"
-echo "  LoongForge GR00T-N1.7 Training (DDP)"
+echo "  LoongForge LingBot-VA LIBERO-Long Post-Training (FSDP)"
 echo "  GPUs:       $GPUS_PER_NODE x $NNODES node(s)"
 echo "  Model:      $MODEL_NAME"
 echo "  Checkpoint: $CHECKPOINT_PATH"
@@ -146,4 +150,5 @@ PYTHONPATH=$LOONGFORGE_PATH:${PYTHONPATH:-} \
     "${TRAINING_ARGS[@]}" \
     "${DISTRIBUTED_TRAINING_ARGS[@]}" \
     "${LOGGING_ARGS[@]}" \
+    "${MODEL_DATA_OVERRIDES[@]}" \
     "$@"
