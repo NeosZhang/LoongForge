@@ -24,6 +24,7 @@ import torch
 import torch.nn as nn
 
 from loongforge.embodied.model.fastwam.utils.gradient import gradient_checkpoint_forward
+from loongforge.embodied.model.fastwam.utils.state_dict import EXTRA_STATE_SUFFIX
 from loongforge.embodied.model.fastwam.wan.dit import (
     DiTBlock,
     precompute_freqs_cis,
@@ -79,6 +80,7 @@ class ActionDiT(nn.Module):
         attn_head_dim: int,
         num_layers: int,
         use_gradient_checkpointing: bool = False,
+        rmsnorm_impl: str = "wan",
     ):
         """Initialize the action DiT backbone and embedding layers."""
         super().__init__()
@@ -121,6 +123,7 @@ class ActionDiT(nn.Module):
                     num_heads=num_heads,
                     ffn_dim=ffn_dim,
                     eps=eps,
+                    rmsnorm_impl=rmsnorm_impl,
                 )
                 for _ in range(num_layers)
             ]
@@ -135,11 +138,17 @@ class ActionDiT(nn.Module):
 
     @classmethod
     def backbone_key_set(cls, keys) -> set[str]:
-        """Return pretrained keys that belong to the shared action backbone."""
+        """Return pretrained keys that belong to the shared action backbone.
+
+        ``_extra_state`` is excluded so the expected key set is the same under both
+        RMSNorm implementations; the TE bookkeeping a module built for itself is kept
+        by seeding the load from its own ``state_dict()``.
+        """
         return {
             key
             for key in keys
             if not any(key.startswith(prefix) for prefix in cls.ACTION_BACKBONE_SKIP_PREFIXES)
+            and not key.endswith(EXTRA_STATE_SUFFIX)
         }
 
     @classmethod

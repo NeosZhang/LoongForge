@@ -24,6 +24,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from loongforge.embodied.model.fastwam.action.schedulers import WanContinuousFlowMatchScheduler
+from loongforge.embodied.model.fastwam.utils.state_dict import drop_extra_state
 from loongforge.embodied.model.fastwam.wan.dit import WanVideoDiT
 from loongforge.embodied.model.fastwam.wan.loader import load_wan22_ti2v_5b_components
 
@@ -437,7 +438,9 @@ class Wan22Core(torch.nn.Module):
     def save_checkpoint(self, path, optimizer=None, step=None):
         """Save DiT weights and optional optimizer state to a checkpoint path."""
         payload = {
-            "dit": self.dit.state_dict(),
+            # `_extra_state` is dropped so the file does not depend on the RMSNorm
+            # implementation it was trained with (see `utils.state_dict`).
+            "dit": drop_extra_state(self.dit.state_dict()),
             "step": step,
             "torch_dtype": str(self.torch_dtype),
         }
@@ -448,7 +451,7 @@ class Wan22Core(torch.nn.Module):
     def load_checkpoint(self, path, optimizer=None):
         """Load DiT weights and optional optimizer state from a checkpoint path."""
         payload = torch.load(path, map_location="cpu")
-        self.dit.load_state_dict(payload["dit"], strict=False)
+        self.dit.load_state_dict(drop_extra_state(payload["dit"]), strict=False)
         if optimizer is not None and "optimizer" in payload:
             optimizer.load_state_dict(payload["optimizer"])
         return payload
