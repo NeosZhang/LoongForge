@@ -1,0 +1,2120 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>LoongForge Eval Docs</title>
+<style>
+body { font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; margin: 0; display: flex; }
+.toc { width: 300px; position: fixed; top: 0; left: 0; bottom: 0; overflow-y: auto; background: #f6f8fa; border-right: 1px solid #ddd; padding: 16px; box-sizing: border-box; }
+.toc-title { font-weight: 600; font-size: 15px; margin-bottom: 12px; }
+.toc-doc { margin: 10px 0 4px; font-weight: 600; font-size: 14px; }
+.toc ul { list-style: none; margin: 0; padding-left: 12px; }
+.toc li { margin: 2px 0; font-size: 13px; }
+.toc li a { color: #0969da; text-decoration: none; }
+.toc li.lvl3 { padding-left: 12px; }
+.toc li.lvl4 { padding-left: 24px; }
+main { margin-left: 300px; padding: 24px 40px 80px; max-width: 900px; }
+.doc { border-bottom: 2px solid #eee; margin-bottom: 40px; padding-bottom: 20px; }
+.doc-title { font-size: 14px; color: #888; font-weight: 600; margin: 0 0 8px; }
+code { background: #f6f8fa; padding: 2px 5px; border-radius: 4px; font-size: 13px; }
+pre { background: #f6f8fa; padding: 12px; border-radius: 6px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 12px 0; display: block; overflow-x: auto; }
+th, td { border: 1px solid #d0d7de; padding: 6px 10px; font-size: 13px; text-align: left; }
+th { background: #f6f8fa; }
+a { color: #0969da; }
+</style></head>
+<body><nav class="toc">
+<div class="toc-title">Contents</div>
+<div class="toc-doc"><a href="#readme">README</a></div>
+<ul>
+<li class="lvl2"><a href="#architecture">Architecture</a></li>
+<li class="lvl2"><a href="#docs">Docs</a></li>
+<li class="lvl2"><a href="#quick-start">Quick Start</a></li>
+<li class="lvl2"><a href="#supported-matrix">Supported Matrix</a></li>
+<li class="lvl2"><a href="#model-interface">Model Interface</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsuser_guide_en">user guide</a></div>
+<ul>
+<li class="lvl2"><a href="#1-whats-supported">1. What's supported</a></li>
+<li class="lvl2"><a href="#2-quick-start">2. Quick start</a></li>
+<li class="lvl2"><a href="#3-configuration-reference">3. Configuration reference</a></li>
+<li class="lvl2"><a href="#4-outputs">4. Outputs</a></li>
+<li class="lvl2"><a href="#5-troubleshooting">5. Troubleshooting</a></li>
+<li class="lvl2"><a href="#6-adding-a-new-model">6. Adding a new model</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsmodel_integration">model integration</a></div>
+<ul>
+<li class="lvl2"><a href="#1-overview">1. Overview</a></li>
+<li class="lvl2"><a href="#2-the-predict_action-contract">2. The `predict_action` contract</a></li>
+<li class="lvl3"><a href="#21-required-signature">2.1 Required signature</a></li>
+<li class="lvl3"><a href="#22-kwargs-filtering">2.2 kwargs filtering</a></li>
+<li class="lvl3"><a href="#23-where-state-comes-from">2.3 Where `state` comes from</a></li>
+<li class="lvl3"><a href="#24-validation-helpers">2.4 Validation helpers</a></li>
+<li class="lvl3"><a href="#25-action-output-contract">2.5 Action output contract</a></li>
+<li class="lvl3"><a href="#26-local-interface-validation">2.6 Local interface validation</a></li>
+<li class="lvl3"><a href="#27-warmup-and-common-errors">2.7 Warmup and common errors</a></li>
+<li class="lvl2"><a href="#3-component-details">3. Component details</a></li>
+<li class="lvl3"><a href="#31-modelfactory">3.1 ModelFactory</a></li>
+<li class="lvl3"><a href="#32-payloadbuilder">3.2 PayloadBuilder</a></li>
+<li class="lvl3"><a href="#33-actiondecoder">3.3 ActionDecoder</a></li>
+<li class="lvl3"><a href="#34-benchmarkaction_bridge">3.4 `benchmark.action_bridge`</a></li>
+<li class="lvl2"><a href="#4-state--action-semantics">4. state / action semantics</a></li>
+<li class="lvl3"><a href="#41-action-space-and-dimensions">4.1 Action space and dimensions</a></li>
+<li class="lvl3"><a href="#42-control-mode">4.2 Control mode</a></li>
+<li class="lvl3"><a href="#43-proprioceptive-input">4.3 Proprioceptive input</a></li>
+<li class="lvl3"><a href="#44-normalization-approach">4.4 Normalization approach</a></li>
+<li class="lvl3"><a href="#45-model-specific-request-fields">4.5 Model-specific request fields</a></li>
+<li class="lvl3"><a href="#46-number-and-order-of-image-views">4.6 Number and order of image views</a></li>
+<li class="lvl2"><a href="#5-engineering-parameters">5. Engineering parameters</a></li>
+<li class="lvl2"><a href="#6-development-notes">6. Development notes</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsbenchmark_envs">benchmark envs</a></div>
+<ul>
+<li class="lvl2"><a href="#tool-version">Tool Version</a></li>
+<li class="lvl2"><a href="#libero">LIBERO</a></li>
+<li class="lvl2"><a href="#calvin">CALVIN</a></li>
+<li class="lvl2"><a href="#simplerenv">SimplerEnv</a></li>
+<li class="lvl2"><a href="#robotwin">RoboTwin</a></li>
+<li class="lvl2"><a href="#maniskill">ManiSkill</a></li>
+</ul>
+<div class="toc-doc"><a href="#docseval_protocol">eval protocol</a></div>
+<ul>
+<li class="lvl2"><a href="#overview">Overview</a></li>
+<li class="lvl2"><a href="#components">Components</a></li>
+<li class="lvl2"><a href="#message-flow">Message flow</a></li>
+<li class="lvl2"><a href="#policyclient-interface">PolicyClient interface</a></li>
+<li class="lvl2"><a href="#running-the-policy-server-standalone">Running the policy server standalone</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsbenchmarkslibero">libero</a></div>
+<ul>
+<li class="lvl2"><a href="#step-0-download-weights">Step 0: Download weights</a></li>
+<li class="lvl2"><a href="#step-1-environment-setup">Step 1: Environment setup</a></li>
+<li class="lvl3"><a href="#standard-environment">Standard environment</a></li>
+<li class="lvl2"><a href="#step-2-run-evaluation">Step 2: Run evaluation</a></li>
+<li class="lvl2"><a href="#verification">Verification</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsbenchmarkscalvin">calvin</a></div>
+<ul>
+<li class="lvl2"><a href="#step-0-download-weights-1">Step 0: Download weights</a></li>
+<li class="lvl2"><a href="#step-1-environment-setup-1">Step 1: Environment setup</a></li>
+<li class="lvl3"><a href="#standard-environment-1">Standard environment</a></li>
+<li class="lvl2"><a href="#step-2-run-evaluation-1">Step 2: Run evaluation</a></li>
+<li class="lvl2"><a href="#verification-1">Verification</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsbenchmarksrobotwin">robotwin</a></div>
+<ul>
+<li class="lvl2"><a href="#step-0-download-weights-2">Step 0: Download weights</a></li>
+<li class="lvl2"><a href="#step-1-environment-setup-2">Step 1: Environment setup</a></li>
+<li class="lvl3"><a href="#standard-environment-2">Standard environment</a></li>
+<li class="lvl2"><a href="#step-2-run-evaluation-2">Step 2: Run evaluation</a></li>
+<li class="lvl2"><a href="#verification-2">Verification</a></li>
+<li class="lvl2"><a href="#outputs">Outputs</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsbenchmarkssimplerenv">simplerenv</a></div>
+<ul>
+<li class="lvl2"><a href="#step-0-download-weights-3">Step 0: Download weights</a></li>
+<li class="lvl2"><a href="#step-1-environment-setup-3">Step 1: Environment setup</a></li>
+<li class="lvl3"><a href="#standard-environment-3">Standard environment</a></li>
+<li class="lvl3"><a href="#model-specific-environment-changes">Model-specific environment changes</a></li>
+<li class="lvl4"><a href="#1-xvla--absolute-ee-control">1. xvla — absolute EE control</a></li>
+<li class="lvl4"><a href="#2-gr00t-n16-drawer-tasks--drawer-task-port">2. GR00T-N1.6 (drawer tasks) — drawer task port</a></li>
+<li class="lvl2"><a href="#step-2-run-evaluation-3">Step 2: Run evaluation</a></li>
+<li class="lvl2"><a href="#verification-3">Verification</a></li>
+</ul>
+<div class="toc-doc"><a href="#docsbenchmarksmaniskill">maniskill</a></div>
+<ul>
+<li class="lvl2"><a href="#step-0-download-weights-4">Step 0: Download weights</a></li>
+<li class="lvl2"><a href="#step-1-environment-setup-4">Step 1: Environment setup</a></li>
+<li class="lvl3"><a href="#standard-environment-4">Standard environment</a></li>
+<li class="lvl2"><a href="#step-2-run-evaluation-4">Step 2: Run evaluation</a></li>
+<li class="lvl2"><a href="#verification-4">Verification</a></li>
+</ul>
+<div class="toc-doc"><a href="#xvla-simplerenv-patch">xvla SimplerEnv patch guide</a></div>
+<ul>
+<li class="lvl2"><a href="#impact-boundary">Impact boundary</a></li>
+<li class="lvl2"><a href="#background">Background</a></li>
+<li class="lvl2"><a href="#patch-requirement-check">Patch requirement check</a></li>
+<li class="lvl2"><a href="#option-1-use-the-official-fork">Option 1: use the official fork</a></li>
+<li class="lvl2"><a href="#option-2-apply-manual-patches">Option 2: apply manual patches</a></li>
+<li class="lvl3"><a href="#patch-1-register-absolute-ee-pose-controller">Patch 1: register absolute EE pose controller</a></li>
+<li class="lvl3"><a href="#patch-2-parse-rotation-as-euler-xyz-on-the-non-delta-branch">Patch 2: parse rotation as Euler xyz on the non-delta branch</a></li>
+<li class="lvl2"><a href="#eval-config">Eval config</a></li>
+<li class="lvl2"><a href="#rollback">Rollback</a></li>
+<li class="lvl2"><a href="#references">References</a></li>
+</ul>
+<div class="toc-doc"><a href="#groot-simplerenv-guide">GR00T-N1.6 SimplerEnv guide</a></div>
+<ul>
+<li class="lvl2"><a href="#background-1">Background</a></li>
+<li class="lvl2"><a href="#patch-requirement-check-1">Patch requirement check</a></li>
+<li class="lvl2"><a href="#model-side-adaptation">Model-side adaptation</a></li>
+<li class="lvl2"><a href="#env-side-drawer-task-port">Env-side drawer task port</a></li>
+<li class="lvl2"><a href="#assets">Assets</a></li>
+<li class="lvl2"><a href="#eval-config-1">Eval config</a></li>
+<li class="lvl2"><a href="#run">Run</a></li>
+<li class="lvl2"><a href="#results">Results</a></li>
+<li class="lvl2"><a href="#references-1">References</a></li>
+</ul>
+</nav><main><section id="readme" class="doc"><h1 class="doc-title">README</h1><h1 id="evaluation-module">Evaluation Module</h1><blockquote>
+<p><strong>Note:</strong> This module is still under active development and may see changes or adjustments in the future.</p>
+</blockquote>
+<p>This directory contains the LoongForge-Embodied offline evaluation module. It runs benchmark clients and model policy servers as separate processes connected by a WebSocket/msgpack-numpy RPC protocol.</p>
+<h2 id="architecture">Architecture</h2><p>The benchmark client and the policy server run as separate processes:</p>
+<pre><code class="language-text">Benchmark env (client)                          Policy server
+  ├─ Adapter                                      ├─ ModelFactory
+  │    env obs → canonical observation            │    loads the model, wraps predict_action
+  ├─ PayloadBuilder                               ├─ GenericPredictActionPolicy
+  │    canonical → predict_action kwargs          │    RPC / chunk cache / shape check
+  └─ ActionDecoder                                └─ model.predict_action
+       raw chunk → env action                          model inference + normalization
+
+                ◄──────── WebSocket + msgpack-numpy RPC ────────►
+                           PolicyRequest / Response
+</code></pre>
+<p>Every benchmark drives the same four-stage chain: <code>Adapter.obs_to_canonical</code> → <code>PayloadBuilder.build</code> → <code>model.predict_action</code> (over RPC) → <code>ActionDecoder</code>. Details for code contributors: the <a href="#docseval_protocol">evaluation protocol</a> and the <a href="#docsmodel_integration">model integration guide</a>.</p>
+<h2 id="docs">Docs</h2><table>
+<thead>
+<tr>
+<th>Doc</th>
+<th>Audience</th>
+<th>Content</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#docsuser_guide_en">User guide</a></td>
+<td>eval users</td>
+<td>Supported models/benchmarks, quick start, config reference, outputs, troubleshooting</td>
+</tr>
+<tr>
+<td><a href="#docsbenchmarkslibero">Benchmark pages</a></td>
+<td>eval users</td>
+<td>Per-benchmark reproduction guides (env setup, run, verification)</td>
+</tr>
+<tr>
+<td><a href="#docsmodel_integration">Model integration</a></td>
+<td>code contributors</td>
+<td>New-model integration checklist + <code>predict_action</code> contract + development notes</td>
+</tr>
+<tr>
+<td><a href="#docseval_protocol">Evaluation protocol</a></td>
+<td>code contributors</td>
+<td>Architecture, components, data protocol, PolicyClient interface</td>
+</tr>
+<tr>
+<td><a href="#docsbenchmark_envs">Benchmark environments</a></td>
+<td>eval users</td>
+<td>Verified per-benchmark env version records (install per the official benchmark homepages)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="quick-start">Quick Start</h2><p>The example below runs LIBERO with pi05:</p>
+<ol>
+<li>
+<p><strong>Set up the LIBERO environment</strong> — please refer to the official <a href="https://github.com/Lifelong-Robot-Learning/LIBERO">LIBERO repository</a> for installation; for the eval client deps and common issues, check the <a href="#step-1-environment-setup">LIBERO guide</a>; the verified environment version lists are in <a href="#docsbenchmark_envs">benchmark_envs.md</a>.</p>
+</li>
+<li>
+<p><strong>Get the weights and edit the config</strong> — download <a href="https://huggingface.co/lerobot/pi05_libero_finetuned_v044">lerobot/pi05_libero_finetuned_v044</a>, then fill the <code>/path/to/...</code> placeholders in <code>examples/embodied/pi05/eval/configs/libero/object_smoke.yaml</code>. A field-by-field example: the <a href="#2-quick-start">user guide</a>; the config layout: <a href="#3-configuration-reference">user guide §3</a>.</p>
+</li>
+<li>
+<p><strong>Run</strong> — execute the script inside the <strong>benchmark</strong> environment:</p>
+<pre><code class="language-bash">cd /path/to/LoongForge
+examples/embodied/pi05/eval/run_libero_eval.sh
+</code></pre>
+</li>
+</ol>
+<p>The LIBERO simulator runs in the benchmark environment; the policy server is launched from the YAML <code>server.python</code> field, pointing at the LoongForge environment. Other models/benchmarks: the <a href="#docsuser_guide_en">user guide</a> and the <a href="#docsbenchmarkslibero">benchmark pages</a>.</p>
+<h2 id="supported-matrix">Supported Matrix</h2><table>
+<thead>
+<tr>
+<th></th>
+<th>LIBERO</th>
+<th>CALVIN</th>
+<th>SimplerEnv (WidowX)</th>
+<th>RoboTwin</th>
+<th>ManiSkill</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pi05</strong></td>
+<td>✅ task success (<a href="https://huggingface.co/lerobot/pi05_libero_finetuned_v044">lerobot/pi05_libero_finetuned_v044</a>)</td>
+<td>connectivity only</td>
+<td>connectivity only</td>
+<td>✅ task success (<a href="https://huggingface.co/motus-robotics/pi0.5_robotwin2">motus-robotics/pi0.5_robotwin2</a>)</td>
+<td>connectivity only</td>
+</tr>
+<tr>
+<td><strong>xvla</strong></td>
+<td>✅ task success (<a href="https://huggingface.co/2toINF/X-VLA-LIBERO">2toINF/X-VLA-LIBERO</a>)</td>
+<td>connectivity only</td>
+<td>✅ task success (<a href="https://huggingface.co/2toINF/X-VLA-WidowX">2toINF/X-VLA-WidowX</a>)</td>
+<td>✅ task success (<a href="https://huggingface.co/2toINF/X-VLA-RoboTwin2">2toINF/X-VLA-RoboTwin2</a>)</td>
+<td>connectivity only</td>
+</tr>
+<tr>
+<td><strong>GR00T-N1.6</strong></td>
+<td>—</td>
+<td>—</td>
+<td>✅ task success (<a href="https://huggingface.co/nvidia/GR00T-N1.6-bridge">nvidia/GR00T-N1.6-bridge</a>)</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Task success</strong>: at least one episode passed the benchmark's official success criterion.</li>
+<li><strong>Weights</strong>: parentheses show the Hugging Face weight (<code>org/name</code>) that achieved the run.</li>
+<li><strong>Connectivity only</strong>: the pipeline runs with <code>random_init: true</code> and no score — either no domain weights are released, or the benchmark assets block a full run (e.g. xvla CALVIN: the weights are public, but the official online rollout needs the original-format validation dataset).</li>
+<li><strong>—</strong>: not supported yet — coming soon.</li>
+<li><strong>Detailed results</strong>: see the per-benchmark <a href="#docsbenchmarkslibero">benchmark pages</a>.</li>
+</ul>
+<h2 id="model-interface">Model Interface</h2><p>LoongForge model servers share a <code>predict_action(images, instructions, state=None, dataset_stats=None)</code> interface instead of a bespoke policy adapter per model. Client-side payload assembly lives in the per-model <code>PayloadBuilder</code>; env-side action decoding lives in the <code>ActionDecoder</code>; normalization stays inside the model's <code>predict_action()</code>. Architecture and protocol: the <a href="#docseval_protocol">evaluation protocol</a>. Step-by-step integration checklist: the <a href="#docsmodel_integration">model integration guide</a>.</p>
+</section><section id="docsuser_guide_en" class="doc"><h1 class="doc-title">user guide</h1><h1 id="loongforge-vla-offline-evaluation--user-guide">LoongForge-VLA Offline Evaluation — User Guide</h1><p>LoongForge-VLA offline evaluation runs a policy against a simulation benchmark from a single YAML config. You point the CLI at one <code>--config &lt;yaml&gt;</code> file; it launches the benchmark simulator and an independent model server, runs the rollout, and writes results.</p>
+<hr />
+<h2 id="1-whats-supported">1. What's supported</h2><table>
+<thead>
+<tr>
+<th></th>
+<th>LIBERO</th>
+<th>CALVIN</th>
+<th>SimplerEnv (WidowX)</th>
+<th>RoboTwin</th>
+<th>ManiSkill</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pi05</strong></td>
+<td>✅ task success (<a href="https://huggingface.co/lerobot/pi05_libero_finetuned_v044">lerobot/pi05_libero_finetuned_v044</a>)</td>
+<td>connectivity only</td>
+<td>connectivity only</td>
+<td>✅ task success (<a href="https://huggingface.co/motus-robotics/pi0.5_robotwin2">motus-robotics/pi0.5_robotwin2</a>)</td>
+<td>connectivity only</td>
+</tr>
+<tr>
+<td><strong>xvla</strong></td>
+<td>✅ task success (<a href="https://huggingface.co/2toINF/X-VLA-LIBERO">2toINF/X-VLA-LIBERO</a>)</td>
+<td>connectivity only</td>
+<td>✅ task success (<a href="https://huggingface.co/2toINF/X-VLA-WidowX">2toINF/X-VLA-WidowX</a>)</td>
+<td>✅ task success (<a href="https://huggingface.co/2toINF/X-VLA-RoboTwin2">2toINF/X-VLA-RoboTwin2</a>)</td>
+<td>connectivity only</td>
+</tr>
+<tr>
+<td><strong>GR00T-N1.6</strong></td>
+<td>—</td>
+<td>—</td>
+<td>✅ task success (<a href="https://huggingface.co/nvidia/GR00T-N1.6-bridge">nvidia/GR00T-N1.6-bridge</a>)</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><strong>Task success</strong>: at least one episode passed the benchmark's official success criterion.</li>
+<li><strong>Weights</strong>: parentheses show the Hugging Face weight (<code>org/name</code>) that achieved the run.</li>
+<li><strong>Connectivity only</strong>: the pipeline runs with <code>random_init: true</code> and no score yet — the domain weights are missing or the benchmark assets block a full run (e.g. CALVIN needs the original-format validation dataset even where weights are public).</li>
+<li><strong>—</strong>: not supported yet — coming soon.</li>
+<li><strong>Detailed results</strong>: see the per-benchmark <a href="#docsbenchmarkslibero">benchmark pages</a>.</li>
+</ul>
+<p>Any model that implements the shared <code>predict_action(images, instructions, state=None, dataset_stats=None)</code> interface can be added — see <a href="#6-adding-a-new-model">§6</a>.</p>
+<hr />
+<h2 id="2-quick-start">2. Quick start</h2><p>The example below runs LIBERO with pi05:</p>
+<ol>
+<li>
+<p><strong>Set up the LIBERO environment</strong> — create a dedicated conda environment for the benchmark simulator, install LIBERO following the official <a href="https://github.com/Lifelong-Robot-Learning/LIBERO">LIBERO repository</a> instructions, then install the eval client dependencies:</p>
+<pre><code class="language-bash">conda create -n libero python=3.10 -y
+conda activate libero
+pip install websockets msgpack pyyaml
+pip install numpy==1.24.4   # pinned for simulator compatibility
+</code></pre>
+<p>For the eval client deps, common issues, and the verified version list, check the <a href="#step-1-environment-setup">LIBERO guide</a>; the verified environment version lists are in <a href="#docsbenchmark_envs">benchmark_envs.md</a>.</p>
+</li>
+<li>
+<p><strong>Get the weights and edit the config</strong> — download <a href="https://huggingface.co/lerobot/pi05_libero_finetuned_v044">lerobot/pi05_libero_finetuned_v044</a>, then fill the <code>/path/to/...</code> placeholders in <code>examples/embodied/pi05/eval/configs/libero/object_smoke.yaml</code>:</p>
+<pre><code class="language-yaml">server:
+  python: /path/to/loongforge/bin/python            # model server env (loongforge)
+  ckpt_path: /path/to/pi05_libero_finetuned_v044
+  dataset_statistics_path: /path/to/pi05_libero_finetuned_v044/dataset_statistics.json
+  tokenizer_path: /path/to/paligemma-3b-pt-224
+  loongforge_root: /path/to/LoongForge-VLA
+  log: /path/to/.../policy_server.log
+env:
+  eval_root: /path/to/LoongForge-VLA/loongforge/embodied/eval
+  libero_config_path: /path/to/libero_config
+  ld_library_path: /path/to/nvidia_lib
+run:
+  output_dir: /path/to/.../reports/pi05/libero/object_smoke
+</code></pre>
+<p>Unchanged fields (e.g. <code>benchmark:</code>, <code>model:</code>, <code>timeouts:</code>) can be left as-is.</p>
+</li>
+<li>
+<p><strong>Run</strong> — execute the script inside the <strong>benchmark</strong> environment (the script launches the orchestrator with <code>BENCHMARK_PYTHON</code>; the policy server is started from <code>server.python</code>):</p>
+<pre><code class="language-bash">cd /path/to/LoongForge
+examples/embodied/pi05/eval/run_libero_eval.sh
+</code></pre>
+</li>
+</ol>
+<p>The LIBERO simulator runs in the benchmark environment; the policy server is launched from the YAML <code>server.python</code> field, pointing at the LoongForge environment.</p>
+<p>The run scripts also accept environment overrides (<code>CONFIG</code>, <code>REPO_ROOT</code>, <code>BENCHMARK_PYTHON</code>, <code>CUDA_VISIBLE_DEVICES</code>, and for SAPIEN benchmarks <code>LD_LIBRARY_PATH</code> / <code>VK_ICD_FILENAMES</code>), or you can invoke the orchestrator directly:</p>
+<pre><code class="language-bash">python -m loongforge.embodied.eval.orchestrator.run --config /path/to/config.yaml
+</code></pre>
+<p>Run the orchestrator command inside the <strong>benchmark</strong> environment; the config's <code>server.python</code> points at the <strong>model server</strong> environment. Other models/benchmarks: the <a href="#docsbenchmarkslibero">benchmark pages</a>.</p>
+<hr />
+<h2 id="3-configuration-reference">3. Configuration reference</h2><p>A config has five sections: <code>benchmark</code>, <code>model</code>, <code>server</code>, <code>run</code>, <code>timeouts</code>.</p>
+<pre><code class="language-yaml">benchmark:
+  name: libero               # libero | calvin | simplerenv | robotwin | maniskill
+  suite: libero_object       # benchmark-specific
+  max_tasks: 1
+  episodes_per_task: 1
+  max_steps: 300
+  num_steps_wait: 10
+
+model:
+  backend: loongforge        # loongforge | mock
+  model_type: pi05           # REQUIRED (no default) — pi05 | xvla | Gr00tN1d6
+  action_dim: 7
+  action_horizon: 50
+  # Optional model capability fields (have defaults; usually omitted):
+  #   state_encoding   proprio encoding the model consumes
+  #   action_encoding  the model's action encoding
+  #   domain_id        xvla multi-embodiment id (auto by benchmark if omitted)
+
+server:
+  host: 127.0.0.1
+  port: 12093
+  health_port: 12094
+  python: /path/to/model-server-env/bin/python
+  log: /path/to/policy_server.log
+  start_timeout_sec: 900
+  ckpt_path: /path/to/weight_dir
+  dataset_statistics_path: /path/to/dataset_statistics.json
+  tokenizer_path: /path/to/paligemma-3b-pt-224
+  use_bf16: false
+  loongforge_root: /path/to/LoongForge-VLA
+  random_init: false         # true = run with random weights (connectivity check)
+
+run:
+  output_dir: /path/to/reports/pi05/libero/object_smoke
+  seed: 7
+  save_trace: true
+  save_replay: true
+
+timeouts:
+  policy_call_ms: 600000
+  per_step_sec: 600
+  per_episode_sec: 900
+</code></pre>
+<p>Key fields:</p>
+<ul>
+<li><code>benchmark.name</code> — selects the benchmark runner.</li>
+<li><code>model.model_type</code> — <strong>required</strong>; selects the model factory / PayloadBuilder (<code>pi05</code> | <code>xvla</code> | <code>Gr00tN1d6</code>). There is no default — the eval server fails fast if it is missing.</li>
+<li><code>model.backend</code> — <code>loongforge</code> for a real model, <code>mock</code> for a pipeline-only check (no model weights; the server returns mock actions to validate the eval chain).</li>
+<li><code>model:</code> — model-structure fields (<code>action_dim</code>, <code>action_horizon</code>, …) plus optional capability fields (<code>state_encoding</code> / <code>action_encoding</code> / <code>domain_id</code>). The fields are <strong>model-specific</strong> — pi05, xvla, and GR00T-N1.6 declare different structural fields (see the per-model configs under <code>examples/embodied/&lt;model&gt;/eval/configs/</code> and the <a href="#docsmodel_integration">model integration guide</a>). Defaults are sensible per model, so you rarely set the capability fields by hand.</li>
+<li><code>server.ckpt_path</code> — a directory with <code>model.safetensors</code> (or the weight file). Set <code>server.random_init: true</code> to run without weights.</li>
+<li><code>server.dataset_statistics_path</code> — action-normalization stats the model uses internally (e.g. pi05).</li>
+<li><code>server.python</code> — the model server interpreter.</li>
+<li><code>run.output_dir</code> — where results are written.</li>
+<li>Set <code>run.save_replay: false</code> and <code>run.save_trace: false</code> to keep only the CSV/JSONL summaries.</li>
+</ul>
+<p>Every config comes as a <strong>public template</strong> (with <code>/path/to/...</code> placeholders, meant to be edited) plus a matching launch script. Optional knobs (larger suites, more episodes) are documented in each config's header comments — raise <code>max_tasks</code> / <code>episodes_per_task</code> in the same file.</p>
+<hr />
+<h2 id="4-outputs">4. Outputs</h2><p>LIBERO / CALVIN / SimplerEnv / ManiSkill write under <code>run.output_dir</code>:</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>results.jsonl</code></td>
+<td>per-episode results</td>
+</tr>
+<tr>
+<td><code>summary.csv</code></td>
+<td>task-level aggregate</td>
+</tr>
+<tr>
+<td><code>suite_summary.csv</code></td>
+<td>suite-level aggregate</td>
+</tr>
+<tr>
+<td><code>artifacts/.../*.gif</code></td>
+<td>replay (when <code>save_replay: true</code>; e.g. LIBERO <code>replay_*.gif</code>, SimplerEnv/ManiSkill <code>ep*_*.gif</code>)</td>
+</tr>
+<tr>
+<td><code>artifacts/.../*trace*.json</code></td>
+<td>per-step action trace (when <code>save_trace: true</code>; e.g. LIBERO/CALVIN <code>trace_*.json</code>, SimplerEnv/ManiSkill <code>*_trace.json</code>)</td>
+</tr>
+<tr>
+<td><code>policy_server.log</code></td>
+<td>model server stdout/stderr</td>
+</tr>
+</tbody>
+</table>
+<p>RoboTwin additionally collects the official evaluator logs, deploy config, result file, and any <code>mp4</code> videos under <code>artifacts/robotwin/&lt;task_name&gt;/&lt;task_config&gt;/</code>, and writes one <code>results.jsonl</code> row per completed episode so aggregation matches the other benchmarks.</p>
+<p><code>run.output_dir</code> is a stable run tag; by default the orchestrator writes a timestamped subdirectory so previous results are never overwritten. Set <code>run.timestamped_output: false</code> to reuse a fixed directory.</p>
+<hr />
+<h2 id="5-troubleshooting">5. Troubleshooting</h2><p><strong>Vulkan / SAPIEN (SimplerEnv, RoboTwin, ManiSkill).</strong> These render with SAPIEN and need a working NVIDIA Vulkan ICD. Check with <code>vulkaninfo</code> (not just <code>nvidia-smi</code>):</p>
+<pre><code class="language-bash">LD_LIBRARY_PATH=/path/to/nvidia_lib:/usr/lib64 \
+VK_ICD_FILENAMES=/path/to/nvidia_icd.json \
+vulkaninfo
+</code></pre>
+<p>Expect <code>deviceName = NVIDIA ...</code> / <code>driverName = NVIDIA</code>. If you see only <code>llvmpipe</code> / <code>lavapipe</code>, camera images and replays are unreliable. Set <code>LD_LIBRARY_PATH</code>, <code>VK_ICD_FILENAMES</code>, and <code>XDG_RUNTIME_DIR</code> <strong>before</strong> SAPIEN is imported; the runners re-exec the process so these take effect.</p>
+<p><strong>MuJoCo (LIBERO, CALVIN).</strong> Keep the <code>MUJOCO_GL</code> / <code>PYOPENGL_PLATFORM</code> and benchmark config-path settings from the shipped configs.</p>
+<p><strong>Disk space.</strong> Replay GIFs are the largest artifact. Set <code>run.save_replay: false</code> (and <code>save_trace: false</code>) if a run fails while writing artifacts.</p>
+<hr />
+<h2 id="6-adding-a-new-model">6. Adding a new model</h2><p>In addition to the built-in models, you can add a new model by implementing the shared <code>predict_action(images, instructions, state=None, dataset_stats=None)</code> interface — the eval server calls it over RPC, and model-specific preprocessing / normalization live inside it. Then plug into three small pieces (benchmark runners and adapters are reused unchanged):</p>
+<ol>
+<li><strong>Model factory</strong> (<code>factories/&lt;model&gt;_factory.py</code>): loads the model + weights and returns it behind the shared <code>predict_action(images, instructions, state=None, dataset_stats=None)</code> interface.</li>
+<li><strong>PayloadBuilder</strong> (<code>payload_builders/&lt;model&gt;.py</code>): turns a benchmark observation into the model's <code>predict_action</code> inputs, and declares the model's capabilities (<code>state_encoding</code> / <code>action_encoding</code> / <code>domain_id</code>).</li>
+<li><strong>ActionDecoder</strong> (<code>action_decoders/</code>, optional): converts the model's raw actions into the benchmark's action space. If the model's action encoding already matches the benchmark, this is a no-op and nothing is needed.</li>
+</ol>
+<p>Action normalization/unnormalization always lives inside the model's <code>predict_action</code>; eval only passes stats through. The full step-by-step checklist (with pi05 and xvla as worked examples) and the exact interface contract are in the <a href="#docsmodel_integration">model integration guide</a>.</p>
+</section><section id="docsmodel_integration" class="doc"><h1 class="doc-title">model integration</h1><h1 id="guide-to-integrating-a-new-model-into-the-eval-system">Guide to Integrating a New Model into the Eval System</h1><p>This document summarizes the complete workflow, key configuration items, and the <code>predict_action</code> interface contract that the model side must implement in order to integrate a new VLA model into the <code>loongforge/embodied/eval</code> eval system.
+Beyond implementing a Factory + PayloadBuilder (+ an optional ActionDecoder) and writing the YAML config, integration also involves a series of model-semantics-level configuration points that must be confirmed one by one.
+pi05 and xvla differ almost entirely on these configuration points, so this document uses the two as examples to walk through each item and provides a configuration comparison table.</p>
+<p><strong>Scope note:</strong> The semantic checklist below covers all benchmarks currently integrated (LIBERO / RoboTwin / SimplerEnv / CALVIN / ManiSkill).
+Early integration used LIBERO as the primary acceptance path, so some items are illustrated with LIBERO; cross-benchmark protocol differences (such as RoboTwin <code>action_bridge</code>) are called out separately.
+For the config layout conventions see <a href="#1-overview">§1</a>; for task success status see <code>../README.md</code> / <code>user_guide_en.md</code>.</p>
+<p>Overall architecture (a four-stage chain that decouples the model from the benchmark):</p>
+<pre><code class="language-text">Adapter (obs -&gt; canonical, exposes state_raw)
+  -&gt; PayloadBuilder (canonical -&gt; predict_action kwargs, per model, capabilities declared via class attributes)
+  -&gt; model.predict_action (policy server, server side)
+  -&gt; ActionDecoder (raw chunk -&gt; env action; key auto-assembled as {action_encoding}_to_{action_space}, identity -&gt; IdentityDecoder)
+</code></pre>
+<hr />
+<h2 id="1-overview">1. Overview</h2><p>Integrating a new model = <strong>Factory + PayloadBuilder + optional ActionDecoder</strong>, with the three separated by responsibility (component details in <a href="#3-component-details">§3</a>).
+Add new files, and <strong>do not modify existing files</strong>.</p>
+<p><strong>Components</strong> — responsibilities:</p>
+<ul>
+<li>
+<p><strong>ModelFactory</strong> (server side, requires torch) — <code>factories/&lt;model&gt;_factory.py</code>, registered via <code>@register_factory(&quot;&lt;model_type&gt;&quot;)</code>; <code>build()</code> returns <code>PredictActionModelSpec(model, metadata)</code>. Responsibilities:</p>
+<ul>
+<li>load the model: import, config, weight loading / <code>random_init</code>, device/dtype</li>
+<li>wrap it behind the unified <code>predict_action(images, instructions, state=None, dataset_stats=None, **kwargs)</code> interface (see <a href="#2-the-predict_action-contract">§2</a>)</li>
+</ul>
+</li>
+<li>
+<p><strong>PayloadBuilder</strong> (client side) — <code>payload_builders/&lt;model&gt;.py</code>, registered via <code>@register_payload_builder(&quot;&lt;model_type&gt;&quot;)</code>, inherits from <code>PayloadBuilder</code>. Responsibilities:</p>
+<ul>
+<li>declare capabilities via type-annotated class attributes (<code>state_encoding</code> / <code>action_encoding</code> / <code>action_dim</code> / <code>action_horizon</code> / <code>domain_id</code> / <code>unnorm_key</code>, ...; YAML overrides same-name fields)</li>
+<li><code>build(canonical, ctx)</code>: canonical dict → <code>predict_action</code> kwargs</li>
+<li>optionally <code>reset</code> / <code>update_from_response</code> / <code>note_env_action</code> for closed-loop feedback</li>
+</ul>
+</li>
+<li>
+<p><strong>ActionDecoder</strong> (optional, eval side) — <code>action_decoders/</code>, only when the model's <code>action_encoding</code> has no decoder yet. Decoder selection:</p>
+<ul>
+<li>key auto-assembled as <code>{action_encoding}_to_{action_space}</code> (see <a href="#4-state--action-semantics">§4</a>)</li>
+<li>source == target space → <code>IdentityDecoder</code> passthrough, no new code</li>
+<li>hits an already-registered key (e.g. <code>ee6d_*</code>) → selected automatically, no new code</li>
+</ul>
+</li>
+</ul>
+<p><strong>Steps</strong> — integration flow:</p>
+<ol>
+<li><strong>Implement the model components</strong> — ModelFactory + PayloadBuilder (+ optional ActionDecoder), per the responsibilities above and the details in <a href="#3-component-details">§3</a>.</li>
+<li><strong>Implement the <code>predict_action</code> interface</strong> — the model must expose <code>predict_action(images, instructions, state=None, dataset_stats=None)</code>; model-specific preprocessing and normalization live inside it, and the eval server calls it over RPC (see <a href="#2-the-predict_action-contract">§2</a>).</li>
+<li><strong>Write the eval config and scripts</strong> (<code>examples/embodied/&lt;model&gt;/eval/</code>) — model-specific YAML fields (<code>state_encoding</code> / <code>action_encoding</code> / <code>domain_id</code>, ...) go under <code>model:</code>; <code>model.model_type</code> is <strong>required</strong> (no default). Verify each config point in <a href="#4-state--action-semantics">§4</a> and <a href="#5-engineering-parameters">§5</a>.</li>
+<li><strong>Run a smoke</strong> (1 task × 1 episode, or a chain smoke) to validate the RPC / action semantics, then — with domain weights — task-success and full-scale eval.</li>
+<li><strong>Regression-test</strong> already-succeeding combinations (at least pi05 × LIBERO) after changing <strong>shared</strong> code (runner / adapter / decoder / bridge / generic policy).</li>
+</ol>
+<blockquote>
+<p><strong>Startup fail-fast:</strong> the Factory and the PayloadBuilder are registered
+independently, and a missing one fails fast on its own side — the eval server
+exits in <code>build_model_spec</code> when <code>model.model_type</code> has no registered factory,
+and the runner exits in <code>build_payload_builder</code> when it has no registered
+PayloadBuilder. Both must be registered for a run to start.</p>
+</blockquote>
+<p><strong>Runtime path</strong> — once a benchmark runner exists, do not write a per-model policy class:
+the server side is uniformly handled by <code>GenericPredictActionPolicy</code> for RPC / caching / statistics path / shape checking,
+and the model only implements <code>predict_action</code> in its factory:</p>
+<pre><code class="language-text">loongforge_server.py
+  -&gt; &lt;Model&gt;ModelFactory.build(...)              # factories/&lt;model&gt;_factory.py
+  -&gt; GenericPredictActionPolicy(...)
+  -&gt; model.predict_action(images, instructions, state=None, dataset_stats=None, **kwargs)
+</code></pre>
+<hr />
+<h2 id="2-the-predict_action-contract">2. The <code>predict_action</code> contract</h2><p>This section is the interface contract between the <strong>model author</strong> and the eval stack, aimed at the model owner who implements <code>predict_action()</code>.
+The <strong>single source of truth</strong> for the helper functions is <code>loongforge/embodied/eval/servers/predict_action_interface.py</code>:
+after refactoring, this file <strong>only retains the model-author contract</strong> — the <code>PredictActionModel</code> protocol, <code>validate_predict_action_model</code>,
+<code>_filter_supported_kwargs</code>, and <code>call_predict_action</code>; it <strong>does not contain</strong> any action-space decoding logic,
+which has been moved to <code>loongforge/embodied/eval/action_decoders/</code> (see <a href="#4-state--action-semantics">§4</a>).</p>
+<h3 id="21-required-signature">2.1 Required signature</h3><pre><code class="language-python">def predict_action(images, instructions, state=None, dataset_stats=None, **kwargs):
+    &quot;&quot;&quot;Return decoder-ready actions as a float array.&quot;&quot;&quot;
+    ...
+</code></pre>
+<p>Parameter meanings:</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Typical type</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>images</code></td>
+<td>a batch-of-1 list-of-list (each element is a view array)</td>
+<td>e.g. <code>[[view_primary, view_wrist]]</code>. The PayloadBuilder packs the per-camera dict into a view list (prefer <code>primary</code>/<code>head</code>; if <code>left</code> and <code>right</code> both exist → <code>[primary, left, right]</code>; otherwise append at most one more <code>wrist</code> → <code>[primary, wrist]</code>; single view → <code>[primary]</code>); the server then wraps it into batch-of-1.</td>
+</tr>
+<tr>
+<td><code>instructions</code></td>
+<td><code>list[str]</code></td>
+<td>Batched language instructions (batch=1).</td>
+</tr>
+<tr>
+<td><code>state</code></td>
+<td><code>None</code> or a numeric vector / array</td>
+<td>The <strong>model-usable</strong> proprio the PayloadBuilder produces from <code>canonical[&quot;state_raw&quot;]</code> according to <code>state_encoding</code> (may be <code>None</code>).</td>
+</tr>
+<tr>
+<td><code>dataset_stats</code></td>
+<td><code>dict</code> or <code>None</code></td>
+<td>Loaded by the eval side from <code>server.dataset_statistics_path</code> and <strong>passed through</strong>; used internally by the model as needed for state normalization / action denormalization.</td>
+</tr>
+<tr>
+<td>Extra kwargs</td>
+<td>e.g. <code>domain_id</code>, <code>unnorm_key</code></td>
+<td>Emitted by the PayloadBuilder. Passed through only when the signature accepts them (explicitly named or <code>**kwargs</code>); unknown ones are dropped with a WARNING.</td>
+</tr>
+</tbody>
+</table>
+<p>Images are a batch-of-1 list-of-list (each inner element is a view array), and instructions are <code>list[str]</code>.
+They are delivered to the model via the RPC v2 payload.</p>
+<h3 id="22-kwargs-filtering">2.2 kwargs filtering</h3><p><code>call_predict_action</code> inspects the signature before calling:</p>
+<ul>
+<li>Signature contains <code>**kwargs</code> → all extra keywords are passed through.</li>
+<li>Fixed signature → only the declared parameters are kept. Any field the PayloadBuilder emits but the model does not declare (such as a mistakenly emitted
+<code>domain_id</code> / <code>unnorm_key</code>) is dropped and a <strong>WARNING is logged</strong>, making a misconfigured PayloadBuilder
+visible in the logs rather than producing a &quot;no error but wrong result&quot; run.</li>
+</ul>
+<p>If a model needs to consume a certain field, it must declare that parameter in the signature (or use <code>**kwargs</code>).</p>
+<h3 id="23-where-state-comes-from">2.3 Where <code>state</code> comes from</h3><p>The adapter <strong>no longer encodes</strong> proprio; it only exposes the raw fields in <code>canonical[&quot;state_raw&quot;]</code>
+(<code>eef_pos</code> / <code>eef_quat</code> / <code>ee_ori_mat</code> / <code>joint</code> / <code>endpose</code> / <code>robot_obs</code>, etc.);
+<strong>each model's PayloadBuilder</strong> encodes them into the <code>state</code> kwarg according to its <code>state_encoding</code>
+(<code>&quot;&quot;</code> → no state; <code>ee6d</code> / <code>aloha_pi</code> / <code>passthrough</code>, etc.).</p>
+<p>The PayloadBuilder's <code>build(canonical, ctx)</code> returns the model kwargs; the runner adds RPC control fields around them:</p>
+<pre><code class="language-python">model_kwargs = payload_builder.build(canonical_obs, ctx)  # {&quot;images&quot;: [...], &quot;instructions&quot;: [...], &quot;state&quot;: ...}
+rpc = {&quot;episode_id&quot;: ..., &quot;episode_step&quot;: ..., &quot;disable_action_cache&quot;: ..., &quot;return_action_chunk&quot;: ...}
+rpc.update(model_kwargs)
+</code></pre>
+<pre><code class="language-text">canonical.state_raw  -&gt;  PayloadBuilder(state_encoding)  -&gt;  RPC payload.state  -&gt;  predict_action(state=...)
+</code></pre>
+<h3 id="24-validation-helpers">2.4 Validation helpers</h3><pre><code class="language-text">loongforge/embodied/eval/servers/predict_action_interface.py
+</code></pre>
+<table>
+<thead>
+<tr>
+<th>API</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PredictActionModel</code></td>
+<td>Protocol</td>
+</tr>
+<tr>
+<td><code>validate_predict_action_model(model)</code></td>
+<td>Pre-call signature check</td>
+</tr>
+<tr>
+<td><code>_filter_supported_kwargs(func, kwargs)</code></td>
+<td>Drops kwargs the signature does not accept (one WARNING logged per dropped item)</td>
+</tr>
+<tr>
+<td><code>call_predict_action(model, images, instructions, state, dataset_stats, action_dim, **kwargs)</code></td>
+<td>validate → filter kwargs → call → reshape / truncate to <code>[H, action_dim]</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>GenericPredictActionPolicy</code> always calls through <code>call_predict_action</code>. Action-space decoding is <strong>not here</strong>; it is in <code>action_decoders/</code>.</p>
+<p><code>validate_predict_action_model</code> checks: <code>predict_action</code> exists and is callable; the required parameters <code>images</code> / <code>instructions</code> are present;
+the optional parameters <code>state</code> / <code>dataset_stats</code> can be accepted (as named parameters or via <code>**kwargs</code>).</p>
+<pre><code class="language-python"># invalid: missing instructions, and cannot accept state/dataset_stats
+def predict_action(self, images):
+    ...
+
+# valid
+def predict_action(self, images, instructions, state=None, dataset_stats=None):
+    ...
+
+def predict_action(self, images, instructions, **kwargs):
+    state = kwargs.get(&quot;state&quot;)
+    dataset_stats = kwargs.get(&quot;dataset_stats&quot;)
+    ...
+</code></pre>
+<h3 id="25-action-output-contract">2.5 Action output contract</h3><p>The model may return <code>[D]</code> / <code>[H, D]</code> / <code>[B, H, D]</code>; <code>call_predict_action</code> uniformly normalizes to <code>[H, action_dim]</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Input shape</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[D]</code></td>
+<td>→ <code>[1, D]</code></td>
+</tr>
+<tr>
+<td><code>[H, D]</code></td>
+<td>Kept as a chunk</td>
+</tr>
+<tr>
+<td><code>[B, H, D]</code></td>
+<td>→ <code>[-1, D]</code> (single-request path)</td>
+</tr>
+<tr>
+<td>Other ndim</td>
+<td><code>ValueError</code></td>
+</tr>
+<tr>
+<td>Last dim <code>&lt; action_dim</code></td>
+<td><code>ValueError</code></td>
+</tr>
+<tr>
+<td>Last dim <code>&gt; action_dim</code></td>
+<td><strong>Truncated</strong> to the first <code>action_dim</code> columns</td>
+</tr>
+</tbody>
+</table>
+<p><code>action_dim</code> comes from the model / YAML config (e.g. 7 for single-arm, 14 for RoboTwin joints, 20 for xvla ee6d). <strong>Truncation cannot replace correct action semantics.</strong></p>
+<p><strong>Normalization / denormalization belongs to the model:</strong> the eval does <strong>not</strong> perform q01/q99, mean/std, or min/max outside the model.
+If the network outputs normalized actions, they must be denormalized <strong>inside</strong> <code>predict_action</code> using <code>dataset_stats</code> (and the training normalization mode).
+For example, pi05's ACTION quantile normalization uses <code>dataset_stats[&quot;action&quot;].q01</code> / <code>.q99</code>; other LeRobot-family models may use mean/std or min/max.
+The return value should be in the <strong>model action space</strong> (i.e. the encoding declared by the PayloadBuilder's <code>action_encoding</code>), and either match the environment after truncation
+(e.g. pi05 LIBERO 7D <code>axis_angle</code>), or be converted by an eval <code>ActionDecoder</code> / RoboTwin <code>action_bridge</code> (e.g. xvla 20D ee6d).</p>
+<p>Action decoding on the eval side does <strong>not</strong> belong to <code>predict_action</code>: after the server returns the chunk, the runner applies the decoders in <code>action_decoders/</code>:</p>
+<pre><code class="language-python">from loongforge.embodied.eval.action_decoders import build_action_decoder
+from loongforge.embodied.eval.orchestrator.config import resolve_action_decoder_key
+
+key = resolve_action_decoder_key(payload_builder, adapter)  # {action_encoding}_to_{action_space}
+decoder = build_action_decoder(key)                         # empty key -&gt; IdentityDecoder
+env_actions = decoder(raw_chunk, ctx)                       # __call__(actions[H, D], ctx) -&gt; env_actions
+</code></pre>
+<h3 id="26-local-interface-validation">2.6 Local interface validation</h3><p>No GPU / weights needed; use this to validate the eval helpers before fully loading the model:</p>
+<pre><code class="language-bash">cd /workspace/LoongForge-VLA
+PYTHONPATH=/workspace/LoongForge-VLA python - &lt;&lt;'PY'
+import numpy as np
+from loongforge.embodied.eval.servers.predict_action_interface import (
+    call_predict_action,
+    validate_predict_action_model,
+)
+
+class FixedSigModel:
+    &quot;&quot;&quot;pi05-style: extra kwargs are filtered out.&quot;&quot;&quot;
+
+    def predict_action(self, images, instructions, state=None, dataset_stats=None):
+        return np.zeros((len(instructions), 4, 7), dtype=np.float32)
+
+class KwargsModel:
+    &quot;&quot;&quot;xvla-style: domain_id is forwarded.&quot;&quot;&quot;
+
+    def predict_action(self, images, instructions, state=None, dataset_stats=None, **kwargs):
+        assert kwargs.get(&quot;domain_id&quot;) == 6
+        return np.zeros((4, 20), dtype=np.float32)
+
+images = [[np.zeros((224, 224, 3), dtype=np.uint8)]]
+common = dict(instructions=[&quot;pick up the cube&quot;], state=None, dataset_stats=None)
+
+m = FixedSigModel()
+validate_predict_action_model(m)
+print(call_predict_action(m, images=images, action_dim=7, do_sample=False, cfg_scale=1.5, **common).shape)
+
+m = KwargsModel()
+validate_predict_action_model(m)
+print(call_predict_action(m, images=images, action_dim=20, domain_id=6, **common).shape)
+PY
+</code></pre>
+<p>Expected output:</p>
+<pre><code class="language-text">(4, 7)
+(4, 20)
+</code></pre>
+<p>Comparison of the <code>predict_action</code> output of the real pi05 / xvla after loading via factory (<code>random_init</code> is enough for a contract check,
+but full correctness (unnorm, abs/delta, decode) still requires a YAML smoke / task-success run, see <code>user_guide_en.md</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Raw <code>predict_action</code></th>
+<th>After <code>call_predict_action</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td><code>[B, action_horizon, max_action_dim]</code>, e.g. <code>(1, 50, 32)</code></td>
+<td>truncate last dim → <code>(50, 7)</code></td>
+</tr>
+<tr>
+<td>xvla</td>
+<td><code>[B, num_actions, real_action_dim]</code>, e.g. <code>(1, 30, 20)</code></td>
+<td>reshape + keep dim → <code>(30, 20)</code></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>pi05 <strong>requires</strong> <code>tokenizer_path</code> (PaliGemma tokenize) even with <code>random_init</code>.</li>
+<li>xvla <strong>requires</strong> a valid Florence processor/tokenizer directory (<code>tokenizer_path</code>); an empty path causes HF loading to fail.</li>
+<li>The xvla factory converts the <code>domain_id</code> int → a <code>LongTensor</code> on the device; <code>call_predict_action(..., domain_id=3)</code> can just pass a YAML-style int.</li>
+</ul>
+<h3 id="27-warmup-and-common-errors">2.7 Warmup and common errors</h3><p>Before the health endpoint is ready, the server may make one call first (<code>images=[[np.zeros((224,224,3), uint8)]]</code>, <code>instructions=[&quot;warmup&quot;]</code>, <code>state=None</code>, <code>dataset_stats=None</code>).
+A failure only logs a warning, but this call must not corrupt weights or render the process unusable; prefer a lazy import that can complete safely.</p>
+<table>
+<thead>
+<tr>
+<th>Error</th>
+<th>Cause</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TypeError: model must expose a callable predict_action(...)</code></td>
+<td>Missing method</td>
+</tr>
+<tr>
+<td><code>TypeError: ... missing required parameters: ['instructions']</code></td>
+<td>Wrong signature</td>
+</tr>
+<tr>
+<td><code>TypeError: ... cannot accept eval keyword parameters: ['state']</code></td>
+<td>No <code>state</code> and no <code>**kwargs</code></td>
+</tr>
+<tr>
+<td><code>ValueError: ... unsupported action shape</code></td>
+<td>Not <code>[D]</code> / <code>[H,D]</code> / <code>[B,H,D]</code></td>
+</tr>
+<tr>
+<td><code>ValueError: ... action dim X, expected at least Y</code></td>
+<td>Output dimension narrower than <code>action_dim</code></td>
+</tr>
+<tr>
+<td>The env has steps but the success rate is always 0</td>
+<td>Usually the control mode (abs vs delta), a wrong ActionDecoder / bridge, or wrong unnorm — <strong>not</strong> a missing <code>predict_action</code></td>
+</tr>
+</tbody>
+</table>
+<p>Self-check for the model owner before delivery: <code>predict_action(images, instructions, state=None, dataset_stats=None)</code> is callable;
+<code>validate_predict_action_model</code> passes; returns <code>[D]</code>/<code>[H,D]</code>/<code>[B,H,D]</code> with last dim ≥ <code>action_dim</code>;
+denormalization (if any) happens <strong>inside</strong> <code>predict_action</code>, and the eval only passes through <code>dataset_stats</code>; warmup is safe;
+the factory is responsible for loading weights / tokenizer / processor and does not rewrite the benchmark dict observation.</p>
+<hr />
+<h2 id="3-component-details">3. Component details</h2><p>Factory / PayloadBuilder / ActionDecoder are summarized in <a href="#1-overview">§1</a>; this section walks through each component in detail and covers the RoboTwin <code>action_bridge</code>.</p>
+<h3 id="31-modelfactory">3.1 ModelFactory</h3><p>Location: <code>factories/&lt;model&gt;_factory.py</code>; register with <code>@register_factory(&quot;&lt;model_type&gt;&quot;)</code>. Declare <code>model_config_cls</code> and implement <code>build(model_cfg, server_args) -&gt; PredictActionModelSpec</code>:</p>
+<ul>
+<li><code>model_config_cls</code>: the typed config dataclass resolved from the YAML <code>model:</code> section (e.g. <code>Pi05ModelConfig</code>).</li>
+<li><code>build(...)</code>: load the model — import, config, weights / <code>random_init</code>, device/dtype — and return <code>PredictActionModelSpec(model=..., metadata={...})</code>, where <code>model</code> implements <code>predict_action</code> (see <a href="#2-the-predict_action-contract">§2</a>).</li>
+<li>The registry key must pair with a PayloadBuilder of the same <code>model_type</code> (both must be registered for the run to start — see the startup fail-fast in <a href="#1-overview">§1</a>).</li>
+</ul>
+<p>References: <code>factories/pi05_factory.py</code>, <code>factories/xvla_factory.py</code>, <code>factories/groot_n1_6_factory.py</code>.</p>
+<h3 id="32-payloadbuilder">3.2 PayloadBuilder</h3><p>Location: <code>payload_builders/&lt;model&gt;.py</code>; register with <code>@register_payload_builder(&quot;&lt;model_type&gt;&quot;)</code> and inherit from <code>PayloadBuilder</code>:</p>
+<ul>
+<li>Capability class attributes: <code>state_encoding</code> / <code>action_encoding</code> / <code>action_dim</code> / <code>action_horizon</code> / <code>domain_id</code> / <code>unnorm_key</code>, ... — YAML <code>model:</code> fields of the same name override them.</li>
+<li><code>build(canonical, ctx) -&gt; dict</code>: canonical observation (from the adapter) → <code>predict_action</code> kwargs — image packing per the view policy, state per <code>state_encoding</code>, model-specific fields.</li>
+<li>Optional closed-loop hooks: <code>reset()</code> / <code>update_from_response()</code> / <code>note_env_action()</code>.</li>
+</ul>
+<p>References: <code>payload_builders/pi05.py</code>, <code>payload_builders/xvla.py</code>, <code>payload_builders/groot_n1_6.py</code>.</p>
+<h3 id="33-actiondecoder">3.3 ActionDecoder</h3><p>Components: <code>action_decoders/</code> (<code>base.py</code> defines the <code>ActionDecoder</code> base class + <code>IdentityDecoder</code> +
+<code>ACTION_DECODER_REGISTRY</code>; <code>ee6d.py</code> holds the ee6d source-encoding decoders; <code>joint.py</code> holds the joint source-encoding decoders;
+<code>rotation.py</code> stores the rotation math). The orchestrator <strong>automatically assembles</strong> the decoder key from
+<code>{payload_builder.action_encoding}_to_{adapter.action_space}</code> (<code>resolve_action_decoder_key</code>), and when the source encoding == target space it returns an empty key → <code>IdentityDecoder</code> passthrough.</p>
+<p>Registered keys (<code>ACTION_DECODER_REGISTRY</code>) auto-assembled as <code>{action_encoding}_to_{action_space}</code>:</p>
+<table>
+<thead>
+<tr>
+<th>key</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ee6d_to_axis_angle</code></td>
+<td>xvla × LIBERO / ManiSkill: 20D EE6D → 7D (pos + axis-angle + grip)</td>
+</tr>
+<tr>
+<td><code>ee6d_to_simpler_abs_euler</code></td>
+<td>xvla × SimplerEnv WidowX: rot6d→euler + offset + grip mapping</td>
+</tr>
+<tr>
+<td><code>ee6d_to_calvin_abs</code></td>
+<td>xvla × CALVIN official absolute-pose protocol</td>
+</tr>
+<tr>
+<td><code>ee6d_to_euler</code> / <code>ee6d_to_quat</code></td>
+<td>Other EE variants</td>
+</tr>
+<tr>
+<td><code>pi05_aloha_robotwin</code></td>
+<td>pi05 × RoboTwin joint decoder (stateful; via bridge)</td>
+</tr>
+<tr>
+<td><code>ee6d_robotwin_ee_dual</code></td>
+<td>xvla × RoboTwin dual-arm ee decoder (via bridge)</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>pi05: <code>action_encoding == adapter.action_space</code> (e.g. <code>axis_angle</code>) → empty key → passthrough.</li>
+<li>xvla: <code>action_encoding: ee6d</code> × each benchmark's <code>action_space</code> → auto-select the key from the table above.</li>
+</ul>
+<p>If the new model's output is inconsistent with the environment's native action space, register the corresponding decoder under <code>action_decoders/</code>
+(<code>@register_action_decoder(&quot;&lt;encoding&gt;_to_&lt;space&gt;&quot;)</code>);
+<strong>do not</strong> write environment special-casing into the training-side <code>predict_action</code>.</p>
+<h3 id="34-benchmarkaction_bridge">3.4 <code>benchmark.action_bridge</code></h3><p>Most benchmarks run through the standard runner chain: the eval runner drives the env, calls <code>predict_action</code> over RPC, and applies the decoded action. RoboTwin is different: the official protocol only exposes a policy-plugin interface — the official evaluator (<code>script/eval_policy.py</code>) owns the env (observation collection, stepping, success judgment) and reverse-calls the policy plugin. We therefore run the official evaluator as a subprocess, and <code>action_bridge</code> selects the <code>(model_type, PayloadBuilder state_encoding, decoder key)</code> wiring hosted inside the plugin (<code>bridges/robotwin_policy.py</code>), so the official evaluator can drive a LoongForge policy without touching the model's default behavior.</p>
+<p>Implementation: <code>bridges/robotwin_policy.py</code> (<code>_BRIDGE_WIRING</code> maps a bridge name to
+<code>(model_type, payload-builder state_encoding, decoder key)</code>, assembling the shared
+adapter → PayloadBuilder → PolicyClient → ActionDecoder four-component chain).</p>
+<table>
+<thead>
+<tr>
+<th>bridge</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pi05_aloha_14d</code></td>
+<td><strong>pi05 RoboTwin official protocol</strong> (<code>Pi05PayloadBuilder(state_encoding=&quot;aloha_pi&quot;)</code> + <code>pi05_aloha_robotwin</code> decoder: adapt_to_pi + delta→abs, stateful)</td>
+</tr>
+<tr>
+<td><code>ee6d_dual</code></td>
+<td><strong>xvla RoboTwin official protocol</strong> (<code>XVLAPayloadBuilder(state_encoding=&quot;ee6d_dual&quot;)</code> + <code>ee6d_robotwin_ee_dual</code> decoder; 20D EE, three views, <code>action_type='ee'</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>Protocol logic is placed in named bridge modes, avoiding changes to the model's default behavior that would affect other benchmarks.</p>
+<hr />
+<h2 id="4-state--action-semantics">4. state / action semantics</h2><p>In the matrices below, &quot;—&quot; means the model × benchmark combination is not integrated (no released domain weights or no setup).</p>
+<h3 id="41-action-space-and-dimensions">4.1 Action space and dimensions</h3><p>The action dimension <strong>changes with the benchmark protocol</strong> and cannot simply be hard-coded to LIBERO. Model output dims per benchmark:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>LIBERO</th>
+<th>CALVIN</th>
+<th>SimplerEnv WidowX</th>
+<th>RoboTwin</th>
+<th>ManiSkill</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pi05</strong></td>
+<td>7D, no decoder</td>
+<td>7D, no decoder</td>
+<td>7D, no decoder</td>
+<td>14D, <code>action_bridge: pi05_aloha_14d</code></td>
+<td>7D, no decoder</td>
+</tr>
+<tr>
+<td><strong>xvla</strong></td>
+<td>20D EE6D → 7D</td>
+<td>20D EE6D → 7D</td>
+<td>20D EE6D → 7D</td>
+<td>20D EE6D, <code>action_bridge: ee6d_dual</code></td>
+<td>20D EE6D → 7D</td>
+</tr>
+<tr>
+<td><strong>GR00T-N1.6</strong></td>
+<td>7D, no decoder</td>
+<td>—</td>
+<td>7D, no decoder</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>pi05: 7D single-arm output (pos-delta 3, axis-angle-delta 3, gripper 1); <code>action_encoding</code> equals the env <code>action_space</code> → empty decoder key → <code>IdentityDecoder</code> (no conversion, the action is passed straight to the env). RoboTwin switches to the 14D joint protocol via <code>pi05_aloha_14d</code> (<strong>not</strong> 7D).</li>
+<li>xvla: model side is 20D EE6D (<code>model.action_mode: ee6d</code>, <code>real_action_dim: 20</code>); single-arm benchmarks (LIBERO / CALVIN / SimplerEnv / ManiSkill) convert to the env space via the eval-side ActionDecoder (key auto-assembled from <code>{action_encoding}_to_{action_space}</code>), RoboTwin via <code>ee6d_dual</code>.</li>
+<li>GR00T-N1.6: 7D output; <code>action_encoding: axis_angle</code> (LIBERO) / <code>simpler_abs_euler</code> (SimplerEnv) equals the env space → <code>IdentityDecoder</code>, no conversion.</li>
+</ul>
+<p>Points to confirm: the total number of model output dimensions, the semantic layout of each dimension (position / rotation / gripper), the rotation representation
+(axis-angle, 6D rotation, quaternion), and the target environment's control interface (joint vs EE).</p>
+<h3 id="42-control-mode">4.2 Control mode</h3><table>
+<thead>
+<tr>
+<th></th>
+<th>LIBERO</th>
+<th>CALVIN</th>
+<th>SimplerEnv WidowX</th>
+<th>RoboTwin</th>
+<th>ManiSkill</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pi05</strong></td>
+<td>delta</td>
+<td>—</td>
+<td>—</td>
+<td>delta joints → absolute joints in bridge</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>xvla</strong></td>
+<td>absolute EEF pose</td>
+<td>absolute pose</td>
+<td>absolute EE¹</td>
+<td>EE absolute-pose</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>GR00T-N1.6</strong></td>
+<td>delta</td>
+<td>—</td>
+<td>delta EE</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>¹ Requires SimplerEnv registering the <code>arm_pd_ee_target_base_pose_*</code> controller (see <code>patches/simplerenv/xvla.md</code>).</p>
+<p>Notes: pi05 + LIBERO runs robosuite OSC delta by default (<code>use_delta=True</code>); xvla + LIBERO sets OSC <code>use_delta=False</code> via <code>benchmark.control_mode: absolute</code> (or default <code>auto</code> with a non-empty decoder key); pi05 + RoboTwin converts delta joints to absolute joints inside the bridge (openpi Aloha: <code>adapt_to_pi</code> decode state → inference → delta→abs → <code>adapt_to_pi</code> encode).</p>
+<p>It should be emphasized that an absolute pose cannot be crudely turned into a delta by &quot;linearly subtracting&quot; the current pose:
+axis-angle rotation does not satisfy linear subtraction, and the delta mode often has action scaling. A wrong control mode is
+the primary reason xvla initially had a 0 success rate on LIBERO.</p>
+<h3 id="43-proprioceptive-input">4.3 Proprioceptive input</h3><p>Proprio (proprioception) is the robot's own state — joint positions, end-effector pose, gripper state — as opposed to external perception (cameras). In this framework it is what the model receives as the <code>state</code> argument of <code>predict_action</code>.</p>
+<p>The adapter <strong>no longer encodes</strong> proprio: it only exposes the raw EE / joint fields in <code>canonical[&quot;state_raw&quot;]</code>
+(<code>eef_pos</code> / <code>eef_quat</code> / <code>ee_ori_mat</code> / <code>joint</code> / <code>endpose</code> / <code>robot_obs</code>, etc.);
+the encoding is done by <strong>each model's PayloadBuilder</strong> according to <code>model.state_encoding</code>. <code>state_encoding</code> per model × benchmark:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>LIBERO</th>
+<th>CALVIN</th>
+<th>SimplerEnv WidowX</th>
+<th>RoboTwin</th>
+<th>ManiSkill</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pi05</strong></td>
+<td><code>&quot;&quot;</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><code>&quot;&quot;</code></td>
+<td><code>aloha_pi</code></td>
+<td><code>passthrough</code></td>
+</tr>
+<tr>
+<td><strong>xvla</strong></td>
+<td><code>ee6d</code></td>
+<td><code>ee6d_calvin</code></td>
+<td><code>ee6d_widowx</code></td>
+<td><code>ee6d_dual</code></td>
+<td><code>passthrough</code></td>
+</tr>
+<tr>
+<td><strong>GR00T-N1.6</strong></td>
+<td><code>libero_ee_euler</code></td>
+<td>—</td>
+<td><code>simpler_widowx</code></td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>pi05: <code>&quot;&quot;</code> emits no state kwarg; ManiSkill <code>passthrough</code> passes the raw joint state through as-is (<code>state_raw[&quot;joint&quot;]</code>: 8D Panda qpos; 9D → 7 arm joints + mean of the 2 finger joints); RoboTwin <code>aloha_pi</code> does the openpi <code>adapt_to_pi</code> decode inside the PayloadBuilder (14D joints → pi space).</li>
+<li>xvla: 20-dim input, isomorphic to the action space; <code>ee6d_widowx</code> / <code>ee6d_calvin</code> are stateful closed-loop via <code>update_from_response</code>, <code>ee6d_dual</code> (RoboTwin) feeds back the previous decoded ee action via <code>note_env_action</code>.</li>
+<li>GR00T-N1.6: LIBERO <code>libero_ee_euler</code> (8D <code>libero_panda</code> raw state <code>[x,y,z, roll,pitch,yaw, finger0, finger1]</code>); SimplerEnv <code>simpler_widowx</code> (ee pose reconstructed from <code>base_pose⁻¹ · tcp_pose</code>).</li>
+</ul>
+<p>The xvla 6D rotation must be column-major <code>[R00,R10,R20, R01,R11,R21]</code>
+(the first two columns of the rotation matrix concatenated, aligning with X-VLA <code>Mat_to_Rotate6D</code>).
+Row-major <code>mat[:, :2].flatten()</code> will cause a wrong input distribution — this is the second reason xvla had a
+0 initial success rate on LIBERO.</p>
+<p>In addition, the source of the proprio semantics must be confirmed: the original X-VLA client feeds back the previous step's predicted action;
+the stateful encodings (<code>ee6d_widowx</code> / <code>ee6d_calvin</code>) already implement this closed-loop feedback via the PayloadBuilder's
+<code>update_from_response</code>, while <code>ee6d_dual</code> feeds back the previous step's decoded ee action via <code>note_env_action</code>.
+Single-arm LIBERO uses the environment's measured state and has been validated as feasible; if a new model is sensitive, an ablation is needed.</p>
+<p>Boundary: <code>canonical[&quot;state_raw&quot;]</code> holds the raw fields (for the PayloadBuilder to encode + for trace/debug);
+the <code>state</code> kwarg produced by the PayloadBuilder's <code>build()</code> enters <code>predict_action(state=...)</code> via RPC.
+Do not pass a nested dict directly as <code>state</code> to <code>predict_action</code> (unless the model explicitly declares that layout);
+prefer passing a flat <code>float32</code> vector aligned with the training <code>observation.state</code>.</p>
+<h3 id="44-normalization-approach">4.4 Normalization approach</h3><ul>
+<li><strong>pi05:</strong> depends on an external <code>dataset_statistics.json</code> (q01/q99 denormalization);
+<code>server.dataset_statistics_path</code> must be configured (for RoboTwin,
+<code>examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json</code> can be used).</li>
+<li><strong>xvla:</strong> normalization is inside the model's action space (the EE6DActionSpace in <code>action_hub.py</code>);
+configure <code>dataset_statistics_path: &quot;&quot;</code>.</li>
+<li><strong>GR00T-N1.6:</strong> normalization happens inside the model per the weights' <code>processor_config.json</code>
+(e.g. SimplerEnv <code>mean_std_embedding_keys=[x,y,z,roll,pitch,yaw]</code> — pos+rotation mean-std, gripper min-max;
+LIBERO normalizes state inside <code>predict_action</code> from the weights' <code>experiment_cfg/dataset_statistics.json</code>);
+<code>server.dataset_statistics_path</code> points at the weights' stats.</li>
+</ul>
+<p>Points to confirm: denormalization is performed in only one place (the model-internal <code>predict_action</code>),
+and the generic policy does <strong>not</strong> do unnorm (see the ownership convention in <a href="#25-action-output-contract">§2.5</a> for details).</p>
+<h3 id="45-model-specific-request-fields">4.5 Model-specific request fields</h3><p>Model-specific fields are declared by the <strong>PayloadBuilder</strong> and injected into the <code>predict_action</code> kwargs; the YAML writes them under the <code>model:</code> section. As an example, xvla is a multi-domain model configured with <code>model.domain_id</code> (when not given explicitly, the PayloadBuilder auto-picks it from <code>DEFAULT_DOMAIN_ID_MAP</code> by <code>benchmark_name</code>); the PayloadBuilder writes it into the RPC payload, and the factory converts the int to a <code>LongTensor</code>. A misconfiguration usually produces <strong>no error</strong>, but the action distribution is wrong. Other models declare their own fields (e.g. pi05's <code>unnorm_key</code>); GR00T-N1.6's embodiment selection is <code>server.embodiment_tag</code> (factory-side).</p>
+<p>The xvla domain_id values already used in the repo (defer to the official eval / production YAML, do not fabricate):</p>
+<table>
+<thead>
+<tr>
+<th>Benchmark</th>
+<th>domain_id</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SimplerEnv WidowX / Bridge</td>
+<td><strong>0</strong></td>
+</tr>
+<tr>
+<td>CALVIN</td>
+<td>2</td>
+</tr>
+<tr>
+<td>LIBERO</td>
+<td>3</td>
+</tr>
+<tr>
+<td>RoboTwin2</td>
+<td>6</td>
+</tr>
+<tr>
+<td>ManiSkill</td>
+<td>5</td>
+</tr>
+</tbody>
+</table>
+<p>The same applies to a new model's task embedding / domain embedding / special prompt, etc.:
+<code>model:</code> YAML → PayloadBuilder → RPC payload → factory → model, end to end.
+If the PayloadBuilder emits a kwarg the model signature does not accept, <code>_filter_supported_kwargs</code> drops it with a
+WARNING (see <a href="#22-kwargs-filtering">§2.2</a>); use this to diagnose misconfigurations.</p>
+<h3 id="46-number-and-order-of-image-views">4.6 Number and order of image views</h3><p>View packing follows these rules (<strong>not</strong> a fixed 2 views):</p>
+<ol>
+<li>There must be a <code>primary</code> or <code>head</code>;</li>
+<li>If <code>left</code> and <code>right</code> both exist → <strong>3 views</strong> <code>[primary, left, right]</code> (RoboTwin / X-VLA official);</li>
+<li>Otherwise append at most one more <code>wrist</code> (or a standalone left/right) as the 2nd view.</li>
+</ol>
+<p>(Implemented in <code>payload_builders/pi05.py::_pack_images</code>, which the xvla PayloadBuilder reuses.)</p>
+<p>The adapter declares its camera set with the <code>cameras</code> class attribute (e.g. LIBERO <code>(&quot;primary&quot;, &quot;wrist&quot;)</code>),
+and the PayloadBuilder packs the model's expected view list from <code>canonical[&quot;images&quot;]</code> (a per-camera dict) per the rules above.</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>LIBERO</th>
+<th>CALVIN</th>
+<th>SimplerEnv WidowX</th>
+<th>RoboTwin</th>
+<th>ManiSkill</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>pi05</strong></td>
+<td>2 (primary + wrist)</td>
+<td>2</td>
+<td>1</td>
+<td>3 (dynamic)</td>
+<td>1</td>
+</tr>
+<tr>
+<td><strong>xvla</strong></td>
+<td>2</td>
+<td>2</td>
+<td>1 (third person)</td>
+<td>3 (dynamic)</td>
+<td>1</td>
+</tr>
+<tr>
+<td><strong>GR00T-N1.6</strong></td>
+<td>2</td>
+<td>—</td>
+<td>1</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p>Views are derived from the adapter's <code>cameras</code> attribute per the pack rules above (LIBERO / CALVIN <code>(primary, wrist)</code> → 2; SimplerEnv / ManiSkill <code>(primary,)</code> → 1; RoboTwin 3), not hand-configured per model. The model side must support a <strong>dynamic</strong> <code>num_images = len(images[0])</code>, and <strong>must not</strong> hardcode <code>num_images=2</code> or <code>3</code> (otherwise it breaks other benchmarks).</p>
+<p>Points to confirm: the number, order, and resolution of cameras at training time, and whether they are flipped
+(LIBERO agentview vertical flip is handled uniformly by the adapter).</p>
+<p>Views are dynamically packed by the PayloadBuilder from the obs; do not rely on fabricated YAML fields to control the number of views.</p>
+<hr />
+<h2 id="5-engineering-parameters">5. Engineering parameters</h2><ul>
+<li><strong>Load timeout (<code>start_timeout_sec</code>):</strong> xvla cold start can be &gt;900s, and task-success configs commonly use 2400;
+900 is usually enough for pi05; a <code>random_init</code> chain smoke can be shorter.</li>
+<li><strong>processor / tokenizer:</strong> pi05 needs an external paligemma (<code>tokenizer_path</code>);
+xvla's processor is in the weight directory (<code>processor_path</code> / <code>tokenizer_path</code> are often the same directory).</li>
+<li><strong><code>server.random_init</code>:</strong> chain smoke when there are no weights; paired with an empty <code>ckpt_path</code>.</li>
+<li><strong>Ports:</strong> each run uses an independent <code>port</code> / <code>health_port</code> to avoid chunk-cache cross-contamination.</li>
+<li><strong>GPU:</strong> usually one card per policy server; running eval tasks serially is more reliable.</li>
+<li><strong>Environment separation:</strong> the orchestrator uses the <strong>benchmark conda</strong>; <code>server.python</code> uses the <strong>model server</strong> environment.</li>
+<li><strong>SAPIEN (SimplerEnv / RoboTwin / ManiSkill):</strong> besides <code>nvidia-smi</code>, use <code>vulkaninfo</code>
+to confirm <code>deviceName=NVIDIA</code> (not llvmpipe); set <code>LD_LIBRARY_PATH</code> and <code>VK_ICD_FILENAMES</code>.</li>
+</ul>
+<p>Eval parameters (max_steps / num_steps_wait, etc.) must be configured according to the <strong>original eval protocol + the current smoke intent</strong>, not mixed:</p>
+<ul>
+<li><strong>pi05 × LIBERO:</strong> smoke commonly uses <code>max_steps: 300</code>; full-scale long-horizon suites such as libero_10
+are recommended to be higher (e.g. 520). A <code>max_steps</code> that is too small will judge in-progress episodes as failures.</li>
+<li><strong>xvla × LIBERO:</strong> original horizon 800, <code>num_steps_wait: 10</code>; smoke can be 1 task × 1 ep,
+but keeping 800 is still recommended so long tasks are not truncated.</li>
+<li><strong>xvla × SimplerEnv WidowX:</strong> official <code>max_steps: 1200</code> (task-success config).</li>
+<li><strong>Chain smoke (random_init):</strong> deliberately short step counts (e.g. 20–30), only to prove RPC, not counted as a result.</li>
+</ul>
+<p>runner semantics: when <code>benchmark.max_steps &gt; 0</code>, it takes precedence over the suite default (not bounded by its cap).</p>
+<hr />
+<h2 id="6-development-notes">6. Development notes</h2><ul>
+<li>Keep model framework logic in <code>eval/factories/&lt;model&gt;_factory.py</code>. Do not add model-specific code to <code>loongforge_server.py</code>.</li>
+<li>Do not modify training-tree LoongForge source for eval-specific compatibility.</li>
+<li>Prefer adding YAML configs over command-line parameter sprawl.</li>
+<li>Use <code>model.backend</code> in YAML for backend selection and <code>benchmark.name</code> for benchmark selection.</li>
+<li>New model factories should ensure their <code>predict_action()</code> tolerates a warmup call with a zero-filled dummy image and an empty instruction string (<code>_warmup_model</code> in <code>loongforge_server.py</code> runs this before serving).</li>
+<li>After changing shared runner / adapter / payload builder / action decoder / bridge / generic policy code, regression-test at least pi05 × LIBERO.</li>
+</ul>
+</section><section id="docsbenchmark_envs" class="doc"><h1 class="doc-title">benchmark envs</h1><h1 id="benchmark-environments">Benchmark Environments</h1><p>This document records the benchmark runtime environments used by the LoongForge-VLA eval module under <code>loongforge/embodied/eval</code>.</p>
+<p><strong>For installation, follow the official benchmark homepages</strong> — each benchmark page links to its official repository. This document is not an install guide; it records the dependency versions of the environments currently used by the eval module, so they can be compared / reproduced when debugging.</p>
+<p><strong>Environment isolation.</strong> The benchmark client and the policy server run as separate processes with different dependencies (see <a href="#architecture">Architecture</a>). We use conda environments for this isolation; other approaches — e.g. running the two sides in separate pods — work too, but then you are responsible for the inter-process communication yourself (the two sides must reach each other over the configured host/port).</p>
+<p>The version lists below are the verified combinations of the internal envs.</p>
+<h2 id="tool-version">Tool Version</h2><pre><code class="language-text">conda 26.3.2
+</code></pre>
+<h2 id="libero">LIBERO</h2><p>Runtime Python:</p>
+<pre><code class="language-text">/path/to/conda/envs/libero/bin/python
+</code></pre>
+<p>Selected dependency versions:</p>
+<pre><code class="language-text">python          3.8.13
+torch           2.1.2
+numpy           1.24.4
+libero          0.1.0 dev
+robosuite       1.4.0
+mujoco          3.2.3
+gym             0.25.2
+imageio         2.35.1
+imageio-ffmpeg  0.5.1
+opencv-python   4.6.0.66
+websockets      13.1
+msgpack         1.1.1
+pyyaml          6.0.3
+</code></pre>
+<p>Used by:</p>
+<pre><code class="language-text">examples/embodied/pi05/eval/configs/libero/*.yaml
+</code></pre>
+<h2 id="calvin">CALVIN</h2><p>Runtime Python:</p>
+<pre><code class="language-text">/path/to/conda/envs/calvin/bin/python
+</code></pre>
+<p>CALVIN evaluation uses the original-format CALVIN validation dataset and config assets, including <code>validation/.hydra/merged_config.yaml</code>, <code>calvin_models/conf</code>, and <code>eval_sequences.json</code>. LeRobot-format CALVIN datasets are useful for training/statistics but are not sufficient by themselves for official online long-horizon rollout.</p>
+<p>Current CALVIN status:</p>
+<pre><code class="language-text">benchmark env:       /path/to/conda/envs/calvin
+repo/config assets:  /path/to/calvin
+validation dataset:  /path/to/calvin_debug_dataset
+pi05 configs:        only smoke.yaml
+                     server.random_init: true (connectivity only, not task success)
+connectivity status:  pass; 1 sequence, first subtask capped at 30 steps
+model score status:  need CALVIN-domain weights + dataset_statistics.json
+</code></pre>
+<p>Used by:</p>
+<pre><code class="language-text">examples/embodied/pi05/eval/configs/calvin/smoke.yaml
+</code></pre>
+<h2 id="simplerenv">SimplerEnv</h2><p>Runtime Python:</p>
+<pre><code class="language-text">/path/to/conda/envs/simplerenv/bin/python
+</code></pre>
+<p>Selected dependency versions:</p>
+<pre><code class="language-text">python                 3.10.20
+numpy                  1.24.4
+mani-skill2-real2sim   0.5.3
+sapien                 2.2.2
+gymnasium              0.29.1
+imageio                2.37.3
+imageio-ffmpeg         0.6.0
+opencv-python          4.13.0.92
+websockets             16.0
+msgpack                1.1.2
+pyyaml                 6.0.3
+</code></pre>
+<p>The SimplerEnv runner prepares <code>LD_LIBRARY_PATH</code>, <code>VK_ICD_FILENAMES</code>, and <code>XDG_RUNTIME_DIR</code> (SAPIEN Vulkan requirements, see the <a href="#docsbenchmarkssimplerenv">SimplerEnv page</a> ⚠️ common issues), then re-execs the benchmark Python process once before constructing the environment.</p>
+<p>Current SimplerEnv status:</p>
+<pre><code class="language-text">X-VLA WidowX status:   task success after absolute EE controller patch
+                       (see patches/simplerenv/xvla.md)
+                       configs: examples/embodied/xvla/eval/configs/simplerenv/*
+GR00T-N1.6 status:     task success (eggplant 20/20, official prepackaged_config)
+                       uses the stock upstream delta controller, no env change
+                       configs: examples/embodied/groot_n1_6/eval/configs/simplerenv/*
+pi05 configs:          only widowx_stack_cube_smoke.yaml
+                       server.random_init: true (connectivity only, not task success)
+                       other Bridge tasks: edit task_name in-file comments
+</code></pre>
+<p>Upstream SimplerEnv without the 255isWhite-style absolute EE registration will mis-execute absolute pose actions as deltas. Prefer cloning the fork documented in <code>patches/simplerenv/xvla.md</code> or applying the two manual patches.</p>
+<p>Used by:</p>
+<pre><code class="language-text">examples/embodied/pi05/eval/configs/simplerenv/*.yaml
+examples/embodied/xvla/eval/configs/simplerenv/*.yaml
+</code></pre>
+<h2 id="robotwin">RoboTwin</h2><p>Runtime Python:</p>
+<pre><code class="language-text">/path/to/conda/envs/robotwin/bin/python
+</code></pre>
+<p>Selected dependency versions:</p>
+<pre><code class="language-text">python            3.10.20
+torch             2.4.1
+numpy             1.26.4
+sapien            3.0.0b1
+imageio           2.34.2
+imageio-ffmpeg    0.6.0
+opencv-python     4.11.0.86
+websockets        16.0
+msgpack           1.1.2
+msgpack-numpy     0.4.8
+pyyaml            6.0.3
+</code></pre>
+<p>Video logging dependency:</p>
+<pre><code class="language-text">/path/to/conda/envs/robotwin/bin/ffmpeg
+ffmpeg version 7.0.2-static
+</code></pre>
+<p>The <code>ffmpeg</code> executable is provided by the installed <code>imageio-ffmpeg</code> package and linked into the <code>robotwin</code> env <code>bin</code> directory so RoboTwin official video logging can launch <code>ffmpeg</code> directly.</p>
+<p>Current RoboTwin status (2026-07-21):</p>
+<pre><code class="language-text">Official evaluator:    script/eval_policy.py via robotwin_runner + bridges/robotwin_policy.py
+action_bridge modes:   pi05_aloha_14d | ee6d_dual
+pi05 RoboTwin2:        task success (adjust_bottle demo_clean)
+                       action_bridge=pi05_aloha_14d, action_dim=14, action_horizon=32
+                       weight example: /path/to/pi0.5_robotwin2
+                       stats: examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json
+                       (from the weight's assets/.../norm_stats.json: state→observation.state, actions→action)
+xvla RoboTwin2:        task success (adjust_bottle demo_clean)
+                       action_bridge=ee6d_dual, domain_id=6
+                       weight example: /path/to/X-VLA-RoboTwin2
+Connectivity only:      edit adjust_bottle_smoke*.yaml (random_init); no separate YAML
+</code></pre>
+<p>Used by:</p>
+<pre><code class="language-text">examples/embodied/pi05/eval/configs/robotwin/*.yaml
+examples/embodied/xvla/eval/configs/robotwin/*.yaml
+</code></pre>
+<h2 id="maniskill">ManiSkill</h2><p>Runtime Python:</p>
+<pre><code class="language-text">/path/to/conda/envs/maniskill/bin/python
+</code></pre>
+<p>Current ManiSkill status:</p>
+<pre><code class="language-text">pi05 configs:          only pick_cube_smoke.yaml
+                       server.random_init: true (connectivity only, not task success)
+Task:                  PickCube-v1, 7D, pd_ee_delta_pose
+Model score status:    need ManiSkill-domain weights + dataset_statistics.json
+</code></pre>
+<p>Visual smoke needs the SAPIEN Vulkan runtime (see the <a href="#docsbenchmarkssimplerenv">SimplerEnv page</a> ⚠️ common issues). The ManiSkill runner prepares the NVIDIA ICD and library path before importing ManiSkill/SAPIEN.</p>
+<p>Used by:</p>
+<pre><code class="language-text">examples/embodied/pi05/eval/configs/maniskill/*.yaml
+</code></pre>
+</section><section id="docseval_protocol" class="doc"><h1 class="doc-title">eval protocol</h1><h1 id="evaluation-framework--protocol">Evaluation Framework &amp; Protocol</h1><p>This page describes the LoongForge offline evaluation framework: its architecture, the runtime components, and the wire protocol between the benchmark client and the policy server. It is written for <strong>code contributors</strong> — model integrators and maintainers who touch eval code. End users only need the <a href="#docsuser_guide_en">user guide</a> and the <a href="#docsbenchmarkslibero">benchmark pages</a>.</p>
+<h2 id="overview">Overview</h2><p>The eval module runs a policy against a simulation benchmark from a single YAML config. It launches the benchmark simulator and an independent model server as separate processes connected by a WebSocket + msgpack-numpy RPC protocol. The model and the benchmark are decoupled: benchmark code never imports model code, and vice versa. (The architecture diagram lives in the <a href="#architecture">module README</a>.)</p>
+<h2 id="components">Components</h2><table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>adapters/&lt;benchmark&gt;.py</code></td>
+<td>env observation → canonical dict (<code>state_raw</code>); declares matching capabilities (<code>action_space</code>, <code>default_fps</code>, <code>cameras</code>)</td>
+</tr>
+<tr>
+<td><code>payload_builders/&lt;model&gt;.py</code></td>
+<td>canonical dict → <code>predict_action(**kwargs)</code>; declares model capabilities (<code>state_encoding</code> / <code>action_encoding</code> / <code>action_dim</code> / ...)</td>
+</tr>
+<tr>
+<td><code>model.predict_action</code> (server)</td>
+<td>model inference; owns all model-specific normalization/unnormalization</td>
+</tr>
+<tr>
+<td><code>action_decoders/&lt;encoding&gt;.py</code></td>
+<td>raw model action chunk → benchmark env action space; identity match yields a no-op <code>IdentityDecoder</code></td>
+</tr>
+<tr>
+<td><code>factories/&lt;model&gt;_factory.py</code></td>
+<td>thin model load/build, registered via <code>@register_factory(&quot;&lt;model_type&gt;&quot;)</code></td>
+</tr>
+<tr>
+<td><code>transport/</code></td>
+<td><code>PolicyClient</code> (WebSocket client), msgpack-numpy serialization, RPC server</td>
+</tr>
+<tr>
+<td><code>orchestrator/</code></td>
+<td>unified YAML entry (<code>run.py</code>), server manager, runners, config assembly</td>
+</tr>
+</tbody>
+</table>
+<p>At runtime every benchmark drives the same four-stage chain:</p>
+<pre><code class="language-text">Adapter.obs_to_canonical(env_obs)      # env obs -&gt; canonical dict
+  -&gt; PayloadBuilder.build(canonical)   # canonical -&gt; predict_action kwargs
+  -&gt; model.predict_action(**kwargs)    # RPC to the policy server
+  -&gt; ActionDecoder(action_chunk, ctx)  # raw model chunk -&gt; env action space
+</code></pre>
+<p>The ActionDecoder key is auto-composed at startup as <code>&quot;{model.action_encoding}_to_{adapter.action_space}&quot;</code>; an identity match yields an empty key and an <code>IdentityDecoder</code> no-op.</p>
+<h2 id="message-flow">Message flow</h2><p>The client and the server exchange msgpack-numpy-encoded <code>PolicyRequest</code> / <code>PolicyResponse</code> envelopes (types in <code>protocol/schema.py</code>, <code>PROTOCOL_VERSION = &quot;1.0&quot;</code>):</p>
+<pre><code class="language-python"># request
+{&quot;type&quot;: &quot;ping&quot; | &quot;reset&quot; | &quot;infer&quot; | &quot;predict_action&quot;,
+ &quot;request_id&quot;: str, &quot;protocol_version&quot;: &quot;1.0&quot;, &quot;payload&quot;: {...}}
+# response
+{&quot;status&quot;: &quot;ok&quot; | &quot;error&quot;, &quot;ok&quot;: bool, &quot;type&quot;: str,
+ &quot;request_id&quot;: str, &quot;data&quot;: {...}, &quot;error&quot;: {...}}
+</code></pre>
+<ol>
+<li><strong>Connect</strong> — the client opens a WebSocket to the server; the server first sends its <code>ServerMetadata</code> (<code>protocol_version</code>, <code>action_chunk_size</code>, <code>available_unnorm_keys</code>, ...). A <code>protocol_version</code> mismatch aborts the connection.</li>
+<li><strong>Per step</strong> — the client sends <code>predict_action</code> with the PayloadBuilder-produced kwargs as <code>payload</code>; the server replies with the raw action chunk (plus model metadata) in <code>data</code>.</li>
+<li><strong><code>ping</code></strong> — liveness check; <strong><code>reset</code></strong> — clears the server's per-episode action chunk cache.</li>
+<li><strong>Close</strong> — the client closes the WebSocket; the orchestrator terminates the server process.</li>
+</ol>
+<p>The protocol is framework-agnostic: any policy only needs a compatible policy server.</p>
+<h2 id="policyclient-interface">PolicyClient interface</h2><p><code>transport/client.py</code> provides <code>PolicyClient</code>:</p>
+<ul>
+<li><code>ping()</code> — liveness check</li>
+<li><code>request(type, payload, request_id)</code> — generic request; message types <code>ping</code> / <code>reset</code> / <code>infer</code> / <code>predict_action</code></li>
+<li><code>metadata</code> — server metadata (protocol version, action dim, unnormalization mode, plus factory-declared fields such as action horizon / tokenizer path)</li>
+</ul>
+<p>Serialization notes:</p>
+<ul>
+<li>WebSocket payloads do not serialize PIL objects directly; convert images to <code>np.ndarray</code> on the client side and restore to PIL inside the framework if the model requires it.</li>
+<li>The <code>PolicyClient</code> strips HTTP(S)/ALL proxy environment variables before connecting.</li>
+</ul>
+<h2 id="running-the-policy-server-standalone">Running the policy server standalone</h2><p>The server entry is <code>loongforge_server.py</code>, launched by the orchestrator from the YAML config (<code>--config &lt;yaml&gt;</code>; the <code>server:</code> section holds host/port, <code>python</code>, <code>ckpt_path</code>, <code>use_bf16</code>, ...). For debugging, copy an existing YAML and set <code>model.backend: mock</code> to run a pipeline-only check without model weights.</p>
+</section><section id="docsbenchmarkslibero" class="doc"><h1 class="doc-title">libero</h1><h1 id="libero-evaluation">LIBERO Evaluation</h1><p>LIBERO is a tabletop robot manipulation benchmark with 4 task suites (Spatial, Object, Goal, Long Horizon), totaling 40 tasks, evaluated on a Franka arm. This page is a step-by-step reproduction guide for running LIBERO evaluation through the LoongForge eval module.</p>
+<p>Three models are verified on LIBERO: <strong>pi05</strong>, <strong>xvla</strong>, and <strong>GR00T-N1.6</strong> (pi05/xvla weights are public; GR00T-N1.6 uses a local LIBERO fine-tune).</p>
+<h2 id="step-0-download-weights">Step 0: Download weights</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Weights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td><a href="https://huggingface.co/lerobot/pi05_libero_finetuned_v044">lerobot/pi05_libero_finetuned_v044</a> (<code>model.safetensors</code> + <code>dataset_statistics.json</code>)</td>
+</tr>
+<tr>
+<td>xvla</td>
+<td><a href="https://huggingface.co/2toINF/X-VLA-LIBERO">2toINF/X-VLA-LIBERO</a></td>
+</tr>
+<tr>
+<td>GR00T-N1.6</td>
+<td>local LIBERO fine-tune (weight dir + Eagle3 processor + <code>libero_panda</code> stats)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="step-1-environment-setup">Step 1: Environment setup</h2><h3 id="standard-environment">Standard environment</h3><p>Install the base LIBERO environment following the official <a href="https://github.com/Lifelong-Robot-Learning/LIBERO">LIBERO repository</a> instructions, then install the additional dependencies the eval client needs:</p>
+<pre><code class="language-bash">pip install websockets msgpack pyyaml
+pip install numpy==1.24.4   # downgrade numpy for simulator compatibility
+</code></pre>
+<p>⚠️ Common issues:</p>
+<ul>
+<li>LIBERO historically defaults to Python 3.8; the syntax differences up to 3.10 are substantial. Python 3.10 avoids many issues.</li>
+<li><code>numpy==1.24.4</code> is pinned for compatibility with the simulation environment — do not upgrade.</li>
+<li>The LIBERO runner uses MuJoCo with offscreen GL. Keep <code>MUJOCO_GL=osmesa</code> / <code>PYOPENGL_PLATFORM=osmesa</code> (set by the shipped run scripts).</li>
+</ul>
+<p>The benchmark dataset is downloaded following the official LIBERO data instructions; the eval module does not repackage it.</p>
+<h2 id="step-2-run-evaluation">Step 2: Run evaluation</h2><p>Run from inside the <strong>benchmark</strong> environment. The run scripts and eval YAMLs ship with <code>/path/to/...</code> placeholders — fill them in before running:</p>
+<pre><code class="language-bash">cd /path/to/LoongForge-VLA
+
+# pi05
+examples/embodied/pi05/eval/run_libero_eval.sh
+
+# xvla
+examples/embodied/xvla/eval/run_libero_eval.sh
+
+# GR00T-N1.6
+examples/embodied/groot_n1_6/eval/run_libero_eval.sh
+</code></pre>
+<p>Environment variables:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CONFIG</code></td>
+<td>eval YAML config path</td>
+<td><code>&lt;model&gt;/eval/configs/libero/object_smoke.yaml</code> (xvla: <code>libero_weight_object_smoke.yaml</code>)</td>
+</tr>
+<tr>
+<td><code>REPO_ROOT</code></td>
+<td>LoongForge repo root</td>
+<td><code>/path/to/LoongForge-VLA</code></td>
+</tr>
+<tr>
+<td><code>BENCHMARK_PYTHON</code></td>
+<td>LIBERO env interpreter</td>
+<td><code>/path/to/libero/bin/python</code></td>
+</tr>
+<tr>
+<td><code>CUDA_VISIBLE_DEVICES</code></td>
+<td>GPU id for the policy server</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>MUJOCO_GL</code> / <code>PYOPENGL_PLATFORM</code></td>
+<td>MuJoCo offscreen GL backend</td>
+<td><code>osmesa</code></td>
+</tr>
+<tr>
+<td><code>LD_LIBRARY_PATH</code></td>
+<td>NVIDIA libs (xvla script)</td>
+<td><code>/path/to/nvidia_lib:/usr/lib64</code></td>
+</tr>
+</tbody>
+</table>
+<p>Key config fields (see <code>examples/embodied/&lt;model&gt;/eval/configs/libero/*.yaml</code>):</p>
+<ul>
+<li><code>benchmark.suite</code> — <code>libero_object</code> | <code>libero_spatial</code> | <code>libero_goal</code> | <code>libero_10</code></li>
+<li><code>benchmark.max_tasks</code> / <code>benchmark.episodes_per_task</code> — raise for full-suite / multi-episode eval (e.g. <code>max_tasks: 0</code>, <code>episodes_per_task: 10</code>)</li>
+<li><code>benchmark.continuous_gripper</code> — <code>true</code> for pi05 continuous gripper</li>
+<li><code>benchmark.control_mode</code> — LIBERO OSC: <code>auto</code> | <code>absolute</code> | <code>delta</code>; xvla uses <code>absolute</code></li>
+<li>pi05: <code>model.action_dim: 7</code>, <code>model.action_horizon: 50</code>, plus a matching <code>server.dataset_statistics_path</code></li>
+<li>xvla: <code>model.domain_id: 3</code> (or omit to auto-resolve), <code>server.chunk_execute_steps: 10</code>, recommended <code>benchmark.max_steps: 800</code></li>
+<li>GR00T-N1.6: <code>model.model_type: Gr00tN1d6</code>, <code>benchmark.control_mode: delta</code>, <code>server.embodiment_tag: libero_panda</code>, plus <code>model.base_model_path</code> / <code>model.model_name</code> (Eagle3 processor)</li>
+</ul>
+<h2 id="verification">Verification</h2><p>Task-success status (2026-07-21):</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>LIBERO status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td>✅ task success</td>
+<td>pi05 LIBERO fine-tune</td>
+</tr>
+<tr>
+<td>xvla</td>
+<td>✅ task success</td>
+<td>~94% on libero_object full suite</td>
+</tr>
+<tr>
+<td>GR00T-N1.6</td>
+<td>✅ task success</td>
+<td>libero_object 5/5</td>
+</tr>
+</tbody>
+</table>
+<p>Report rates over multiple episodes; for xvla, <code>examples/embodied/xvla/eval/</code> historical full runs are under <code>reports/xvla/libero/libero_weight_object_full/</code>.</p>
+</section><section id="docsbenchmarkscalvin" class="doc"><h1 class="doc-title">calvin</h1><h1 id="calvin-evaluation">CALVIN Evaluation</h1><p>CALVIN is a long-horizon Franka language-conditioned manipulation benchmark: each sequence chains five subtasks. The LoongForge eval module uses the original-format CALVIN validation dataset for official online long-horizon rollout.</p>
+<p>Current status: <strong>connectivity checks only</strong>. The main blocker is the benchmark dataset — the official online rollout needs the original-format CALVIN validation assets (<code>validation/</code> tree, see Step 1). On top of that, no CALVIN-domain weights are released for pi05 (xvla's CALVIN weights are public: <a href="https://huggingface.co/2toINF/X-VLA-Calvin-ABC_D">2toINF/X-VLA-Calvin-ABC_D</a>). Shipped configs run with <code>server.random_init: true</code>, not scores.</p>
+<h2 id="step-0-download-weights-1">Step 0: Download weights</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Weights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td>none released (connectivity only)</td>
+</tr>
+<tr>
+<td>xvla</td>
+<td><a href="https://huggingface.co/2toINF/X-VLA-Calvin-ABC_D">2toINF/X-VLA-Calvin-ABC_D</a> (open-source, connectivity only)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="step-1-environment-setup-1">Step 1: Environment setup</h2><h3 id="standard-environment-1">Standard environment</h3><p>Install CALVIN following the official <a href="https://github.com/mees/calvin">CALVIN repository</a> instructions, then install the additional dependencies:</p>
+<pre><code class="language-bash">pip install websockets msgpack pyyaml
+</code></pre>
+<p>The evaluation needs the original-format CALVIN validation assets, not just a LeRobot-format dataset:</p>
+<ul>
+<li><code>validation/</code> tree containing <code>validation/.hydra/merged_config.yaml</code>, <code>calvin_models/conf</code>, and <code>eval_sequences.json</code></li>
+<li>LeRobot-format CALVIN datasets are useful for training/statistics but are not sufficient by themselves for the official online rollout</li>
+</ul>
+<p>⚠️ Common issue: CALVIN uses MuJoCo; keep <code>MUJOCO_GL</code> / <code>PYOPENGL_PLATFORM</code> settings from the shipped configs.</p>
+<h2 id="step-2-run-evaluation-1">Step 2: Run evaluation</h2><p>Run from inside the <strong>benchmark</strong> environment. The run scripts and eval YAMLs ship with <code>/path/to/...</code> placeholders — fill them in before running:</p>
+<pre><code class="language-bash">cd /path/to/LoongForge-VLA
+examples/embodied/pi05/eval/run_calvin_eval.sh    # pi05 (connectivity only)
+examples/embodied/xvla/eval/run_calvin_eval.sh    # xvla (connectivity only)
+</code></pre>
+<p>Environment variables: <code>CONFIG</code>, <code>BENCHMARK_PYTHON</code> (CALVIN env interpreter), <code>CUDA_VISIBLE_DEVICES</code>.</p>
+<p>Key config fields (see <code>examples/embodied/&lt;model&gt;/eval/configs/calvin/smoke.yaml</code>):</p>
+<ul>
+<li><code>benchmark.dataset_path</code> — path to a tree containing <code>validation/</code></li>
+<li><code>server.random_init</code> — <code>true</code> in shipped configs (connectivity check). With CALVIN-domain weights set <code>false</code>, fill <code>ckpt_path</code> / <code>dataset_statistics_path</code>; for xvla set <code>model.domain_id: 2</code></li>
+</ul>
+<h2 id="verification-1">Verification</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td>connectivity only</td>
+<td>needs CALVIN-domain weights + <code>dataset_statistics.json</code></td>
+</tr>
+<tr>
+<td>xvla</td>
+<td>connectivity only</td>
+<td>needs X-VLA CALVIN (ABC_D) weights (<a href="https://huggingface.co/2toINF/X-VLA-Calvin-ABC_D">2toINF/X-VLA-Calvin-ABC_D</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>Connectivity run: 1 sequence, first subtask capped at 30 steps.</p>
+</section><section id="docsbenchmarksrobotwin" class="doc"><h1 class="doc-title">robotwin</h1><h1 id="robotwin-evaluation">RoboTwin Evaluation</h1><p>RoboTwin is a dual-arm tabletop manipulation benchmark. The LoongForge eval module reuses RoboTwin's official evaluator, which calls the policy through a plugin (the <code>action_bridge</code> protocol). Two model × bridge combinations reach task success.</p>
+<h2 id="step-0-download-weights-2">Step 0: Download weights</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Weights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td><a href="https://huggingface.co/motus-robotics/pi0.5_robotwin2">motus-robotics/pi0.5_robotwin2</a> (openpi <code>norm_stats</code>, see <a href="#step-2-run-evaluation">§2</a>)</td>
+</tr>
+<tr>
+<td>xvla</td>
+<td><a href="https://huggingface.co/2toINF/X-VLA-RoboTwin2">2toINF/X-VLA-RoboTwin2</a></td>
+</tr>
+</tbody>
+</table>
+<h2 id="step-1-environment-setup-2">Step 1: Environment setup</h2><h3 id="standard-environment-2">Standard environment</h3><p>Install RoboTwin following the official repository instructions (SAPIEN-based), then install the additional dependencies:</p>
+<pre><code class="language-bash">pip install websockets msgpack msgpack-numpy pyyaml
+</code></pre>
+<p>The official evaluator video logging launches <code>ffmpeg</code> directly — link the <code>imageio-ffmpeg</code> executable into the env <code>bin</code> directory.</p>
+<p>⚠️ Common issues:</p>
+<ul>
+<li><strong>Vulkan / SAPIEN.</strong> Verify a real NVIDIA Vulkan ICD with <code>vulkaninfo</code> (expect <code>deviceName = NVIDIA ...</code>); set <code>LD_LIBRARY_PATH</code> / <code>VK_ICD_FILENAMES</code> before SAPIEN is imported.</li>
+<li><code>numpy</code> pin: internal env uses <code>numpy 1.26.4</code> / <code>torch 2.4.1</code> / <code>sapien 3.0.0b1</code>.</li>
+</ul>
+<h2 id="step-2-run-evaluation-2">Step 2: Run evaluation</h2><p>Run from inside the <strong>benchmark</strong> environment. The run scripts and eval YAMLs ship with <code>/path/to/...</code> placeholders — fill them in before running:</p>
+<pre><code class="language-bash">cd /path/to/LoongForge-VLA
+examples/embodied/pi05/eval/run_robotwin_eval.sh    # pi05, action_bridge: pi05_aloha_14d
+examples/embodied/xvla/eval/run_robotwin_eval.sh    # xvla, action_bridge: ee6d_dual
+</code></pre>
+<p>Environment variables: <code>CONFIG</code>, <code>BENCHMARK_PYTHON</code>, <code>CUDA_VISIBLE_DEVICES</code>, plus the SAPIEN Vulkan variables (<code>LD_LIBRARY_PATH</code> / <code>VK_ICD_FILENAMES</code>).</p>
+<p>Key config fields (see <code>examples/embodied/&lt;model&gt;/eval/configs/robotwin/adjust_bottle_smoke.yaml</code>):</p>
+<ul>
+<li><code>benchmark.action_bridge</code> — selects the official-evaluator protocol:</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th><code>action_bridge</code></th>
+<th>Model</th>
+<th>Protocol</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>pi05_aloha_14d</code></td>
+<td>pi05</td>
+<td>openpi Aloha joint protocol; <code>model.action_dim: 14</code>, <code>action_horizon: 32</code></td>
+</tr>
+<tr>
+<td><code>ee6d_dual</code></td>
+<td>xvla</td>
+<td>X-VLA dual-arm end-effector protocol; <code>model.domain_id: 6</code></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>
+<p>pi05 + RoboTwin additionally needs <code>server.dataset_statistics_path</code> pointing at a stats file derived from the weights' openpi <code>norm_stats.json</code>; a ready-made copy ships at <code>examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json</code>. To regenerate from another openpi-style weights:</p>
+<pre><code class="language-python">import json
+from pathlib import Path
+
+raw = json.loads(Path(&quot;&lt;weight_dir&gt;/assets/.../norm_stats.json&quot;).read_text())[&quot;norm_stats&quot;]
+out = {&quot;observation.state&quot;: raw[&quot;state&quot;], &quot;action&quot;: raw[&quot;actions&quot;]}
+Path(&quot;dataset_stats.json&quot;).write_text(json.dumps(out, indent=2))
+</code></pre>
+</li>
+</ul>
+<h2 id="verification-2">Verification</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td>✅ task success</td>
+<td><code>adjust_bottle demo_clean</code>, <code>action_bridge=pi05_aloha_14d</code></td>
+</tr>
+<tr>
+<td>xvla</td>
+<td>✅ task success</td>
+<td><code>adjust_bottle demo_clean</code>, <code>action_bridge=ee6d_dual</code>, <code>domain_id=6</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="outputs">Outputs</h2><p>In addition to the standard outputs (see the <a href="#4-outputs">user guide §4</a>), RoboTwin collects the official evaluator logs, deploy config, result file, and <code>mp4</code> videos under <code>artifacts/robotwin/&lt;task_name&gt;/&lt;task_config&gt;/</code>, and writes one <code>results.jsonl</code> row per completed episode.</p>
+</section><section id="docsbenchmarkssimplerenv" class="doc"><h1 class="doc-title">simplerenv</h1><h1 id="simplerenv-widowx-evaluation">SimplerEnv WidowX Evaluation</h1><p>SimplerEnv is a real-to-sim robot manipulation evaluation benchmark. This page covers the WidowX (Bridge) setups used by the LoongForge eval module: 4 standard Bridge tasks (<code>widowx_spoon_on_towel</code>, <code>widowx_carrot_on_plate</code>, <code>widowx_stack_cube</code>, <code>widowx_put_eggplant_in_basket</code>) plus 2 drawer tasks (<code>widowx_open_drawer</code> / <code>widowx_close_drawer</code>, GR00T fork only).</p>
+<p>Weight coverage: <strong>xvla</strong> reaches task success with absolute EE control; <strong>GR00T-N1.6</strong> (bridge) reaches task success with delta control on the stock env; <strong>pi05</strong> has no Bridge weights (connectivity only).</p>
+<h2 id="step-0-download-weights-3">Step 0: Download weights</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Weights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>xvla</td>
+<td><a href="https://huggingface.co/2toINF/X-VLA-WidowX">2toINF/X-VLA-WidowX</a></td>
+</tr>
+<tr>
+<td>GR00T-N1.6</td>
+<td><a href="https://huggingface.co/nvidia/GR00T-N1.6-bridge">nvidia/GR00T-N1.6-bridge</a> (safetensors + <code>statistics.json</code>)</td>
+</tr>
+<tr>
+<td>pi05</td>
+<td>none released (connectivity only)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="step-1-environment-setup-3">Step 1: Environment setup</h2><h3 id="standard-environment-3">Standard environment</h3><p>Install SimplerEnv following the official <a href="https://github.com/simpler-env/SimplerEnv">SimplerEnv repository</a> instructions (with the <code>ManiSkill2_real2sim</code> submodule), then install the additional dependencies:</p>
+<pre><code class="language-bash">pip install websockets msgpack msgpack-numpy pyyaml
+pip install numpy==1.24.4   # downgrade numpy for simulator compatibility
+</code></pre>
+<p>⚠️ Common issues:</p>
+<ul>
+<li><strong>Vulkan / SAPIEN.</strong> SimplerEnv renders with SAPIEN and needs a real NVIDIA Vulkan ICD. <code>nvidia-smi</code> is not enough — verify with <code>vulkaninfo</code> and expect <code>deviceName = NVIDIA ...</code>. If only <code>llvmpipe</code>/<code>lavapipe</code> appears, camera images and replays are unreliable.</li>
+<li>Set <code>LD_LIBRARY_PATH</code>, <code>VK_ICD_FILENAMES</code>, and <code>XDG_RUNTIME_DIR</code> <strong>before</strong> SAPIEN is imported; the runner re-execs the process so these take effect.</li>
+<li><code>numpy==1.24.4</code> is pinned for compatibility — do not upgrade.</li>
+</ul>
+<h3 id="model-specific-environment-changes">Model-specific environment changes</h3><h4 id="1-xvla--absolute-ee-control">1. xvla — absolute EE control</h4><p>X-VLA emits absolute EE poses, but upstream SimplerEnv WidowX only ships delta control. Use the official fork <a href="https://github.com/255isWhite/SimplerEnv">255isWhite/SimplerEnv</a> (recommended) or apply the two manual patches: register controller <code>arm_pd_ee_target_base_pose</code> in <code>WidowXDefaultConfig</code>, and make <code>PDEEPoseController.compute_target_pose</code> parse the non-delta branch's rotation as Euler xyz. Delta control modes (<code>arm_pd_ee_target_delta_pose_align2_*</code>) are unaffected. See the <a href="#xvla-simplerenv-patch">SimplerEnv patch guide</a>.</p>
+<h4 id="2-gr00t-n16-drawer-tasks--drawer-task-port">2. GR00T-N1.6 (drawer tasks) — drawer task port</h4><p>The 2 drawer tasks (<code>widowx_open_drawer</code> / <code>widowx_close_drawer</code>) use fork-specific env files: ports 3 files from the NVIDIA fork (drawer env class, <code>small_drawer.urdf</code>, <code>bridge_small_drawer.png</code>), registers the two drawer envs, and exposes <code>tcp_pose</code> in the drawer env obs for proprio. Port steps in the <a href="#groot-simplerenv-guide">GR00T-N1.6 SimplerEnv guide</a>.</p>
+<p>The benchmark dataset/assets come from the SimplerEnv repo itself; no separate dataset download is needed beyond the environment install.</p>
+<h2 id="step-2-run-evaluation-3">Step 2: Run evaluation</h2><p>Two conda environments: the <strong>SimplerEnv client</strong> env and the <strong>model server</strong> env. The run scripts and eval YAMLs ship with <code>/path/to/...</code> placeholders — fill them in before running:</p>
+<pre><code class="language-bash">cd /path/to/LoongForge-VLA
+
+# xvla (task success template)
+examples/embodied/xvla/eval/run_simplerenv_eval.sh
+
+# GR00T-N1.6 (public template)
+bash examples/embodied/groot_n1_6/eval/run_simplerenv_eval.sh
+</code></pre>
+<p>Environment variables:</p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CONFIG</code></td>
+<td>eval YAML config path</td>
+<td><code>&lt;model&gt;/eval/configs/simplerenv/widowx_stack_cube_smoke.yaml</code></td>
+</tr>
+<tr>
+<td><code>BENCHMARK_PYTHON</code></td>
+<td>SimplerEnv env interpreter</td>
+<td><code>/path/to/simplerenv/bin/python</code></td>
+</tr>
+<tr>
+<td><code>CUDA_VISIBLE_DEVICES</code></td>
+<td>GPU id for the policy server</td>
+<td><code>0</code></td>
+</tr>
+<tr>
+<td><code>LD_LIBRARY_PATH</code></td>
+<td>NVIDIA libs (must include <code>/usr/lib64</code>)</td>
+<td><code>/path/to/nvidia_lib:/usr/lib64</code></td>
+</tr>
+<tr>
+<td><code>VK_ICD_FILENAMES</code></td>
+<td>NVIDIA Vulkan ICD</td>
+<td><code>/path/to/nvidia_icd.json</code></td>
+</tr>
+<tr>
+<td><code>XDG_RUNTIME_DIR</code></td>
+<td>runtime dir for Vulkan</td>
+<td><code>/tmp/runtime-&lt;uid&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>Key config fields (xvla, see <code>examples/embodied/xvla/eval/configs/simplerenv/widowx_stack_cube_smoke.yaml</code>):</p>
+<ul>
+<li><code>benchmark.control_mode</code> — <code>arm_pd_ee_target_base_pose_gripper_pd_joint_pos</code> (needs the absolute EE env, see <a href="#model-specific-environment-changes">model-specific environment changes</a>)</li>
+<li><code>benchmark.max_steps</code> — <code>1200</code> (official horizon)</li>
+<li><code>benchmark.task_name</code> / <code>robot_setup</code> / <code>scene_name</code> / <code>rgb_overlay_path</code> — switch among the 4 standard Bridge tasks</li>
+<li><code>model.domain_id</code> — <code>0</code> (WidowX)</li>
+<li>GR00T-N1.6: <code>benchmark.prepackaged_config: true</code> (official visual-matching config), <code>server.chunk_execute_steps: 4</code>, <code>model.use_flash_attention: true</code>. GR00T runs on the stock upstream delta controller — no env change for the 4 standard tasks (see the <a href="#groot-simplerenv-guide">GR00T-N1.6 SimplerEnv guide</a>).</li>
+</ul>
+<h2 id="verification-3">Verification</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>xvla</td>
+<td>✅ task success</td>
+<td>WidowX + absolute EE control (needs <a href="#model-specific-environment-changes">model-specific environment changes</a>)</td>
+</tr>
+<tr>
+<td>GR00T-N1.6</td>
+<td>✅ task success</td>
+<td>eggplant 20/20 (100%) with <code>prepackaged_config</code>; official N1.6 = 89%</td>
+</tr>
+<tr>
+<td>pi05</td>
+<td>connectivity only</td>
+<td><code>server.random_init: true</code></td>
+</tr>
+</tbody>
+</table>
+<p>Report rates over ≥20 episodes — GR00T flow-matching sampling is stochastic.</p>
+</section><section id="docsbenchmarksmaniskill" class="doc"><h1 class="doc-title">maniskill</h1><h1 id="maniskill-evaluation">ManiSkill Evaluation</h1><p>ManiSkill is a SAPIEN-based robot manipulation benchmark. The LoongForge eval module's default task is <code>PickCube-v1</code> with <code>pd_ee_delta_pose</code> control (7D action).</p>
+<p>Current status: <strong>no released ManiSkill-domain weights for pi05/xvla</strong>. Shipped configs run as connectivity checks (<code>server.random_init: true</code>), not scores.</p>
+<p>Note: xvla cannot run with real ManiSkill weights yet — it emits absolute EE poses while ManiSkill only ships the delta controller (<code>pd_ee_delta_pose</code>); the required absolute-EE control mode is not implemented, so the runner raises <code>NotImplementedError</code> for a non-<code>random_init</code> xvla run (see the <a href="#42-control-mode">model integration guide §4.2</a>).</p>
+<h2 id="step-0-download-weights-4">Step 0: Download weights</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Weights</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td>none released (connectivity only)</td>
+</tr>
+<tr>
+<td>xvla</td>
+<td>none released (connectivity only)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="step-1-environment-setup-4">Step 1: Environment setup</h2><h3 id="standard-environment-4">Standard environment</h3><p>Install ManiSkill following the official repository instructions (SAPIEN-based), then install the additional dependencies:</p>
+<pre><code class="language-bash">pip install websockets msgpack pyyaml
+</code></pre>
+<p>⚠️ Common issues:</p>
+<ul>
+<li><strong>Vulkan / SAPIEN.</strong> Verify a real NVIDIA Vulkan ICD with <code>vulkaninfo</code> (expect <code>deviceName = NVIDIA ...</code>); set <code>LD_LIBRARY_PATH</code> / <code>VK_ICD_FILENAMES</code> before ManiSkill/SAPIEN is imported.</li>
+</ul>
+<h2 id="step-2-run-evaluation-4">Step 2: Run evaluation</h2><p>Run from inside the <strong>benchmark</strong> environment. The run scripts and eval YAMLs ship with <code>/path/to/...</code> placeholders — fill them in before running:</p>
+<pre><code class="language-bash">cd /path/to/LoongForge-VLA
+examples/embodied/pi05/eval/run_maniskill_eval.sh    # pi05 (connectivity only)
+examples/embodied/xvla/eval/run_maniskill_eval.sh    # xvla (connectivity only)
+</code></pre>
+<p>Environment variables: <code>CONFIG</code>, <code>BENCHMARK_PYTHON</code> (ManiSkill env interpreter), <code>CUDA_VISIBLE_DEVICES</code>, plus the SAPIEN Vulkan variables.</p>
+<p>Key config fields (see <code>examples/embodied/&lt;model&gt;/eval/configs/maniskill/pick_cube_smoke.yaml</code>):</p>
+<ul>
+<li><code>benchmark.task_name</code> — <code>PickCube-v1</code> (default)</li>
+<li><code>benchmark.control_mode</code> — <code>pd_ee_delta_pose</code> (7D action)</li>
+<li><code>server.random_init</code> — <code>true</code> in shipped configs. With ManiSkill-domain weights set <code>false</code>, fill <code>ckpt_path</code> / <code>dataset_statistics_path</code> (state dim is typically 8: 7 arm joints + gripper width)</li>
+</ul>
+<h2 id="verification-4">Verification</h2><table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Status</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>pi05</td>
+<td>connectivity only</td>
+<td>needs ManiSkill-domain weights + <code>dataset_statistics.json</code></td>
+</tr>
+<tr>
+<td>xvla</td>
+<td>connectivity only</td>
+<td>needs ManiSkill-domain weights + absolute-EE control mode (not implemented, see above)</td>
+</tr>
+</tbody>
+</table>
+</section><section id="xvla-simplerenv-patch" class="doc"><h1 class="doc-title">xvla SimplerEnv patch guide</h1><h1 id="x-vla-simplerenv-guide">X-VLA SimplerEnv Guide</h1><blockquote>
+<p><strong>Before running xvla + SimplerEnv evaluation</strong>, execute the check in
+<a href="#patch-requirement-check">Patch requirement check</a>
+and confirm the absolute EE controller is present. Skipping this usually surfaces as a 0% success run after hundreds of steps.</p>
+</blockquote>
+<h2 id="impact-boundary">Impact boundary</h2><ul>
+<li>The patches only (a) register one new controller entry and (b) change the <strong>dead</strong> non-delta branch of <code>PDEEPoseController.compute_target_pose</code> (<code>use_delta=False</code>, unreachable on stock upstream).</li>
+<li>Delta control modes (<code>arm_pd_ee_target_delta_pose_align2_*</code>, used by pi05 and GR00T) are <strong>unaffected</strong>; models on the delta path can share the same environment.</li>
+<li>Written against <code>ManiSkill2_real2sim@54ae2e0e</code> (the official 255isWhite fork pin). Option 2 strictly follows that fork; apply on the same base version or verify the surrounding code first.</li>
+</ul>
+<h2 id="background">Background</h2><p>The official X-VLA SIMPLER evaluation (<a href="https://github.com/2toinf/X-VLA/tree/main/evaluation/simpler">evaluation/simpler</a>) does <strong>not</strong> use upstream
+<a href="https://github.com/simpler-env/SimplerEnv">simpler-env/SimplerEnv</a>. It uses the official fork
+<a href="https://github.com/255isWhite/SimplerEnv">255isWhite/SimplerEnv</a> (including the <code>ManiSkill2_real2sim</code>
+submodule pinned at commit <code>54ae2e0e</code>). From the official README:</p>
+<blockquote>
+<p>The evaluation follows <a href="https://github.com/255isWhite/SimplerEnv">SimplerEnv</a>, with <strong>minor
+environment modifications</strong> to support <strong>absolute end-effector (EE) control</strong>.</p>
+</blockquote>
+<p>Reason: X-VLA emits <strong>absolute EE poses</strong> (target position + Euler orientation in the base frame), while upstream
+SimplerEnv WidowX only provides <strong>delta</strong> control modes. Mismatch leads to two failure modes:</p>
+<table>
+<thead>
+<tr>
+<th>Environment state</th>
+<th>Symptom</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Upstream + config <code>arm_pd_ee_target_base_pose_*</code></td>
+<td><code>KeyError</code> at env create — control mode missing; eval never starts</td>
+</tr>
+<tr>
+<td>Upstream + fallback delta mode (e.g. <code>arm_pd_ee_target_delta_pose_align2_*</code>)</td>
+<td>Runs, but absolute actions are applied as deltas; arm flies out on the first step; success rate stays 0</td>
+</tr>
+</tbody>
+</table>
+<p>Measured on 2026-07-21: before the patch, stack_cube failed for all steps through 120/300; after the patch and switching to absolute control, episode 0 succeeded in 55 steps.</p>
+<h2 id="patch-requirement-check">Patch requirement check</h2><p>Run (replace python and paths):</p>
+<pre><code class="language-bash">python -c &quot;
+import sys
+sys.path.insert(0, '/path/to/SimplerEnv')
+sys.path.insert(0, '/path/to/SimplerEnv/ManiSkill2_real2sim')
+from mani_skill2_real2sim.agents.configs.widowx.defaults import WidowXDefaultConfig
+print('arm_pd_ee_target_base_pose_gripper_pd_joint_pos' in WidowXDefaultConfig().controllers)
+&quot;
+</code></pre>
+<ul>
+<li>Prints <code>True</code>: nothing to do (official fork or already patched).</li>
+<li>Prints <code>False</code>: apply one of the two options below.</li>
+</ul>
+<h2 id="option-1-use-the-official-fork">Option 1: use the official fork</h2><p>This is the recommended path.</p>
+<pre><code class="language-bash">git clone https://github.com/255isWhite/SimplerEnv.git --recurse-submodules
+cd SimplerEnv/ManiSkill2_real2sim &amp;&amp; pip install -e .
+cd .. &amp;&amp; pip install -e .
+</code></pre>
+<p>Point <code>env.simplerenv_root</code> in the eval YAML at that directory.</p>
+<h2 id="option-2-apply-manual-patches">Option 2: apply manual patches</h2><p>These changes strictly follow the official fork (<a href="https://github.com/simpler-env/ManiSkill2_real2sim/tree/54ae2e0e9422807d060aa15ff7c04970d38d3cf8">simpler-env/ManiSkill2_real2sim@54ae2e0e</a>).
+Delta control modes are unchanged (pi0.5 and other models on the delta path are unaffected).</p>
+<h3 id="patch-1-register-absolute-ee-pose-controller">Patch 1: register absolute EE pose controller</h3><p>File: <code>mani_skill2_real2sim/agents/configs/widowx/defaults.py</code></p>
+<p>Add a controller config in <code>WidowXDefaultConfig.controllers</code> and insert it into <code>_C[&quot;arm&quot;]</code>:</p>
+<pre><code class="language-python"># 255isWhite/SimplerEnv fork (X-VLA): absolute EE pose control in base frame
+arm_pd_ee_target_base_pose = PDEEPoseControllerConfig(
+    *arm_common_args, frame=&quot;base&quot;, use_target=True, use_delta=False, **arm_common_kwargs
+)
+
+_C[&quot;arm&quot;] = dict(
+    ...,  # keep existing entries
+    arm_pd_ee_target_base_pose=arm_pd_ee_target_base_pose,
+)
+</code></pre>
+<p>The combined control mode used by the eval YAML is <code>arm_pd_ee_target_base_pose_gripper_pd_joint_pos</code>.</p>
+<h3 id="patch-2-parse-rotation-as-euler-xyz-on-the-non-delta-branch">Patch 2: parse rotation as Euler xyz on the non-delta branch</h3><p>File: <code>mani_skill2_real2sim/agents/controllers/pd_ee_pose.py</code></p>
+<p>In <code>PDEEPoseController.compute_target_pose</code>, on the <code>use_delta=False</code> branch, parse rotation as Euler xyz instead of rotvec (axis-angle):</p>
+<pre><code class="language-python">else:
+    assert self.config.frame == &quot;base&quot;, self.config.frame
+    target_pos, target_rot = action[0:3], action[3:6]
+    # 255isWhite/SimplerEnv fork (X-VLA): absolute action rotation is Euler xyz
+    target_quat = Rotation.from_euler(&quot;xyz&quot;, target_rot).as_quat()[[3, 0, 1, 2]]
+    target_pose = sapien.Pose(target_pos, target_quat)
+</code></pre>
+<p>Why this is required: the X-VLA client protocol outputs Euler xyz (rot6d → euler, then add bias <code>[0, π/2, 0]</code>; see post-processor <code>ee6d_to_simpler_abs_euler</code>). Upstream dead code used <code>from_rotvec</code> on the same three numbers, which yields a totally different orientation — position may look roughly right while the gripper is twisted, IK fails often, and grasps fail.</p>
+<blockquote>
+<p>Note: on stock upstream, no control mode reaches this non-delta branch (dead code), so the edit does not change any existing upstream behavior.</p>
+</blockquote>
+<h2 id="eval-config">Eval config</h2><p>See <code>configs/simplerenv/widowx_stack_cube_smoke.yaml</code>:</p>
+<pre><code class="language-yaml">benchmark:
+  control_mode: arm_pd_ee_target_base_pose_gripper_pd_joint_pos  # needs patch 1
+  max_steps: 1200          # official horizon
+  robot_init_x: 0.147
+  robot_init_y: 0.028
+model:
+  model_type: xvla
+  state_encoding: ee6d_widowx   # WidowX proprio (closed-loop backfill)
+  action_encoding: ee6d         # decoder auto-composed → ee6d_to_simpler_abs_euler
+  domain_id: 0                  # WidowX (Bridge)
+</code></pre>
+<h2 id="rollback">Rollback</h2><p>Patches are not committed to git; inspect or restore with:</p>
+<pre><code class="language-bash">git -C /path/to/SimplerEnv/ManiSkill2_real2sim diff      # inspect
+git -C /path/to/SimplerEnv/ManiSkill2_real2sim checkout -- .  # restore
+</code></pre>
+<h2 id="references">References</h2><ul>
+<li>Official eval client: <a href="https://github.com/2toinf/X-VLA/blob/main/evaluation/simpler/WidowX/client_blocks.py">evaluation/simpler/WidowX/client_blocks.py</a></li>
+<li>Official fork controller: <a href="https://github.com/simpler-env/ManiSkill2_real2sim/blob/54ae2e0e9422807d060aa15ff7c04970d38d3cf8/mani_skill2_real2sim/agents/configs/widowx/defaults.py">ManiSkill2_real2sim@54ae2e0e defaults.py</a></li>
+<li>Official numbers (WidowX Visual Matching): Spoon 100 / Carrot 91.7 / Blocks 95.8 / Eggplant 95.8, Avg 95.8</li>
+</ul>
+</section><section id="groot-simplerenv-guide" class="doc"><h1 class="doc-title">GR00T-N1.6 SimplerEnv guide</h1><h1 id="gr00t-n16-simplerenv-guide">GR00T-N1.6 SimplerEnv Guide</h1><p>How to reproduce GR00T-N1.6 on SimplerEnv WidowX (Bridge) in the LoongForge eval
+harness, including the fork reference and the two model-side fixes that actually
+decide success. Companion to X-VLA's <a href="#xvla-simplerenv-patch">xvla.md</a>.</p>
+<h2 id="background-1">Background</h2><p>The official GR00T-N1.6 SimplerEnv eval uses NVIDIA's pinned fork
+<a href="https://github.com/NVIDIA/Isaac-GR00T/blob/main/examples/SimplerEnv/README.md"><code>squarefk/SimplerEnv</code></a>,
+whose <code>ManiSkill2_real2sim</code> submodule points at
+<a href="https://github.com/youliangtan/ManiSkill2_real2sim/tree/c2a9e87c186300b694da6f2497dd68d2c347a4b7">youliangtan/ManiSkill2_real2sim@c2a9e87</a>.</p>
+<p>Unlike X-VLA (which needs an <em>absolute</em> EE controller patch), <strong>GR00T bridge
+emits delta EE actions</strong>, so it runs on the stock upstream delta controller
+<code>arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos</code> — <strong>no controller
+patch required</strong>. The only fork-specific pieces are the WidowX <strong>drawer</strong> tasks
+(<code>widowx_open_drawer</code> / <code>widowx_close_drawer</code>), which live in that fork and are
+ported below.</p>
+<p>The 4 standard WidowX tasks (<code>widowx_spoon_on_towel</code>, <code>widowx_carrot_on_plate</code>,
+<code>widowx_stack_cube</code>, <code>widowx_put_eggplant_in_basket</code>) already exist in upstream
+<a href="https://github.com/simpler-env/SimplerEnv">simpler-env/SimplerEnv</a>, so they need no env changes.</p>
+<h2 id="patch-requirement-check-1">Patch requirement check</h2><p>The 4 standard WidowX tasks need no env changes — GR00T-N1.6 emits delta EE actions and runs on the stock upstream delta controller. Only the drawer tasks (<code>widowx_open_drawer</code> / <code>widowx_close_drawer</code>) need the env port in <a href="#env-side-drawer-task-port">Env-side drawer task port</a>.</p>
+<h2 id="model-side-adaptation">Model-side adaptation</h2><p>GR00T-N1.6 reuses the shared <code>predict_action</code> path (no bespoke policy). Eval
+files: <code>loongforge/embodied/eval/factories/groot_n1_6_factory.py</code>,
+<code>.../payload_builders/groot_n1_6.py</code>, and the <code>oxe_widowx</code> embodiment added to
+<code>loongforge/embodied/data/datasets/groot_n1_6/transforms/utils.py</code>.</p>
+<p>Two fixes were decisive (both must match the checkpoint's own config files — do
+NOT hand-derive from <code>statistics.json</code> ranges):</p>
+<ol>
+<li>
+<p><strong>Action normalization = mean-std for pos+rotation</strong> (THE bug). The bridge
+checkpoint's <code>processor_config.json</code> declares for <code>oxe_widowx</code> action:
+<code>mean_std_embedding_keys = [x, y, z, roll, pitch, yaw]</code> (gripper stays
+min-max). If you min-max the euler action over its ±2π range instead, the
+model's output blows up to ~radian-scale rotations and the arm never
+converges — and LIBERO's small action ranges hide the bug. Set
+<code>mean_std_embedding_keys</code> on the <code>oxe_widowx</code> action <code>ModalityConfig</code>.</p>
+</li>
+<li>
+<p><strong>Proprio built the official way, action rotation passed straight through.</strong>
+The official <code>WidowXBridgeEnv</code> (Isaac-GR00T
+<code>gr00t/eval/sim/SimplerEnv/simpler_env.py</code>) builds state as
+<code>[x, y, z, roll, pitch, yaw, pad=0, gripper]</code> where
+<code>rpy = mat2euler(quat2mat(eef_quat) @ default_rot.T)</code> with
+<code>default_rot = [[0,0,1],[0,1,0],[-1,0,0]]</code>; the ManiSkill2 obs here lacks
+<code>agent.eef_pos</code>, so we reconstruct the ee pose as <code>base_pose⁻¹ · tcp_pose</code>
+(verified to reproduce the small in-range euler). Action rotation is the
+model's rpy delta passed <strong>directly</strong> to the delta controller (no
+euler→axis-angle), i.e. eval <code>rotation_mode: axis_angle</code>.</p>
+</li>
+</ol>
+<p>Other required runtime bits (see <code>run_simplerenv_eval.sh</code>):</p>
+<ul>
+<li><code>CUDA_GRAPH_IMPL=local</code> so the Eagle backbone loads via the repo-local builder
+(offline, from the processor dir's <code>config.json</code>) instead of HF remote code.</li>
+<li><code>flash_attn</code> installed in the loongforge env (or set
+<code>model.use_flash_attention: false</code> for sdpa).</li>
+<li><code>server.chunk_execute_steps: 4</code> → open-loop n_action_steps=4 (official WidowX
+value; stabilizes the gripper vs replanning every step).</li>
+</ul>
+<h2 id="env-side-drawer-task-port">Env-side drawer task port</h2><p>Our base env already supports the <code>dummy_drawer</code> scene and the <code>widowx</code> robot,
+and the drawer URDF is primitive geometry (no meshes), so the port is 3 files +
+2 registrations (no <code>base_env</code> changes):</p>
+<pre><code class="language-bash">SHA=c2a9e87c186300b694da6f2497dd68d2c347a4b7
+R=https://raw.githubusercontent.com/youliangtan/ManiSkill2_real2sim/$SHA
+MS=/path/to/SimplerEnv/ManiSkill2_real2sim
+
+# 1) env class (registers OpenSmallDrawerCustomInScene-v0 / CloseSmallDrawerCustomInScene-v0)
+curl -sL &quot;$R/mani_skill2_real2sim/envs/custom_scenes/open_small_drawer_in_scene.py&quot; \
+  -o &quot;$MS/mani_skill2_real2sim/envs/custom_scenes/open_small_drawer_in_scene.py&quot;
+# 2) drawer articulation (box/cylinder primitives, no external meshes)
+curl -sL &quot;$R/data/custom/small_drawer.urdf&quot; -o &quot;$MS/data/custom/small_drawer.urdf&quot;
+# 3) background overlay
+curl -sL &quot;$R/data/real_inpainting/bridge_small_drawer.png&quot; \
+  -o &quot;$MS/data/real_inpainting/bridge_small_drawer.png&quot;
+</code></pre>
+<p>Then register + map:</p>
+<ul>
+<li>Add <code>from . import open_small_drawer_in_scene</code> to
+<code>$MS/mani_skill2_real2sim/envs/custom_scenes/__init__.py</code>.</li>
+<li>Add to <code>loongforge/embodied/eval/adapters/simplerenv.py</code> <code>TASK_TO_ENV_NAME</code>:<pre><code class="language-python">&quot;widowx_open_drawer&quot;:  &quot;OpenSmallDrawerCustomInScene-v0&quot;,
+&quot;widowx_close_drawer&quot;: &quot;CloseSmallDrawerCustomInScene-v0&quot;,
+</code></pre>
+</li>
+<li><strong>Expose <code>tcp_pose</code> in the drawer env's obs (REQUIRED for proprio).</strong> The
+ported drawer env does not override <code>_get_obs_extra</code>, so <code>obs.extra</code> is empty
+and the adapter's proprio silently falls back to a zero state (fine for the
+state-dropout model on a forgiving task, but it tanks the precision drawer:
+the arm barely moves, gripper never grips). Add to <code>OpenSmallDrawerInSceneEnv</code>
+(mirroring <code>grasp_single</code>/<code>move_near</code>):<pre><code class="language-python">from mani_skill2_real2sim.utils.sapien_utils import vectorize_pose
+def _get_obs_extra(self):
+    return OrderedDict(tcp_pose=vectorize_pose(self.tcp.pose))
+</code></pre>
+Verify after: <code>env.reset()</code> → <code>obs[&quot;extra&quot;][&quot;tcp_pose&quot;]</code> exists and the
+reconstructed proprio is in the <code>oxe_widowx</code> training ranges (small euler,
+in-range xyz), not zeros.</li>
+</ul>
+<p>Drawer env facts: <code>robot=widowx</code>, <code>scene_name=dummy_drawer</code>,
+<code>control_mode=arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos</code>,
+overlay <code>bridge_small_drawer.png</code>, env registers <code>max_episode_steps=120</code> but the
+official client passes <code>--max-episode-steps 300</code> (use 300, not the registration
+default), success = drawer joint qpos ≥0.10 (open) / ≤0.04 (close).</p>
+<h2 id="assets">Assets</h2><ul>
+<li>Weights: <a href="https://huggingface.co/nvidia/GR00T-N1.6-bridge">nvidia/GR00T-N1.6-bridge</a> (2-shard safetensors + <code>statistics.json</code>
+carrying the <code>oxe_widowx</code> state/action stats).</li>
+<li>Eagle processor dir (<code>config.json</code> = Eagle3VL + tokenizer), e.g.
+<a href="https://huggingface.co/nvidia/Eagle-Block2A-2B-v2">nvidia/Eagle-Block2A-2B-v2</a> / <a href="https://huggingface.co/aravindhs-NV/eagle3-processor-groot-n1d6">aravindhs-NV/eagle3-processor-groot-n1d6</a>.</li>
+</ul>
+<h2 id="eval-config-1">Eval config</h2><p>Set <code>benchmark.prepackaged_config: true</code>. This makes the runner build the env
+via <code>build_maniskill2_env(env_name, prepackaged_config=True, ...)</code> and reset
+with only a per-episode seed — the env then applies its <strong>official
+visual-matching configuration</strong> (scene, overlay set, robot, control_mode,
+lighting) and randomizes overlay + robot/object init per episode via its
+<code>episode_rng</code>. This is exactly what <code>simpler_env.make(task)</code> does officially
+(<code>simpler_env/__init__.py</code> sets <code>prepackaged_config=True</code>).</p>
+<p>Do NOT hand-set a single <code>scene_name</code> / <code>rgb_overlay_path</code> / <code>robot_init_x/y</code>:
+those are off-distribution and tank the success rate. Measured on eggplant:</p>
+<ul>
+<li>hand-set fixed scene/overlay/init → <strong>36%</strong> (20 eps)</li>
+<li>official <code>prepackaged_config: true</code> → <strong>100%</strong> (20 eps; official N1.6 = 89%)</li>
+</ul>
+<p>Because GR00T flow-matching sampling is stochastic (unseeded <code>torch.randn</code>),
+always report the rate over ≥20 episodes, not a single run.</p>
+<h2 id="run">Run</h2><pre><code class="language-bash"># eggplant (standard bridge task)
+bash examples/embodied/groot_n1_6/eval/run_simplerenv_eval.sh
+
+# drawer tasks: set benchmark.task_name: widowx_open_drawer | widowx_close_drawer,
+# benchmark.scene_name: dummy_drawer,
+# rgb_overlay_path: .../real_inpainting/bridge_small_drawer.png,
+# max_steps: 300
+</code></pre>
+<p>Matching eval YAML fields:</p>
+<pre><code class="language-yaml">benchmark:
+  control_mode: arm_pd_ee_target_delta_pose_align2_gripper_pd_joint_pos  # stock upstream, no patch
+  rotation_mode: axis_angle          # pass model rpy delta straight to controller
+model:
+  model_type: Gr00tN1d6
+  state_encoding: simpler_widowx     # base^-1*tcp + default_rot -&gt; euler; gripper from qpos
+  action_encoding: simpler_abs_euler # == adapter action_space -&gt; IdentityDecoder
+  use_flash_attention: true
+server:
+  embodiment_tag: oxe_widowx
+  dataset_statistics_path: /path/to/GR00T-N1.6-bridge/statistics.json
+  chunk_execute_steps: 4             # official n_action_steps=4
+</code></pre>
+<h2 id="results">Results</h2><p>Official <code>prepackaged_config: true</code> + all model-side fixes, 20 episodes each:</p>
+<ul>
+<li><code>widowx_put_eggplant_in_basket</code>: <strong>20/20 (100%)</strong> (official N1.6 = 89%)</li>
+<li><code>widowx_open_drawer</code> / <code>widowx_close_drawer</code>: run with the ported drawer env
+(official N1.6 = 95% / 73%).</li>
+</ul>
+<p>Pitfalls that cost time here (don't repeat):</p>
+<ol>
+<li>Hand-deriving the <code>oxe_widowx</code> modality/normalization from <code>statistics.json</code>
+ranges (missed <code>mean_std_embedding_keys</code>) → catastrophic ±2π action blowup.
+Read the checkpoint's <code>processor_config.json</code>.</li>
+<li>LIBERO (small action ranges) passed while SimplerEnv (±2π) failed — a
+passing small-range benchmark does NOT prove the normalization is correct.</li>
+<li>Hand-set scene/overlay/init instead of <code>prepackaged_config: true</code> → 36% vs
+100%.</li>
+<li>Our ManiSkill2 obs has no <code>agent.eef_pos</code>; reconstruct proprio from
+<code>base_pose⁻¹ · tcp_pose</code> (+ <code>default_rot</code>), not the raw tcp euler.</li>
+<li>A factory <code>predict_action</code> wrapper that declares <code>**kwargs</code> must swallow and
+NOT forward them (else <code>cfg_scale</code> reaches the model and crashes).</li>
+<li>Replan-every-step is unstable for grasping; use <code>chunk_execute_steps: 4</code>.</li>
+<li>The ported drawer env didn't expose <code>tcp_pose</code> in <code>obs.extra</code> → proprio was
+silently zero → the precision drawer failed (arm barely moves, no grip),
+while zero-proprio-tolerant eggplant still hit 100%. Add <code>_get_obs_extra</code>
+returning <code>tcp_pose</code> to the drawer env; verify <code>obs.extra.tcp_pose</code> exists.</li>
+<li>Don't use the env's registered <code>max_episode_steps</code> (drawer=120) — match the
+official client's <code>--max-episode-steps 300</code>.</li>
+</ol>
+<h2 id="references-1">References</h2><ul>
+<li>NVIDIA GR00T SimplerEnv README + benchmark table:
+<a href="https://github.com/NVIDIA/Isaac-GR00T/blob/main/examples/SimplerEnv/README.md">https://github.com/NVIDIA/Isaac-GR00T/blob/main/examples/SimplerEnv/README.md</a></li>
+<li>Official WidowX obs/action wrapper: <code>gr00t/eval/sim/SimplerEnv/simpler_env.py</code></li>
+<li>Pinned fork: <a href="https://github.com/squarefk/SimplerEnv">squarefk/SimplerEnv</a> → <a href="https://github.com/youliangtan/ManiSkill2_real2sim/tree/c2a9e87c186300b694da6f2497dd68d2c347a4b7">youliangtan/ManiSkill2_real2sim@c2a9e87</a></li>
+<li>Bridge action normalization: the checkpoint's <code>processor_config.json</code>
+(<code>oxe_widowx</code> → <code>mean_std_embedding_keys</code>).</li>
+</ul>
+</section></main></body></html>
