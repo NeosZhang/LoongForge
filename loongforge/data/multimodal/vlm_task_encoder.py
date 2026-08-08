@@ -640,20 +640,35 @@ class VLMTaskEncoder(BaseTaskEncoder):
                 f"!= context count ({n_orig_sample}) for key={sample.__key__}"
             )
         for idx in range(n_orig_sample):
-            context = sample.contexts[idx]  # str
+            contexts = sample.contexts[idx]
             media_group = None if has_text_only else media_list[idx]  # List[Tensor] or List[AVData]
-            answer_group = sample.answers[idx] if sample.answers else []  # List[str]
+            answers = sample.answers[idx]
 
-            if isinstance(answer_group, list):
-                answer = "\n\n".join(answer_group) if answer_group else ""
-            else:
-                answer = answer_group or ""
+            if not isinstance(contexts, (list, tuple)):
+                raise TypeError(
+                    f"encode_packed_multi_mix_qa expects contexts[{idx}] to be List[str], "
+                    f"got {type(contexts).__name__} for key={sample.__key__}"
+                )
+            if not isinstance(answers, (list, tuple)):
+                raise TypeError(
+                    f"encode_packed_multi_mix_qa expects answers[{idx}] to be List[str], "
+                    f"got {type(answers).__name__} for key={sample.__key__}"
+                )
+
+            contexts = list(contexts)
+            answers = list(answers)
+            if len(contexts) != len(answers):
+                raise ValueError(
+                    f"encode_packed_multi_mix_qa: context/answer turn count mismatch "
+                    f"for key={sample.__key__}.q{idx:03d}: "
+                    f"{len(contexts)} vs {len(answers)}"
+                )
 
             system = None
-            messages = [
-                {"role": "user", "content": context},
-                {"role": "assistant", "content": answer},
-            ]
+            messages = []
+            for context, answer in zip(contexts, answers):
+                messages.append({"role": "user", "content": context})
+                messages.append({"role": "assistant", "content": answer})
             if has_images:
                 init_kwargs = {
                     "__key__": f"{sample.__key__}.q{idx:03d}",
