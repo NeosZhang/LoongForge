@@ -16,6 +16,7 @@ from ..base.task_encoder import (
     BaseTaskSamplePacked,
     BaseTaskBatchPacked,
     BaseTaskEncoder,
+    _format_packed_sample_overflow_error,
 )
 from .internvl_preprocess import InternvlPreprocess, IGNORE_TOKEN_ID, IGNORE_INDEX
 
@@ -142,7 +143,9 @@ class InternVLTaskEncoder(BaseTaskEncoder):
 
             if current_length + sample_len > packing_seq_len:
                 raise ValueError(
-                    f"Packed sample exceeds the maximum sequence length of {packing_seq_len}: {samples}"
+                    _format_packed_sample_overflow_error(
+                        samples, packing_seq_len, current_length, sample
+                    )
                 )
 
             # Add the sample's tokens and labels
