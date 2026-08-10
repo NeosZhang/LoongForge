@@ -3,117 +3,98 @@
 
 """Gradient clipping and NaN cleaning."""
 
-from collections import defaultdict
-
 import torch
+import torch.distributed.fsdp as FSDP1
 import torch.nn as nn
-from torch.distributed.fsdp import FSDPModule
-import torch.distributed as dist
 from torch.distributed.tensor import DTensor
 
 
-def _local_gradient(gradient: torch.Tensor) -> torch.Tensor:
-    """Return the local tensor backing an FSDP2 DTensor gradient."""
-    if isinstance(gradient, DTensor):
-        return gradient._local_tensor
-    return gradient
-
-
-def _local_gradient_groups(model: nn.Module) -> list[list[torch.Tensor]]:
-    """Group mutable local gradients by device and dtype."""
-    # The global L2 norm is the sum of each gradient's squared norm, and one
-    # clip coefficient scales every gradient. Compatible tensors can therefore
-    # share foreach kernels without changing the result; grouping by device and
-    # dtype satisfies foreach constraints while reducing per-tensor launches.
-    groups = defaultdict(list)
-    for parameter in model.parameters():
-        if parameter.grad is not None:
-            gradient = _local_gradient(parameter.grad)
-            groups[(gradient.device, gradient.dtype)].append(gradient)
-    return list(groups.values())
-
-
-def _local_norm_sq(
-    gradient_groups: list[list[torch.Tensor]],
-    device: torch.device,
-) -> torch.Tensor:
-    """Compute the local squared L2 norm in float32."""
-    total_norm_sq = torch.zeros((), device=device)
-    for gradients in gradient_groups:
-        norms = torch._foreach_norm(gradients, 2.0, dtype=torch.float32)
-        total_norm_sq += torch.stack(norms).pow(2).sum()
-    return total_norm_sq
-
-
 def get_grad_norm(model: nn.Module) -> float:
-    """Compute global gradient norm, accounting for FSDP sharding.
+    """Return the total gradient L2 norm.
 
-    For FSDP models, gradients are sharded across ranks. Each rank computes
-    its local norm squared, then all-reduce sums them to get the global norm.
-    For non-FSDP models, computes the norm directly.
+    FSDP1 delegates to ``FSDP.clip_grad_norm_`` with an infinite threshold so
+    that FSDP aggregates parameter shards over its process group. Although this
+    does not clip finite gradients, the PyTorch API may still perform an
+    in-place multiplication by the clamped coefficient.
 
-    Args:
-        model: The model whose gradients to analyze. Can be a vanilla PyTorch
-            module, FSDP-wrapped module, or module with FSDP sub-modules.
-
-    Returns:
-        The L2 norm of all model gradients (global norm for distributed).
+    The non-FSDP1 branch handles FSDP2 and DDP models with ``get_total_norm``.
+    FSDP2 gradients remain DTensors, allowing the operation to dispatch the
+    required collectives from their device mesh and placements; DDP gradients
+    are already synchronized and can be treated as regular tensors. Unwrapped
+    models use the same path. A DTensor result is materialized as a replicated
+    scalar before conversion to ``float``.
     """
+    if isinstance(model, FSDP1.FullyShardedDataParallel):
+        total_norm = model.clip_grad_norm_(max_norm=float("inf"), norm_type=2.0)
+        return float(total_norm)
 
-    is_fsdp = isinstance(model, FSDPModule)
-    gradient_groups = _local_gradient_groups(model)
-    total_norm_sq = _local_norm_sq(
-        gradient_groups,
-        next(model.parameters()).device,
-    )
+    else:
+        gradients = [
+            parameter.grad
+            for parameter in model.parameters()
+            if parameter.grad is not None
+        ]
+        if not gradients:
+            return 0.0
 
-    if is_fsdp and dist.is_initialized():
-        dist.all_reduce(total_norm_sq, op=dist.ReduceOp.SUM)
-    return total_norm_sq.sqrt().item()
+        total_norm = torch.nn.utils.get_total_norm(gradients, norm_type=2.0)
+        if isinstance(total_norm, DTensor):
+            total_norm = total_norm.full_tensor()
+        return float(total_norm)
 
 
 def clip_gradients(model: nn.Module, max_norm: float) -> float:
-    """Gradient clipping for FSDP with mixed-dtype gradients (fp32 + bf16).
+    """Clip gradients in place and return their pre-clipping total L2 norm.
 
-    FSDP shards parameters across ranks, so each rank only holds a shard of
-    gradients. We compute local norm in float32, all-reduce to get global norm,
-    then clip.
-
-    Returns:
-        The global gradient L2 norm computed *before* clipping. Reuse this for
-        logging instead of recomputing the (post-clip) norm separately.
+    FSDP1 uses ``FSDP.clip_grad_norm_`` so local parameter shards are aggregated
+    over the FSDP process group before one global clipping coefficient is
+    applied. The non-FSDP1 branch handles FSDP2 and DDP models with
+    ``torch.nn.utils.clip_grad_norm_``. FSDP2 derives the required collectives
+    from each gradient's DTensor mesh and placements, while DDP gradients are
+    already synchronized before clipping. Unwrapped models use the same path.
     """
 
-    is_fsdp = isinstance(model, FSDPModule)
-    if not is_fsdp:
-        # clip_grad_norm_ returns the total norm *before* clipping. Under DDP
-        # grads are already all-reduced, so the local norm equals the global one.
+    if isinstance(model, FSDP1.FullyShardedDataParallel):
+        total_norm = model.clip_grad_norm_(max_norm)
+        return float(total_norm)
+    else:
         total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
         return float(total_norm)
 
-    # Compute local sharded norm in float32 (handles mixed dtype)
-    gradient_groups = _local_gradient_groups(model)
-    local_norm_sq = _local_norm_sq(
-        gradient_groups,
-        next(model.parameters()).device,
-    )
-
-    # All-reduce to get global norm across all ranks
-    if dist.is_initialized():
-        torch.distributed.all_reduce(local_norm_sq)
-    total_norm = local_norm_sq.sqrt()
-
-    clip_coef = max_norm / (total_norm + 1e-6)
-    clip_coef = torch.clamp(clip_coef, max=1.0)
-    for gradients in gradient_groups:
-        torch._foreach_mul_(gradients, clip_coef)
-
-    return total_norm.item()
-
 
 def clean_nan_gradients(model: nn.Module):
-    """Replace NaN/Inf gradients with 0."""
+    """Replace NaN/Inf gradients with 0.
+
+    Args:
+        model: Model after backward. Gradients are rewritten in place (``out=``),
+            so DTensor gradients are cleaned through their local shard and no
+            tensor is reallocated.
+
+    Note:
+        Returns ``None`` and reports nothing: there is no signal about how much was
+        replaced, which makes this a silent mask over divergence. A run that needs
+        this every step is broken somewhere upstream (learning rate, loss scaling,
+        bad batch) and zeroing gradients only postpones the diagnosis.
+
+        Both ``+inf`` and ``-inf`` become 0.0 rather than a large finite value —
+        the intent is to drop the offending contribution, not to clip it.
+
+        Purely local, no collectives, so ranks may clean different amounts. That is
+        consistent for sharded gradients (each rank owns a distinct shard), but it
+        means a replicated gradient could in principle be cleaned on one rank only;
+        DDP has already all-reduced by this point, so in practice the ranks see the
+        same values.
+
+        Order matters: cleaning before ``clip_gradients`` keeps a single NaN from
+        poisoning the whole model through the shared clip coefficient, while
+        cleaning after leaves the coefficient already NaN and the gradients all
+        zero.
+    """
     for param in model.parameters():
         if param.grad is not None:
-            grad = _local_gradient(param.grad)
+            grad = (
+                param.grad.to_local()
+                if isinstance(param.grad, DTensor)
+                else param.grad
+            )
             torch.nan_to_num(grad, nan=0.0, posinf=0.0, neginf=0.0, out=grad)
