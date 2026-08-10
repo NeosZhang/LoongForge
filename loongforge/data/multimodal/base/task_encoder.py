@@ -493,13 +493,18 @@ def cooker_packed_multi_mix_qa(sample: dict):
             f"{len(captions)} vs {len(prompts)}"
         )
 
-    # answers: List[List[str]]
+    # contexts/answers are List[List[str]]. A single-turn child is a
+    # one-element list; multi-turn BMR children keep all turns.
+    contexts = [
+        [p] if isinstance(p, str)
+        else (list(p) if isinstance(p, (list, tuple)) else [])
+        for p in prompts
+    ]
     answers = [
         [c] if isinstance(c, str)
         else (list(c) if isinstance(c, (list, tuple)) else [])
         for c in captions
     ]
-
     media_files = data.get("media_files", []) or []
     media_type = (data.get("media_type") or "").lower()
 
@@ -560,7 +565,7 @@ def cooker_packed_multi_mix_qa(sample: dict):
             __subflavors__=sample.get("__subflavors__", {}),
             images=images,
             videos=videos,
-            contexts=prompts,
+            contexts=contexts,
             answers=answers,
             answer_weights=None,
         )
@@ -571,7 +576,7 @@ def cooker_packed_multi_mix_qa(sample: dict):
             __subflavors__=sample.get("__subflavors__", {}),
             images=images,
             videos=videos,
-            contexts=prompts,
+            contexts=contexts,
             answers=answers,
             answer_weights=None,
         )
