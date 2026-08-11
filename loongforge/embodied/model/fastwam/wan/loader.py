@@ -27,7 +27,7 @@ from loongforge.embodied.model.fastwam.utils.io import ModelConfig, hash_model_f
 from loongforge.embodied.model.fastwam.utils.state_dict import wan_video_vae_state_dict_converter
 from loongforge.embodied.model.fastwam.wan.dit import WanVideoDiT
 from loongforge.embodied.model.fastwam.wan.text_encoder import HuggingfaceTokenizer, WanTextEncoder
-from loongforge.embodied.model.fastwam.wan.vae import WanVideoVAE38
+from loongforge.embodied.model.fastwam.wan.vae import WanVideoVAE38, set_rmsnorm_impl
 
 logger = logging.getLogger(__name__)
 SKIPPED_PRETRAIN_SENTINEL = "SKIPPED_PRETRAIN"
@@ -99,6 +99,10 @@ def _validate_dit_config(dit_config: dict[str, Any]) -> dict[str, Any]:
             f"Missing required keys in `dit_config`: {missing_keys}. "
             "Please specify all required WanVideoDiT constructor args."
         )
+
+    # The VAE reads `rmsnorm_impl` from this dict as well, so make it always present.
+    # The fallback is WanVideoDiT's own signature default, not a second definition.
+    validated.setdefault("rmsnorm_impl", signature.parameters["rmsnorm_impl"].default)
 
     return validated
 
@@ -241,6 +245,10 @@ def load_wan22_ti2v_5b_components(
         torch_dtype=torch_dtype,
         device=device,
     )
+    # The VAE shares the DiT's `rmsnorm_impl`: the faster kernel is decided by the
+    # torch build, and neither the DiT's hidden size nor the VAE's channel sizes are
+    # in TE 2.9's tuned-kernel list, so the answer is the same for both.
+    set_rmsnorm_impl(vae, validated_dit_config["rmsnorm_impl"])
     logger.info("Finished loading Wan2.2-TI2V-5B components in %.2f seconds.", time.time() - start)
     return Wan22LoadedComponents(
         dit=dit,

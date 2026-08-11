@@ -25,6 +25,7 @@ from PIL import Image
 import logging
 
 from loongforge.embodied.model.fastwam.action.dit import ActionDiT
+from loongforge.embodied.model.fastwam.utils.state_dict import drop_extra_state
 from loongforge.embodied.model.fastwam.wan.loader import load_wan22_ti2v_5b_components
 from loongforge.embodied.model.fastwam.mot.model import MoT
 from loongforge.embodied.model.fastwam.action.schedulers import WanContinuousFlowMatchScheduler
@@ -1157,7 +1158,9 @@ class FastWAM(torch.nn.Module):
     def save_checkpoint(self, path, optimizer=None, step=None):
         """Save MoT, optional proprio encoder, and optimizer checkpoint state."""
         payload = {
-            "mot": self.mot.state_dict(),
+            # `_extra_state` is dropped so the file does not depend on the RMSNorm
+            # implementation it was trained with (see `utils.state_dict`).
+            "mot": drop_extra_state(self.mot.state_dict()),
             "step": step,
             "torch_dtype": str(self.torch_dtype),
         }
@@ -1171,10 +1174,10 @@ class FastWAM(torch.nn.Module):
         """Load MoT, optional proprio encoder, and optimizer checkpoint state."""
         payload = torch.load(path, map_location="cpu")
         if "mot" in payload:
-            self.mot.load_state_dict(payload["mot"], strict=False)
+            self.mot.load_state_dict(drop_extra_state(payload["mot"]), strict=False)
         elif "dit" in payload:
             logger.warning("Loading legacy `dit` checkpoint into video expert only.")
-            self.video_expert.load_state_dict(payload["dit"], strict=False)
+            self.video_expert.load_state_dict(drop_extra_state(payload["dit"]), strict=False)
         else:
             raise ValueError(f"Checkpoint missing both `mot` and `dit` keys: {path}")
         if self.proprio_encoder is not None:

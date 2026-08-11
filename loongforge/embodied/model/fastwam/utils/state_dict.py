@@ -15,6 +15,43 @@
 # limitations under the License.
 """State-dict conversion helpers for FastWAM Wan components."""
 
+EXTRA_STATE_SUFFIX = "._extra_state"
+
+
+def drop_extra_state(state_dict):
+    """Return ``state_dict`` without Transformer Engine ``_extra_state`` entries.
+
+    Transformer Engine modules add a ``<prefix>._extra_state`` key holding FP8 recipe
+    bookkeeping (an empty ``uint8`` tensor under bf16, so dropping it is lossless).
+    Their learnable parameter is still named ``weight``, so this key is the only
+    schema difference between the TE and Wan RMSNorm implementations.
+
+    Apply this on both sides of a checkpoint round trip: on save so the file is
+    implementation-agnostic, and on load so an existing TE-saved file carries no
+    keys the Wan implementation cannot place. A freshly built TE module already
+    holds valid bookkeeping, so leaving it untouched is the correct outcome.
+
+    Filtering the key set up front is preferred over a
+    ``register_load_state_dict_post_hook`` that edits ``incompatible_keys``: the
+    hook would also mask a genuinely absent key at every call site it is installed
+    on, whereas here ``strict`` keeps its full meaning for real weights.
+
+    This works because every load site that can see a cross-implementation file
+    passes ``strict=False`` (``mot.fastwam.load_checkpoint``, ``wan.core``,
+    ``wan.loader``). Under ``strict=True`` a TE module would still report its own
+    ``_extra_state`` as missing, so seed such a load from the module's own
+    ``state_dict()`` — this is what ``ActionDiT.from_pretrained`` does, together
+    with ``ActionDiT.backbone_key_set`` filtering the same suffix out of the keys
+    it expects the payload to provide.
+
+    Args:
+        state_dict: Mapping of parameter name to tensor.
+
+    Returns:
+        A new dict with every ``._extra_state`` key removed.
+    """
+    return {key: value for key, value in state_dict.items() if not key.endswith(EXTRA_STATE_SUFFIX)}
+
 
 def wan_video_vae_state_dict_converter(state_dict):
     """Convert Wan VAE checkpoint keys to the local module prefix layout."""
