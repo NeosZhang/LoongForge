@@ -28,6 +28,7 @@ from loongforge.embodied.model.fastwam.utils.state_dict import EXTRA_STATE_SUFFI
 from loongforge.embodied.model.fastwam.wan.dit import (
     DiTBlock,
     precompute_freqs_cis,
+    prepare_rope_freqs,
     sinusoidal_embedding_1d,
 )
 
@@ -329,6 +330,7 @@ class ActionDiT(nn.Module):
         context_emb = self.text_embedding(context)
         context_attn_mask = context_mask.unsqueeze(1).expand(-1, seq_len, -1)
         freqs = self.freqs[:seq_len].view(seq_len, 1, -1).to(tokens.device)
+        freqs = prepare_rope_freqs(freqs)
 
         return {
             "tokens": tokens,
