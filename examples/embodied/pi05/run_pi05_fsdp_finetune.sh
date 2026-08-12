@@ -1,69 +1,85 @@
 #!/usr/bin/env bash
-# ============================================================================
-# run_pi05_fsdp_finetune.sh - pi05 VLA SFT Launch Script (FSDP, Embodied)
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+# ═══════════════════════════════════════════════════════════════
+# run_pi05_fsdp_finetune.sh - pi05 VLA SFT Launch Script (FSDP)
 #
 # Mirrors run_pi05_ddp_zero1_finetune.sh, but uses the embodied FSDP strategy.
 #
 # Usage:
 #   bash run_pi05_fsdp_finetune.sh
-#   bash run_pi05_fsdp_finetune.sh --train-iters 50000                   # override a training param (flag form)
-#   bash run_pi05_fsdp_finetune.sh model.state_dim=8 data.image_size=448 # override YAML model:/data: fields (dotlist form)
-# ============================================================================
+#   TRAIN_ITERS=50 bash run_pi05_fsdp_finetune.sh                          # override via env
+#   bash run_pi05_fsdp_finetune.sh --train-iters 50000                     # override a training param (flag form)
+#   bash run_pi05_fsdp_finetune.sh model.state_dim=8 data.image_size=448   # override YAML model:/data: fields (dotlist form)
+# ═══════════════════════════════════════════════════════════════
 set -euo pipefail
 
-export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"/workspace/LoongForge"}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# -- Paths --------------------------------------------------------------------
-TOKENIZER_PATH=${TOKENIZER_PATH:-"/workspace/paligemma-3b-pt-224"}
-CHECKPOINT_PATH=${CHECKPOINT_PATH:-"/workspace/pi05_base"}
-DATA_PATH=${DATA_PATH:-"/workspace/libero"}
-OUTPUT_DIR=${OUTPUT_DIR:-"/workspace/outputs/"}
-TENSORBOARD_PATH=${TENSORBOARD_PATH:-"/workspace/tensorboard-log"}
+# ── Environment ───────────────────────────────────────────────
+export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"$(cd "$SCRIPT_DIR/../../.." && pwd)"}
+export LOCAL_VLA_ARTIFACTS_ROOT=${LOCAL_VLA_ARTIFACTS_ROOT:-"/ssd2/loongforge_embodied_ci/vla_artifacts"}
 
-export CUDA_DEVICE_MAX_CONNECTIONS=8
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
-# -- Distributed --------------------------------------------------------------
+# ── Distributed ───────────────────────────────────────────────
+# Cluster schedulers commonly export WORLD_SIZE (node count) and RANK (node rank).
 GPUS_PER_NODE=${GPUS_PER_NODE:-8}
 MASTER_ADDR=${MASTER_ADDR:-"localhost"}
 MASTER_PORT=${MASTER_PORT:-"29500"}
-NNODES=${WORLD_SIZE:-"1"}
-NODE_RANK=${RANK:-"0"}
+NNODES=${NNODES:-${WORLD_SIZE:-1}}
+NODE_RANK=${NODE_RANK:-${RANK:-0}}
 
 DISTRIBUTED_ARGS=(
-    --nproc_per_node $GPUS_PER_NODE
-    --nnodes $NNODES
-    --node_rank $NODE_RANK
-    --master_addr $MASTER_ADDR
-    --master_port $MASTER_PORT
+    --nproc_per_node "$GPUS_PER_NODE"
+    --nnodes "$NNODES"
+    --node_rank "$NODE_RANK"
+    --master_addr "$MASTER_ADDR"
+    --master_port "$MASTER_PORT"
 )
 
-# -- Model config -------------------------------------------------------------
+export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-8}
+export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+
+# ── Paths ─────────────────────────────────────────────────────
+TOKENIZER_PATH=${TOKENIZER_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/pi05/tokenizers/paligemma-3b-pt-224"}
+CHECKPOINT_PATH=${CHECKPOINT_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/pi05/models/pi05_base"}
+DATA_PATH=${DATA_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/pi05/datasets/libero"}
+OUTPUT_DIR=${OUTPUT_DIR:-"$LOONGFORGE_PATH/outputs/pi05_fsdp"}
+TENSORBOARD_DIR=${TENSORBOARD_DIR:-"$OUTPUT_DIR/tensorboard"}
+
+# ── Model config ──────────────────────────────────────────────
 MODEL_NAME=${MODEL_NAME:-"pi05"}
 MODEL_CONFIG_ARGS=(
-    --model-name $MODEL_NAME
+    --model-name "$MODEL_NAME"
 )
 
-# -- Data params --------------------------------------------------------------
+# ── Data params ───────────────────────────────────────────────
+NUM_WORKERS=${NUM_WORKERS:-16}
 DATA_ARGS=(
     --dataset-format lerobot_datasets
-    --dataset-path $DATA_PATH
-    --tokenizer-path $TOKENIZER_PATH
+    --dataset-path "$DATA_PATH"
+    --tokenizer-path "$TOKENIZER_PATH"
     --robot-type libero_franka
-    --num-workers 16
     --batch-drop-last
+    --num-workers "$NUM_WORKERS"
 )
 
-# -- Training params (aligned with examples/pi05/finetuning/sft_pi05.sh) ------
+# ── Training params (aligned with examples/pi05/finetuning/sft_pi05.sh) ──
 # Old Megatron config: micro-batch-size=16, global-batch-size=128, 8 GPUs
 # => gradient-accumulation-steps = 128 / (16 * 8) = 1
+TRAIN_ITERS=${TRAIN_ITERS:-20}
+PER_DEVICE_BATCH_SIZE=${PER_DEVICE_BATCH_SIZE:-16}
+GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-1}
+SAVE_INTERVAL=${SAVE_INTERVAL:-0}
+SEED=${SEED:-1234}
+
 TRAINING_ARGS=(
     --trainer-type FinetuneTrainer
-    --train-iters 30000
-    --per-device-batch-size 16
-    --gradient-accumulation-steps 1
-    --seed 1234
-    --output-dir $OUTPUT_DIR
+    --train-iters "$TRAIN_ITERS"
+    --per-device-batch-size "$PER_DEVICE_BATCH_SIZE"
+    --gradient-accumulation-steps "$GRADIENT_ACCUMULATION_STEPS"
+    --seed "$SEED"
+    --output-dir "$OUTPUT_DIR"
     # Learning rate
     --lr-base 2.5e-8
     --min-lr 0
@@ -77,8 +93,8 @@ TRAINING_ARGS=(
     --adam-beta2 0.95
     --adam-eps 1e-8
     # Checkpoint
-    --save-interval 30000
-    --pretrained-checkpoint $CHECKPOINT_PATH
+    --save-interval "$SAVE_INTERVAL"
+    --pretrained-checkpoint "$CHECKPOINT_PATH"
 )
 
 FSDP_NO_WRAP_MODULES=(
@@ -101,21 +117,21 @@ DISTRIBUTED_TRAINING_ARGS=(
     )"
 )
 
-# -- Logging params -----------------------------------------------------------
+# ── Logging params ────────────────────────────────────────────
 LOGGING_ARGS=(
     --log-interval 1
-    --tensorboard-dir ${TENSORBOARD_PATH}
+    --tensorboard-dir "$TENSORBOARD_DIR"
 )
 
-# -- Launch -------------------------------------------------------------------
-echo "========================================================================"
+# ── Launch ────────────────────────────────────────────────────
+echo "════════════════════════════════════════════════════════════"
 echo "  LoongForge pi05 Training (FSDP)"
+echo "  GPUs:       $GPUS_PER_NODE x $NNODES node(s)"
 echo "  Model:      $MODEL_NAME"
-echo "  GPUs:       $GPUS_PER_NODE x $NNODES nodes"
-echo "  Data:       $DATA_PATH"
 echo "  Checkpoint: $CHECKPOINT_PATH"
+echo "  Data:       $DATA_PATH"
 echo "  Output:     $OUTPUT_DIR"
-echo "========================================================================"
+echo "════════════════════════════════════════════════════════════"
 
 PYTHONPATH=$LOONGFORGE_PATH:${PYTHONPATH:-} \
     torchrun "${DISTRIBUTED_ARGS[@]}" \
@@ -125,4 +141,5 @@ PYTHONPATH=$LOONGFORGE_PATH:${PYTHONPATH:-} \
     "${TRAINING_ARGS[@]}" \
     "${DISTRIBUTED_TRAINING_ARGS[@]}" \
     "${LOGGING_ARGS[@]}" \
+    "model.compile_model=False" \
     "$@"
