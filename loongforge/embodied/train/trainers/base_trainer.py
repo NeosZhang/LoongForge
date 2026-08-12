@@ -8,6 +8,7 @@ import logging
 import os
 import time
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from typing import Any, Dict, Optional, Tuple
 
 import torch
@@ -88,6 +89,10 @@ class BaseTrainer(ABC):
         # Not persisted across checkpoint resume (reset to 0 on restart).
         self.nan_iterations: int = 0
         self.skipped_iterations: int = 0
+
+        # See _grad_sync_ctx. Not saved in checkpoints: the DDP wrapper is rebuilt
+        # on restart, so the setup has to run again after a resume.
+        self._static_graph_bootstrapped: bool = False
 
         # Data iterators (managed by _fetch_batch for epoch cycling)
         self._data_iters: Dict[str, Any] = {}
@@ -461,6 +466,35 @@ class BaseTrainer(ABC):
         """
         return micro == grad_accum - 1
 
+    @contextmanager
+    def _grad_sync_ctx(self, sync_grads: bool):
+        """Gate cross-rank gradient sync for one micro-step.
+
+        Must wrap the forward as well as the backward. DDP decides whether it will
+        all-reduce during the forward, so a ``no_sync()`` around ``backward()``
+        alone has no effect and gradients are all-reduced on every micro-step
+        instead of once per optimizer step. The
+        ``DistributedDataParallel.no_sync`` docs say the same thing.
+        """
+        if sync_grads or not self.ctx.is_distributed:
+            yield
+        elif hasattr(self.model, "no_sync"):
+            # DDP. static_graph=True does a one-off setup in the job's first
+            # backward that crashes if that forward ran under no_sync. Let the
+            # very first micro-step sync so the setup can run, then gate
+            # normally — one extra all-reduce, once per job.
+            if getattr(self.model, "static_graph", False) and not self._static_graph_bootstrapped:
+                yield
+                self._static_graph_bootstrapped = True
+            else:
+                with self.model.no_sync():
+                    yield
+        else:
+            # FSDP2 (fully_shard)
+            self.model.set_requires_gradient_sync(False)
+            yield
+            self.model.set_requires_gradient_sync(True)
+
     # ═══════════════════════════════════════════════
     # Abstract methods — subclass must implement
     # ═══════════════════════════════════════════════
@@ -490,8 +524,12 @@ class BaseTrainer(ABC):
 
         Returns log_dict — a per-step accumulator of model-provided reporting
         losses. May call
-        shared helpers: _fetch_batch_timed / _should_sync_grads / _backward_loss /
-        self._stage_timers, to reuse unified timing stages.
+        shared helpers: _fetch_batch_timed / _should_sync_grads / _grad_sync_ctx /
+        _backward_loss / self._stage_timers, to reuse unified timing stages.
+
+        The forward+backward of each micro-step must run inside
+        ``_grad_sync_ctx(self._should_sync_grads(micro, grad_accum))`` so the
+        gradient all-reduce happens exactly once per optimizer step.
         """
         ...
 
@@ -499,8 +537,8 @@ class BaseTrainer(ABC):
     def _backward_loss(self, loss: torch.Tensor,
                        log_loss_dict: Dict[str, torch.Tensor],
                        log_dict: Dict[str, float],
-                       grad_accum: int, sync: bool) -> None:
-        """Scale + spike-guard + backward routing, accumulating losses into log_dict.
+                       grad_accum: int) -> None:
+        """Scale + spike-guard + backward, accumulating losses into log_dict.
 
         ``loss`` is the single scalar to backpropagate. ``log_loss_dict`` holds
         losses used ONLY for printing/reporting (not backward). ``log_dict`` is the
@@ -511,11 +549,11 @@ class BaseTrainer(ABC):
           - Apply NaN/Inf/threshold spike protection (log + zero-out).
           - Run backward under the "backward-compute" timing stage
             (self._stage_timers).
-          - All-reduce EXACTLY ONCE per optimizer step: only the last accumulation
-            step (sync is True) may sync gradients; otherwise skip sync via
-            no_sync (DDP) / set_requires_gradient_sync(False) (FSDP2).
           - Accumulate log_loss_dict scalars under their own keys, summed across
             micro-steps.
+
+        Gradient-sync gating is NOT done here — it must wrap the forward too and is
+        owned by the caller via ``_grad_sync_ctx``.
         """
         ...
 
