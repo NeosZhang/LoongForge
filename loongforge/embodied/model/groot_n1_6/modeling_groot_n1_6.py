@@ -48,6 +48,10 @@ from loongforge.embodied.data.datasets.groot_n1_6.transforms.utils import (
 )
 from loongforge.embodied.model.registry import register_model
 
+from loongforge.embodied.data.datasets.groot_n1_6.transforms.eagle3_model.image_augmentations import (
+    build_image_transformations_albumentations,
+)
+
 from .eagle3_model import EagleBackbone
 from .model_configuration_groot_n1_6 import GrootN1d6ModelConfig
 from .modules.dit import AlternateVLDiT, DiT
@@ -994,6 +998,20 @@ class GrootN1d6Policy(nn.Module):
             model_type=self.config.backbone_model_type,
             transformers_loading_kwargs={"trust_remote_code": True, "local_files_only": True},
         )
+        # Official Gr00tN1d6Processor.eval_image_transform: letterbox-pad to
+        # square -> SmallestMaxSize(shortest_image_edge, INTER_AREA) ->
+        # crop_fraction-center-crop -> SmallestMaxSize. predict_action() applies
+        # this before building vlm_content so callers only need to supply the
+        # env's native camera image (matching Gr00tPolicy.get_action, where the
+        # processor performs this step internally).
+        _, self._predict_action_eval_image_transform = build_image_transformations_albumentations(
+            None,  # image_target_size
+            None,  # image_crop_size
+            None,  # random_rotation_angle
+            None,  # color_jitter_params
+            256,  # shortest_image_edge
+            0.95,  # crop_fraction
+        )
         self._predict_action_initialized = True
         self.eval()
 
@@ -1007,6 +1025,7 @@ class GrootN1d6Policy(nn.Module):
     ) -> np.ndarray:
         """Infer an action chunk for the shared eval ``predict_action`` interface."""
         image_batch = self._normalize_image_batch(images, instructions)
+        image_batch = self._apply_eval_image_transform(image_batch)
         batch_size = len(image_batch)
         instruction_batch = self._normalize_instruction_batch(instructions, batch_size)
         processor = self._get_predict_action_processor(dataset_stats)
@@ -1262,6 +1281,24 @@ class GrootN1d6Policy(nn.Module):
             raise TypeError(f"Unsupported GR00T-N1.6 images type: {type(images).__name__}")
 
         return [[_to_pil_image(image) for image in sample] for sample in samples]
+
+    def _apply_eval_image_transform(
+        self, image_batch: list[list[Image.Image]]
+    ) -> list[list[Image.Image]]:
+        """Apply the official ``Gr00tN1d6Processor.eval_image_transform`` (deterministic
+        letterbox-pad + center-crop) so callers only need to supply the env's native
+        camera image, matching ``Gr00tPolicy.get_action`` where the processor performs
+        this step internally."""
+        transform = getattr(self, "_predict_action_eval_image_transform", None)
+        if transform is None:
+            return image_batch
+        return [
+            [
+                Image.fromarray(transform(image=np.asarray(image.convert("RGB")))["image"])
+                for image in sample
+            ]
+            for sample in image_batch
+        ]
 
     @staticmethod
     def _normalize_instruction_batch(instructions: Any, batch_size: int) -> list[str]:
