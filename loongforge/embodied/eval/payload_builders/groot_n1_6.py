@@ -19,6 +19,7 @@ the LIBERO adapter's ``action_from_canonical`` consumes as a flat 7D array.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -26,6 +27,43 @@ import numpy as np
 from loongforge.embodied.eval.payload_builders.base import PayloadBuilder
 from loongforge.embodied.eval.payload_builders.pi05 import _pack_images
 from loongforge.embodied.eval.payload_builders.registry import register_payload_builder
+
+logger = logging.getLogger(__name__)
+
+# WidowX finger joint limits (fixed by the ManiSkill2_real2sim WidowX URDF),
+# used to reproduce ``WidowX.get_gripper_closedness()`` without SAPIEN access.
+# The official agent reads these from ``robot.get_qlimits()`` at runtime; here they
+# are constants, so a URDF change would silently rescale the whole gripper channel.
+# ``_warn_finger_qpos_out_of_limits`` makes that desync loud instead.
+WIDOWX_FINGER_QMIN = 0.015
+WIDOWX_FINGER_QMAX = 0.037
+
+_finger_qpos_warned = False
+
+
+def _warn_finger_qpos_out_of_limits(finger_qpos: np.ndarray) -> None:
+    """Warn once if finger qpos leaves the hardcoded ``[QMIN, QMAX]`` window.
+
+    A small excursion is normal (contact / solver overshoot); a persistent or
+    large one means ``WIDOWX_FINGER_QMIN/QMAX`` no longer match the loaded URDF,
+    which would silently mis-scale the gripper proprio channel.
+    """
+    global _finger_qpos_warned
+    if _finger_qpos_warned:
+        return
+    span = WIDOWX_FINGER_QMAX - WIDOWX_FINGER_QMIN
+    lo = WIDOWX_FINGER_QMIN - 0.1 * span
+    hi = WIDOWX_FINGER_QMAX + 0.1 * span
+    if np.any(finger_qpos < lo) or np.any(finger_qpos > hi):
+        _finger_qpos_warned = True
+        logger.warning(
+            "WidowX finger qpos %s outside hardcoded limits [%.4f, %.4f]; "
+            "check WIDOWX_FINGER_QMIN/QMAX against the loaded URDF "
+            "(gripper proprio would be mis-scaled). Warning shown once.",
+            np.asarray(finger_qpos).tolist(),
+            WIDOWX_FINGER_QMIN,
+            WIDOWX_FINGER_QMAX,
+        )
 
 
 def _encode_libero_ee_euler(state_raw: Dict[str, Any]) -> Optional[np.ndarray]:
@@ -98,14 +136,19 @@ def _encode_simpler_widowx(state_raw: Dict[str, Any]) -> Optional[np.ndarray]:
     except Exception:
         return None
 
-    # Gripper openness proxy from the two WidowX finger qpos (proprio hint only;
-    # bridge was trained with state_dropout_prob 0.8, so this is low-impact).
+    # Gripper openness, matching the official GR00T WidowX wrapper, which reads
+    # ``agent.eef_pos[7] = 1 - get_gripper_closedness()`` (a normalized openness
+    # in [0, 1]; 1.0 = fully open). Upstream ManiSkill2_real2sim does not expose
+    # ``eef_pos``, so reproduce ``WidowX.get_gripper_closedness()`` here from the
+    # two finger qpos against their (fixed) joint limits.
     joint = state_raw.get("joint")
-    grip = 0.05
+    grip = 1.0
     if joint is not None:
-        j = np.asarray(joint, dtype=np.float32).reshape(-1)
+        j = np.asarray(joint, dtype=np.float64).reshape(-1)
         if j.size >= 2:
-            grip = float(np.clip(j[-2:].sum(), 0.046, 1.112))
+            _warn_finger_qpos_out_of_limits(j[-2:])
+            closedness = np.mean((WIDOWX_FINGER_QMAX - j[-2:]) / (WIDOWX_FINGER_QMAX - WIDOWX_FINGER_QMIN))
+            grip = float(1.0 - max(closedness, 0.0))
     return np.array(
         [pos[0], pos[1], pos[2], rpy[0], rpy[1], rpy[2], 0.0, grip],
         dtype=np.float32,
@@ -142,7 +185,10 @@ class GrootN1d6PayloadBuilder(PayloadBuilder):
         """Return the kwargs consumed by ``GrootN1d6Policy.predict_action``."""
         images = _pack_images(canonical["images"])
         if self.state_encoding == "simpler_widowx":
-            # Official WidowXBridgeEnv resizes the view to 256x256 before the model.
+            # Official WidowXBridgeEnv resizes the view to 256x256 before the
+            # model. The remaining letterbox-pad + 95%-center-crop step (matching
+            # Gr00tN1d6Processor.eval_image_transform) is applied inside
+            # GrootN1d6Policy.predict_action, not here — see modeling_groot_n1_6.py.
             import cv2
 
             images = [

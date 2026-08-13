@@ -52,7 +52,7 @@ A modular, scalable, and highly efficient training framework for language, multi
    embodied_tutorial/quick_start_dreamzero
    embodied_tutorial/quick_start_fastwam
    embodied_tutorial/quick_start_cosmos3
-   embodied_tutorial/eval_user_guide
+   embodied_tutorial/eval_overview
 
 .. toctree::
    :maxdepth: 1

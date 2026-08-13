@@ -8,13 +8,16 @@
 # Usage:
 #   bash precompute_text_embeds.sh
 #
-# Key environment variables (all optional, defaults shown):
-#   LOONGFORGE_PATH          Path to the LoongForge repo root
-#                            (default: /workspace/LoongForge)
+# LOONGFORGE_PATH and LOCAL_VLA_ARTIFACTS_ROOT are set below and may be
+# overridden from the environment; every variable below can also be
+# overridden from the environment.
+#
+# Key environment variables (all optional, defaults shown resolve against
+# $LOCAL_VLA_ARTIFACTS_ROOT):
 #   DATASET_PATH             Root directory of the source dataset
-#                            (default: /path/to/libero)
+#                            (default: $LOCAL_VLA_ARTIFACTS_ROOT/fastwam/datasets/LIBERO-fastwam/libero_10_no_noops_lerobot)
 #   TEXT_EMBEDDING_CACHE_DIR Where to write the embedding cache files
-#                            (default: $LOONGFORGE_PATH/data/fastwam_text_embeds)
+#                            (default: $LOCAL_VLA_ARTIFACTS_ROOT/fastwam/text_embeds)
 #   MODEL_ID                 HuggingFace model ID for the text encoder
 #                            (default: Wan-AI/Wan2.2-TI2V-5B)
 #   TOKENIZER_MODEL_ID       HuggingFace model ID for the tokenizer
@@ -34,16 +37,34 @@
 
 set -euo pipefail
 
-export LOONGFORGE_PATH="${LOONGFORGE_PATH:-/workspace/LoongForge}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-DATASET_PATH="${DATASET_PATH:-/path/to/libero}"
-TEXT_EMBEDDING_CACHE_DIR="${TEXT_EMBEDDING_CACHE_DIR:-$LOONGFORGE_PATH/data/fastwam_text_embeds}"
-MODEL_ID="${MODEL_ID:-Wan-AI/Wan2.2-TI2V-5B}"
-TOKENIZER_MODEL_ID="${TOKENIZER_MODEL_ID:-Wan-AI/Wan2.1-T2V-1.3B}"
-CONTEXT_LEN="${CONTEXT_LEN:-128}"
-BATCH_SIZE="${BATCH_SIZE:-8}"
-DEVICE="${DEVICE:-cuda}"
-DTYPE="${DTYPE:-bfloat16}"
+# ── Environment ───────────────────────────────────────────────
+export LOONGFORGE_PATH=${LOONGFORGE_PATH:-"$(cd "$SCRIPT_DIR/../../.." && pwd)"}
+export LOCAL_VLA_ARTIFACTS_ROOT=${LOCAL_VLA_ARTIFACTS_ROOT:-"/ssd2/loongforge_embodied_ci/vla_artifacts"}
+
+# Point DiffSynth/Wan model loader at the shared local weights directory so
+# text encoder + tokenizer are resolved from disk instead of Hugging Face Hub.
+export DIFFSYNTH_MODEL_BASE_PATH=${DIFFSYNTH_MODEL_BASE_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/fastwam/models/"}
+
+DATASET_PATH=${DATASET_PATH:-"$LOCAL_VLA_ARTIFACTS_ROOT/fastwam/datasets/LIBERO-fastwam/libero_10_no_noops_lerobot"}
+TEXT_EMBEDDING_CACHE_DIR=${TEXT_EMBEDDING_CACHE_DIR:-"$LOCAL_VLA_ARTIFACTS_ROOT/fastwam/datasets/text_embeds"}
+MODEL_ID=${MODEL_ID:-"Wan-AI/Wan2.2-TI2V-5B"}
+TOKENIZER_MODEL_ID=${TOKENIZER_MODEL_ID:-"Wan-AI/Wan2.1-T2V-1.3B"}
+CONTEXT_LEN=${CONTEXT_LEN:-128}
+BATCH_SIZE=${BATCH_SIZE:-8}
+DEVICE=${DEVICE:-cuda}
+DTYPE=${DTYPE:-bfloat16}
+
+mkdir -p "$TEXT_EMBEDDING_CACHE_DIR"
+
+echo "════════════════════════════════════════════════════════════"
+echo "  FastWAM Precompute Text Embeddings"
+echo "  Dataset:   $DATASET_PATH"
+echo "  Cache:     $TEXT_EMBEDDING_CACHE_DIR"
+echo "  Model:     $MODEL_ID"
+echo "  Tokenizer: $TOKENIZER_MODEL_ID"
+echo "════════════════════════════════════════════════════════════"
 
 PYTHONPATH="$LOONGFORGE_PATH:${PYTHONPATH:-}" \
   python "$LOONGFORGE_PATH/loongforge/embodied/data/datasets/fastwam/transforms/precompute_text_embeds.py" \

@@ -149,6 +149,51 @@ class BaseTaskBatchPacked(Batch):
     num_tiles: Optional[List[int]]= None
     pixel_values_videos: Optional[torch.Tensor]= None
 
+
+def _format_packed_sample_overflow_error(
+    samples: List[BaseTaskSample],
+    packing_seq_len: int,
+    current_length: int,
+    next_sample: BaseTaskSample,
+    max_items: int = 8,
+) -> str:
+    """Build a compact error without dumping full tensor values."""
+
+    def _shape(value):
+        return tuple(value.shape) if hasattr(value, "shape") else None
+
+    summary = []
+    cumulative_length = 0
+    for sample in samples[:max_items]:
+        cumulative_length += sample.total_len
+        summary.append(
+            {
+                "key": sample.__key__,
+                "total_len": sample.total_len,
+                "cumulative_len": cumulative_length,
+                "tokens_shape": _shape(sample.tokens),
+                "labels_shape": _shape(sample.labels),
+                "attn_mask_shape": _shape(sample.attn_mask),
+                "num_images": len(sample.imgs) if sample.imgs is not None else 0,
+                "num_videos": (
+                    len(sample.pixel_values_videos)
+                    if sample.pixel_values_videos is not None
+                    else 0
+                ),
+            }
+        )
+
+    omitted = max(len(samples) - max_items, 0)
+    omitted_msg = f", omitted_samples={omitted}" if omitted else ""
+    return (
+        "Packed sample exceeds the maximum sequence length of "
+        f"{packing_seq_len}: current_length={current_length}, "
+        f"next_sample_key={next_sample.__key__}, "
+        f"next_sample_len={next_sample.total_len}, "
+        f"would_be_length={current_length + next_sample.total_len}, "
+        f"num_samples={len(samples)}{omitted_msg}, samples_summary={summary}"
+    )
+
 _vlm_tags_cache: Optional[Dict[str, Dict]] = None
 
 _IMAGE_EXTS: Tuple[str, ...] = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff")
@@ -448,13 +493,18 @@ def cooker_packed_multi_mix_qa(sample: dict):
             f"{len(captions)} vs {len(prompts)}"
         )
 
-    # answers: List[List[str]]
+    # contexts/answers are List[List[str]]. A single-turn child is a
+    # one-element list; multi-turn BMR children keep all turns.
+    contexts = [
+        [p] if isinstance(p, str)
+        else (list(p) if isinstance(p, (list, tuple)) else [])
+        for p in prompts
+    ]
     answers = [
         [c] if isinstance(c, str)
         else (list(c) if isinstance(c, (list, tuple)) else [])
         for c in captions
     ]
-
     media_files = data.get("media_files", []) or []
     media_type = (data.get("media_type") or "").lower()
 
@@ -515,7 +565,7 @@ def cooker_packed_multi_mix_qa(sample: dict):
             __subflavors__=sample.get("__subflavors__", {}),
             images=images,
             videos=videos,
-            contexts=prompts,
+            contexts=contexts,
             answers=answers,
             answer_weights=None,
         )
@@ -526,7 +576,7 @@ def cooker_packed_multi_mix_qa(sample: dict):
             __subflavors__=sample.get("__subflavors__", {}),
             images=images,
             videos=videos,
-            contexts=prompts,
+            contexts=contexts,
             answers=answers,
             answer_weights=None,
         )
@@ -924,7 +974,11 @@ class BaseTaskEncoder(DefaultTaskEncoder[BaseTaskSample, BaseTaskSamplePacked, B
             # This should not happen.
             # The select_samples_to_pack method should have already ensured that the samples fit.
             if current_length + sample_len > packing_seq_len:
-                raise ValueError(f"Packed sample exceeds the maximum sequence length of {packing_seq_len}: {samples}")
+                raise ValueError(
+                    _format_packed_sample_overflow_error(
+                        samples, packing_seq_len, current_length, sample
+                    )
+                )
 
             # Add the sample's tokens and labels
             packed_tokens.append(sample.tokens)
