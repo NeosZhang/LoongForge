@@ -60,6 +60,7 @@ DATA_ARGS=(
     --dataset-path "$DATA_PATH"
     --tokenizer-path "$TOKENIZER_PATH"
     --num-workers "$NUM_WORKERS"
+    #--no-sampler-shuffle
 )
 
 # ── Training params ───────────────────────────────────────────
@@ -69,6 +70,7 @@ GRADIENT_ACCUMULATION_STEPS=${GRADIENT_ACCUMULATION_STEPS:-1}
 SAVE_INTERVAL=${SAVE_INTERVAL:-0}
 SEED=${SEED:-42}
 export PYTHONHASHSEED=$SEED
+export COSMOS3_TV_TRANSFORMS=v2
 
 TRAINING_ARGS=(
     --init-on-meta
@@ -77,7 +79,8 @@ TRAINING_ARGS=(
     --per-device-batch-size "$PER_DEVICE_BATCH_SIZE"
     --gradient-accumulation-steps "$GRADIENT_ACCUMULATION_STEPS"
     --seed "$SEED"
-    --deterministic-mode
+    --set-seed-by-rank
+    #--deterministic-mode
     --disable-tf32
     --output-dir "$OUTPUT_DIR"
     # Learning rate
@@ -99,6 +102,8 @@ TRAINING_ARGS=(
 DISTRIBUTED_TRAINING_ARGS=(
     --distributed-strategy fsdp
     --dtype bfloat16
+    --fsdp-reduce-dtype bf16
+    --fsdp-wrap-modules MoTDecoderLayer
 )
 
 # ── Logging params ────────────────────────────────────────────
