@@ -4,7 +4,7 @@ ManiSkill is a SAPIEN-based robot manipulation benchmark. The LoongForge eval mo
 
 Current status: **no released ManiSkill-domain weights for pi05/xvla**. Shipped configs run as connectivity checks (`server.random_init: true`), not scores.
 
-Note: xvla cannot run with real ManiSkill weights yet — it emits absolute EE poses while ManiSkill only ships the delta controller (`pd_ee_delta_pose`); the required absolute-EE control mode is not implemented, so the runner raises `NotImplementedError` for a non-`random_init` xvla run (see the [model integration guide §4.2](../model_integration.md#42-control-mode)).
+Note: xvla cannot run with real ManiSkill weights yet — it emits absolute EE poses while ManiSkill only ships the delta controller (`pd_ee_delta_pose`); the required absolute-EE control mode is not implemented, so the runner raises `NotImplementedError` for a non-`random_init` xvla run (see the model integration guide §4.2 Control mode).
 
 ## Step 0: Download weights
 
