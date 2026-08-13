@@ -2,7 +2,7 @@
 
 LIBERO is a tabletop robot manipulation benchmark with 4 task suites (Spatial, Object, Goal, Long Horizon), totaling 40 tasks, evaluated on a Franka arm. This page is a step-by-step reproduction guide for running LIBERO evaluation through the LoongForge eval module.
 
-Three models are verified on LIBERO: **pi05**, **xvla**, and **GR00T-N1.6** (pi05/xvla weights are public; GR00T-N1.6 uses a local LIBERO fine-tune).
+Three models are verified on LIBERO: **pi05**, **xvla**, and **GR00T-N1.6** (all public weights).
 
 ## Step 0: Download weights
 
@@ -10,7 +10,7 @@ Three models are verified on LIBERO: **pi05**, **xvla**, and **GR00T-N1.6** (pi0
 |---|---|
 | pi05 | [lerobot/pi05_libero_finetuned_v044](https://huggingface.co/lerobot/pi05_libero_finetuned_v044) (`model.safetensors` + `dataset_statistics.json`) |
 | xvla | [2toINF/X-VLA-LIBERO](https://huggingface.co/2toINF/X-VLA-LIBERO) |
-| GR00T-N1.6 | local LIBERO fine-tune (weight dir + Eagle3 processor + `libero_panda` stats) |
+| GR00T-N1.6 | [0xAnkitSingh/GR00T-N1.6-LIBERO](https://huggingface.co/0xAnkitSingh/GR00T-N1.6-LIBERO) (weight dir + Eagle3 processor + `libero_panda` stats) |
 
 ## Step 1: Environment setup
 
@@ -75,8 +75,14 @@ Task-success status (2026-07-21):
 
 | Model | LIBERO status | Notes |
 |---|---|---|
-| pi05 | ✅ task success | pi05 LIBERO fine-tune |
-| xvla | ✅ task success | ~94% on libero_object full suite |
-| GR00T-N1.6 | ✅ task success | libero_object 5/5 |
+| pi05 | ✅ task success | no full-suite regression run; verified via single-episode smoke only |
+| xvla | ✅ task success | libero_object 79/100 (10 tasks × 10 eps); per-task spread 3/10 … 10/10 |
+| GR00T-N1.6 | ✅ task success | 10 tasks × 10 eps per suite: object 100/100, spatial 95/100, goal 95/100, libero_10 89/100 |
 
-Report rates over multiple episodes; for xvla, `examples/embodied/xvla/eval/` historical full runs are under `reports/xvla/libero/libero_weight_object_full/`.
+Report rates as successes/episodes over a full suite; single-episode smoke runs are
+not success rates and are not listed here.
+
+Caveat on the GR00T-N1.6 LIBERO numbers: the shipped configs do not set
+`server.chunk_execute_steps`, so the whole 16-step chunk is executed open-loop,
+whereas the official GR00T LIBERO client uses `--n_action_steps 8`. The numbers
+above are therefore not strictly the official protocol.

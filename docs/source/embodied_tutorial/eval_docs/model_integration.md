@@ -6,7 +6,7 @@ pi05 and xvla differ almost entirely on these configuration points, so this docu
 
 **Scope note:** The semantic checklist below covers all benchmarks currently integrated (LIBERO / RoboTwin / SimplerEnv / CALVIN / ManiSkill).
 Early integration used LIBERO as the primary acceptance path, so some items are illustrated with LIBERO; cross-benchmark protocol differences (such as RoboTwin `action_bridge`) are called out separately.
-For the config layout conventions see [§1](#1-overview); for task success status see `../README.md` / `user_guide_en.md`.
+For the config layout conventions see §1 Overview; for task success status see `../eval_overview.md` / `user_guide.md`.
 
 Overall architecture (a four-stage chain that decouples the model from the benchmark):
 
@@ -21,29 +21,29 @@ Adapter (obs -> canonical, exposes state_raw)
 
 ## 1. Overview
 
-Integrating a new model = **Factory + PayloadBuilder + optional ActionDecoder**, with the three separated by responsibility (component details in [§3](#3-component-details)).
+Integrating a new model = **Factory + PayloadBuilder + optional ActionDecoder**, with the three separated by responsibility (component details in §3 Component details).
 Add new files, and **do not modify existing files**.
 
 **Components** — responsibilities:
 
 - **ModelFactory** (server side, requires torch) — `factories/<model>_factory.py`, registered via `@register_factory("<model_type>")`; `build()` returns `PredictActionModelSpec(model, metadata)`. Responsibilities:
   - load the model: import, config, weight loading / `random_init`, device/dtype
-  - wrap it behind the unified `predict_action(images, instructions, state=None, dataset_stats=None, **kwargs)` interface (see [§2](#2-the-predict_action-contract))
+  - wrap it behind the unified `predict_action(images, instructions, state=None, dataset_stats=None, **kwargs)` interface (see §2 The `predict_action` contract)
 - **PayloadBuilder** (client side) — `payload_builders/<model>.py`, registered via `@register_payload_builder("<model_type>")`, inherits from `PayloadBuilder`. Responsibilities:
   - declare capabilities via type-annotated class attributes (`state_encoding` / `action_encoding` / `action_dim` / `action_horizon` / `domain_id` / `unnorm_key`, ...; YAML overrides same-name fields)
   - `build(canonical, ctx)`: canonical dict → `predict_action` kwargs
   - optionally `reset` / `update_from_response` / `note_env_action` for closed-loop feedback
 
 - **ActionDecoder** (optional, eval side) — `action_decoders/`, only when the model's `action_encoding` has no decoder yet. Decoder selection:
-  - key auto-assembled as `{action_encoding}_to_{action_space}` (see [§4](#4-state--action-semantics))
+  - key auto-assembled as `{action_encoding}_to_{action_space}` (see §4 State / action semantics)
   - source == target space → `IdentityDecoder` passthrough, no new code
   - hits an already-registered key (e.g. `ee6d_*`) → selected automatically, no new code
 
 **Steps** — integration flow:
 
-1. **Implement the model components** — ModelFactory + PayloadBuilder (+ optional ActionDecoder), per the responsibilities above and the details in [§3](#3-component-details).
-2. **Implement the `predict_action` interface** — the model must expose `predict_action(images, instructions, state=None, dataset_stats=None)`; model-specific preprocessing and normalization live inside it, and the eval server calls it over RPC (see [§2](#2-the-predict_action-contract)).
-3. **Write the eval config and scripts** (`examples/embodied/<model>/eval/`) — model-specific YAML fields (`state_encoding` / `action_encoding` / `domain_id`, ...) go under `model:`; `model.model_type` is **required** (no default). Verify each config point in [§4](#4-state--action-semantics) and [§5](#5-engineering-parameters).
+1. **Implement the model components** — ModelFactory + PayloadBuilder (+ optional ActionDecoder), per the responsibilities above and the details in §3 Component details.
+2. **Implement the `predict_action` interface** — the model must expose `predict_action(images, instructions, state=None, dataset_stats=None)`; model-specific preprocessing and normalization live inside it, and the eval server calls it over RPC (see §2 The `predict_action` contract).
+3. **Write the eval config and scripts** (`examples/embodied/<model>/eval/`) — model-specific YAML fields (`state_encoding` / `action_encoding` / `domain_id`, ...) go under `model:`; `model.model_type` is **required** (no default). Verify each config point in §4 State / action semantics and §5 Engineering parameters.
 4. **Run a smoke** (1 task × 1 episode, or a chain smoke) to validate the RPC / action semantics, then — with domain weights — task-success and full-scale eval.
 5. **Regression-test** already-succeeding combinations (at least pi05 × LIBERO) after changing **shared** code (runner / adapter / decoder / bridge / generic policy).
 
@@ -72,7 +72,7 @@ This section is the interface contract between the **model author** and the eval
 The **single source of truth** for the helper functions is `loongforge/embodied/eval/servers/predict_action_interface.py`:
 after refactoring, this file **only retains the model-author contract** — the `PredictActionModel` protocol, `validate_predict_action_model`,
 `_filter_supported_kwargs`, and `call_predict_action`; it **does not contain** any action-space decoding logic,
-which has been moved to `loongforge/embodied/eval/action_decoders/` (see [§4](#4-state--action-semantics)).
+which has been moved to `loongforge/embodied/eval/action_decoders/` (see §4 State / action semantics).
 
 ### 2.1 Required signature
 
@@ -271,15 +271,15 @@ the factory is responsible for loading weights / tokenizer / processor and does 
 
 ## 3. Component details
 
-Factory / PayloadBuilder / ActionDecoder are summarized in [§1](#1-overview); this section walks through each component in detail and covers the RoboTwin `action_bridge`.
+Factory / PayloadBuilder / ActionDecoder are summarized in §1 Overview; this section walks through each component in detail and covers the RoboTwin `action_bridge`.
 
 ### 3.1 ModelFactory
 
 Location: `factories/<model>_factory.py`; register with `@register_factory("<model_type>")`. Declare `model_config_cls` and implement `build(model_cfg, server_args) -> PredictActionModelSpec`:
 
 - `model_config_cls`: the typed config dataclass resolved from the YAML `model:` section (e.g. `Pi05ModelConfig`).
-- `build(...)`: load the model — import, config, weights / `random_init`, device/dtype — and return `PredictActionModelSpec(model=..., metadata={...})`, where `model` implements `predict_action` (see [§2](#2-the-predict_action-contract)).
-- The registry key must pair with a PayloadBuilder of the same `model_type` (both must be registered for the run to start — see the startup fail-fast in [§1](#1-overview)).
+- `build(...)`: load the model — import, config, weights / `random_init`, device/dtype — and return `PredictActionModelSpec(model=..., metadata={...})`, where `model` implements `predict_action` (see §2 The `predict_action` contract).
+- The registry key must pair with a PayloadBuilder of the same `model_type` (both must be registered for the run to start — see the startup fail-fast in §1 Overview).
 
 References: `factories/pi05_factory.py`, `factories/xvla_factory.py`, `factories/groot_n1_6_factory.py`.
 
@@ -337,36 +337,33 @@ Protocol logic is placed in named bridge modes, avoiding changes to the model's 
 
 ## 4. state / action semantics
 
-In the matrices below, "—" means the model × benchmark combination is not integrated (no released domain weights or no setup).
+This chapter lists **what to confirm** when integrating a model. The per-model
+values are not duplicated here — they live with the model itself: the
+PayloadBuilder class attributes and comments in `payload_builders/<model>.py`
+(`state_encoding` / `action_encoding` / `action_dim` / `action_horizon`, and the
+supported encoding values), the factory, and that model's eval YAMLs under
+`examples/embodied/<model>/eval/configs/`.
 
 ### 4.1 Action space and dimensions
 
-The action dimension **changes with the benchmark protocol** and cannot simply be hard-coded to LIBERO. Model output dims per benchmark:
+The action dimension **changes with the benchmark protocol** and cannot simply be hard-coded to LIBERO
+(a dual-arm benchmark such as RoboTwin needs a different protocol from single-arm LIBERO,
+which is what `benchmark.action_bridge` selects).
 
-| | LIBERO | CALVIN | SimplerEnv WidowX | RoboTwin | ManiSkill |
-|---|---|---|---|---|---|
-| **pi05** | 7D, no decoder | 7D, no decoder | 7D, no decoder | 14D, `action_bridge: pi05_aloha_14d` | 7D, no decoder |
-| **xvla** | 20D EE6D → 7D | 20D EE6D → 7D | 20D EE6D → 7D | 20D EE6D, `action_bridge: ee6d_dual` | 20D EE6D → 7D |
-| **GR00T-N1.6** | 7D, no decoder | — | 7D, no decoder | — | — |
-
-- pi05: 7D single-arm output (pos-delta 3, axis-angle-delta 3, gripper 1); `action_encoding` equals the env `action_space` → empty decoder key → `IdentityDecoder` (no conversion, the action is passed straight to the env). RoboTwin switches to the 14D joint protocol via `pi05_aloha_14d` (**not** 7D).
-- xvla: model side is 20D EE6D (`model.action_mode: ee6d`, `real_action_dim: 20`); single-arm benchmarks (LIBERO / CALVIN / SimplerEnv / ManiSkill) convert to the env space via the eval-side ActionDecoder (key auto-assembled from `{action_encoding}_to_{action_space}`), RoboTwin via `ee6d_dual`.
-- GR00T-N1.6: 7D output; `action_encoding: axis_angle` (LIBERO) / `simpler_abs_euler` (SimplerEnv) equals the env space → `IdentityDecoder`, no conversion.
+If the model's `action_encoding` equals the env `action_space`, the decoder key is
+empty and an `IdentityDecoder` passes the action straight through; otherwise the
+decoder key is auto-assembled as `{action_encoding}_to_{action_space}`.
 
 Points to confirm: the total number of model output dimensions, the semantic layout of each dimension (position / rotation / gripper), the rotation representation
 (axis-angle, 6D rotation, quaternion), and the target environment's control interface (joint vs EE).
 
 ### 4.2 Control mode
 
-| | LIBERO | CALVIN | SimplerEnv WidowX | RoboTwin | ManiSkill |
-|---|---|---|---|---|---|
-| **pi05** | delta | — | — | delta joints → absolute joints in bridge | — |
-| **xvla** | absolute EEF pose | absolute pose | absolute EE¹ | EE absolute-pose | — |
-| **GR00T-N1.6** | delta | — | delta EE | — | — |
-
-¹ Requires SimplerEnv registering the `arm_pd_ee_target_base_pose_*` controller (see `patches/simplerenv/xvla.md`).
-
-Notes: pi05 + LIBERO runs robosuite OSC delta by default (`use_delta=True`); xvla + LIBERO sets OSC `use_delta=False` via `benchmark.control_mode: absolute` (or default `auto` with a non-empty decoder key); pi05 + RoboTwin converts delta joints to absolute joints inside the bridge (openpi Aloha: `adapt_to_pi` decode state → inference → delta→abs → `adapt_to_pi` encode).
+Confirm whether the model emits **delta** or **absolute** targets and whether the env
+is configured to match: `benchmark.control_mode` (`delta` / `absolute` / `auto`,
+where `auto` infers from the decoder key) plus, for some envs, a controller that
+must exist on the env side (e.g. SimplerEnv WidowX absolute EE, see
+[patches/simplerenv/xvla.md](patches/simplerenv/xvla.md)).
 
 It should be emphasized that an absolute pose cannot be crudely turned into a delta by "linearly subtracting" the current pose:
 axis-angle rotation does not satisfy linear subtraction, and the delta mode often has action scaling. A wrong control mode is
@@ -378,27 +375,20 @@ Proprio (proprioception) is the robot's own state — joint positions, end-effec
 
 The adapter **no longer encodes** proprio: it only exposes the raw EE / joint fields in `canonical["state_raw"]`
 (`eef_pos` / `eef_quat` / `ee_ori_mat` / `joint` / `endpose` / `robot_obs`, etc.);
-the encoding is done by **each model's PayloadBuilder** according to `model.state_encoding`. `state_encoding` per model × benchmark:
+the encoding is done by **each model's PayloadBuilder** according to `model.state_encoding`
+(the supported values are listed on each PayloadBuilder class).
 
-| | LIBERO | CALVIN | SimplerEnv WidowX | RoboTwin | ManiSkill |
-|---|---|---|---|---|---|
-| **pi05** | `""` | `""` | `""` | `aloha_pi` | `passthrough` |
-| **xvla** | `ee6d` | `ee6d_calvin` | `ee6d_widowx` | `ee6d_dual` | `passthrough` |
-| **GR00T-N1.6** | `libero_ee_euler` | — | `simpler_widowx` | — | — |
+Points to confirm:
 
-- pi05: `""` emits no state kwarg; ManiSkill `passthrough` passes the raw joint state through as-is (`state_raw["joint"]`: 8D Panda qpos; 9D → 7 arm joints + mean of the 2 finger joints); RoboTwin `aloha_pi` does the openpi `adapt_to_pi` decode inside the PayloadBuilder (14D joints → pi space).
-- xvla: 20-dim input, isomorphic to the action space; `ee6d_widowx` / `ee6d_calvin` are stateful closed-loop via `update_from_response`, `ee6d_dual` (RoboTwin) feeds back the previous decoded ee action via `note_env_action`.
-- GR00T-N1.6: LIBERO `libero_ee_euler` (8D `libero_panda` raw state `[x,y,z, roll,pitch,yaw, finger0, finger1]`); SimplerEnv `simpler_widowx` (ee pose reconstructed from `base_pose⁻¹ · tcp_pose`).
-
-The xvla 6D rotation must be column-major `[R00,R10,R20, R01,R11,R21]`
-(the first two columns of the rotation matrix concatenated, aligning with X-VLA `Mat_to_Rotate6D`).
-Row-major `mat[:, :2].flatten()` will cause a wrong input distribution — this is the second reason xvla had a
-0 initial success rate on LIBERO.
-
-In addition, the source of the proprio semantics must be confirmed: the original X-VLA client feeds back the previous step's predicted action;
-the stateful encodings (`ee6d_widowx` / `ee6d_calvin`) already implement this closed-loop feedback via the PayloadBuilder's
-`update_from_response`, while `ee6d_dual` feeds back the previous step's decoded ee action via `note_env_action`.
-Single-arm LIBERO uses the environment's measured state and has been validated as feasible; if a new model is sensitive, an ablation is needed.
+- Every slot must reproduce the **training-time definition**, value by value, from the
+  official wrapper — not a physically similar quantity. A normalized gripper openness
+  and a finger width in metres both "look like a gripper state" but land in completely
+  different places after normalization, and nothing errors out.
+- Rotation layout (e.g. column-major vs interleaved 6D) — a wrong layout silently
+  shifts the input distribution; this was the second reason xvla scored 0 on LIBERO.
+- Whether proprio should be the env's measured state or a closed-loop feedback of the
+  previous predicted action (the official client decides; the stateful encodings
+  implement feedback via `update_from_response` / `note_env_action`).
 
 Boundary: `canonical["state_raw"]` holds the raw fields (for the PayloadBuilder to encode + for trace/debug);
 the `state` kwarg produced by the PayloadBuilder's `build()` enters `predict_action(state=...)` via RPC.
@@ -407,37 +397,25 @@ prefer passing a flat `float32` vector aligned with the training `observation.st
 
 ### 4.4 Normalization approach
 
-- **pi05:** depends on an external `dataset_statistics.json` (q01/q99 denormalization);
-  `server.dataset_statistics_path` must be configured (for RoboTwin,
-  `examples/embodied/pi05/eval/assets/pi05_robotwin2_dataset_stats.json` can be used).
-- **xvla:** normalization is inside the model's action space (the EE6DActionSpace in `action_hub.py`);
-  configure `dataset_statistics_path: ""`.
-- **GR00T-N1.6:** normalization happens inside the model per the weights' `processor_config.json`
-  (e.g. SimplerEnv `mean_std_embedding_keys=[x,y,z,roll,pitch,yaw]` — pos+rotation mean-std, gripper min-max;
-  LIBERO normalizes state inside `predict_action` from the weights' `experiment_cfg/dataset_statistics.json`);
-  `server.dataset_statistics_path` points at the weights' stats.
+Normalization/denormalization stays **inside the model** (`predict_action`); the generic
+policy never unnorms (see the ownership convention in §2.5 Action output contract).
+What differs per model is only where the statistics come from — an external
+`dataset_statistics.json` via `server.dataset_statistics_path`, the model's own action
+space, or config files shipped with the weights.
 
-Points to confirm: denormalization is performed in only one place (the model-internal `predict_action`),
-and the generic policy does **not** do unnorm (see the ownership convention in [§2.5](#25-action-output-contract) for details).
+Points to confirm: the stats source and the normalization mode per key are read from the
+**weights' own config**, not hand-derived from observed value ranges; and denormalization
+happens in exactly one place. A benchmark whose action ranges are small can pass while a
+wide-range benchmark fails — a passing benchmark does not prove the normalization is right.
 
 ### 4.5 Model-specific request fields
 
-Model-specific fields are declared by the **PayloadBuilder** and injected into the `predict_action` kwargs; the YAML writes them under the `model:` section. As an example, xvla is a multi-domain model configured with `model.domain_id` (when not given explicitly, the PayloadBuilder auto-picks it from `DEFAULT_DOMAIN_ID_MAP` by `benchmark_name`); the PayloadBuilder writes it into the RPC payload, and the factory converts the int to a `LongTensor`. A misconfiguration usually produces **no error**, but the action distribution is wrong. Other models declare their own fields (e.g. pi05's `unnorm_key`); GR00T-N1.6's embodiment selection is `server.embodiment_tag` (factory-side).
-
-The xvla domain_id values already used in the repo (defer to the official eval / production YAML, do not fabricate):
-
-| Benchmark | domain_id |
-|---|---|
-| SimplerEnv WidowX / Bridge | **0** |
-| CALVIN | 2 |
-| LIBERO | 3 |
-| RoboTwin2 | 6 |
-| ManiSkill | 5 |
+Model-specific fields are declared by the **PayloadBuilder** and injected into the `predict_action` kwargs; the YAML writes them under the `model:` section. A multi-domain model, for instance, needs a domain/task id chosen per benchmark (the PayloadBuilder may default it from the benchmark name), and the factory converts it to whatever tensor type the model expects. A misconfiguration usually produces **no error**, but the action distribution is wrong — so treat these fields as part of the protocol and take their values from the official eval / production config, never invent them.
 
 The same applies to a new model's task embedding / domain embedding / special prompt, etc.:
 `model:` YAML → PayloadBuilder → RPC payload → factory → model, end to end.
 If the PayloadBuilder emits a kwarg the model signature does not accept, `_filter_supported_kwargs` drops it with a
-WARNING (see [§2.2](#22-kwargs-filtering)); use this to diagnose misconfigurations.
+WARNING (see §2.2 kwargs filtering); use this to diagnose misconfigurations.
 
 ### 4.6 Number and order of image views
 
@@ -451,14 +429,8 @@ View packing follows these rules (**not** a fixed 2 views):
 
 The adapter declares its camera set with the `cameras` class attribute (e.g. LIBERO `("primary", "wrist")`),
 and the PayloadBuilder packs the model's expected view list from `canonical["images"]` (a per-camera dict) per the rules above.
-
-| | LIBERO | CALVIN | SimplerEnv WidowX | RoboTwin | ManiSkill |
-|---|---|---|---|---|---|
-| **pi05** | 2 (primary + wrist) | 2 | 1 | 3 (dynamic) | 1 |
-| **xvla** | 2 | 2 | 1 (third person) | 3 (dynamic) | 1 |
-| **GR00T-N1.6** | 2 | — | 1 | — | — |
-
-Views are derived from the adapter's `cameras` attribute per the pack rules above (LIBERO / CALVIN `(primary, wrist)` → 2; SimplerEnv / ManiSkill `(primary,)` → 1; RoboTwin 3), not hand-configured per model. The model side must support a **dynamic** `num_images = len(images[0])`, and **must not** hardcode `num_images=2` or `3` (otherwise it breaks other benchmarks).
+The view count therefore follows the adapter, not a per-model setting: the model side must support a **dynamic**
+`num_images = len(images[0])` and **must not** hardcode `num_images=2` or `3` (otherwise it breaks other benchmarks).
 
 Points to confirm: the number, order, and resolution of cameras at training time, and whether they are flipped
 (LIBERO agentview vertical flip is handled uniformly by the adapter).

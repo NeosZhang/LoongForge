@@ -4,7 +4,7 @@ This document records the benchmark runtime environments used by the LoongForge-
 
 **For installation, follow the official benchmark homepages** — each benchmark page links to its official repository. This document is not an install guide; it records the dependency versions of the environments currently used by the eval module, so they can be compared / reproduced when debugging.
 
-**Environment isolation.** The benchmark client and the policy server run as separate processes with different dependencies (see [Architecture](../README.md#architecture)). We use conda environments for this isolation; other approaches — e.g. running the two sides in separate pods — work too, but then you are responsible for the inter-process communication yourself (the two sides must reach each other over the configured host/port).
+**Environment isolation.** The benchmark client and the policy server run as separate processes with different dependencies (see the [module overview](../eval_overview.md) Architecture section). We use conda environments for this isolation; other approaches — e.g. running the two sides in separate pods — work too, but then you are responsible for the inter-process communication yourself (the two sides must reach each other over the configured host/port).
 
 The version lists below are the verified combinations of the internal envs.
 
@@ -106,7 +106,9 @@ Current SimplerEnv status:
 X-VLA WidowX status:   task success after absolute EE controller patch
                        (see patches/simplerenv/xvla.md)
                        configs: examples/embodied/xvla/eval/configs/simplerenv/*
-GR00T-N1.6 status:     task success (eggplant 20/20, official prepackaged_config)
+GR00T-N1.6 status:     task success (open_drawer 10/10, close_drawer 9/10,
+                       spoon 7/10, eggplant 6/10, carrot 16/30, stack_cube 2/10;
+                       official prepackaged_config)
                        uses the stock upstream delta controller, no env change
                        configs: examples/embodied/groot_n1_6/eval/configs/simplerenv/*
 pi05 configs:          only widowx_stack_cube_smoke.yaml

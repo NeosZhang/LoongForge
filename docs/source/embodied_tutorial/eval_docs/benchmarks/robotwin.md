@@ -6,7 +6,7 @@ RoboTwin is a dual-arm tabletop manipulation benchmark. The LoongForge eval modu
 
 | Model | Weights |
 |---|---|
-| pi05 | [motus-robotics/pi0.5_robotwin2](https://huggingface.co/motus-robotics/pi0.5_robotwin2) (openpi `norm_stats`, see [§2](#step-2-run-evaluation)) |
+| pi05 | [motus-robotics/pi0.5_robotwin2](https://huggingface.co/motus-robotics/pi0.5_robotwin2) (openpi `norm_stats`, see §2 Run evaluation below) |
 | xvla | [2toINF/X-VLA-RoboTwin2](https://huggingface.co/2toINF/X-VLA-RoboTwin2) |
 
 ## Step 1: Environment setup
@@ -67,4 +67,4 @@ Key config fields (see `examples/embodied/<model>/eval/configs/robotwin/adjust_b
 
 ## Outputs
 
-In addition to the standard outputs (see the [user guide §4](../user_guide_en.md#4-outputs)), RoboTwin collects the official evaluator logs, deploy config, result file, and `mp4` videos under `artifacts/robotwin/<task_name>/<task_config>/`, and writes one `results.jsonl` row per completed episode.
+In addition to the standard outputs (see the user guide §4 Outputs), RoboTwin collects the official evaluator logs, deploy config, result file, and `mp4` videos under `artifacts/robotwin/<task_name>/<task_config>/`, and writes one `results.jsonl` row per completed episode.

@@ -10,15 +10,15 @@ LoongForge-VLA offline evaluation runs a policy against a simulation benchmark f
 |---|---|---|---|---|---|
 | **pi05** | ✅ task success ([lerobot/pi05_libero_finetuned_v044](https://huggingface.co/lerobot/pi05_libero_finetuned_v044)) | connectivity only | connectivity only | ✅ task success ([motus-robotics/pi0.5_robotwin2](https://huggingface.co/motus-robotics/pi0.5_robotwin2)) | connectivity only |
 | **xvla** | ✅ task success ([2toINF/X-VLA-LIBERO](https://huggingface.co/2toINF/X-VLA-LIBERO)) | connectivity only | ✅ task success ([2toINF/X-VLA-WidowX](https://huggingface.co/2toINF/X-VLA-WidowX)) | ✅ task success ([2toINF/X-VLA-RoboTwin2](https://huggingface.co/2toINF/X-VLA-RoboTwin2)) | connectivity only |
-| **GR00T-N1.6** | — | — | ✅ task success ([nvidia/GR00T-N1.6-bridge](https://huggingface.co/nvidia/GR00T-N1.6-bridge)) | — | — |
+| **GR00T-N1.6** | ✅ task success ([0xAnkitSingh/GR00T-N1.6-LIBERO](https://huggingface.co/0xAnkitSingh/GR00T-N1.6-LIBERO)) | — | ✅ task success ([nvidia/GR00T-N1.6-bridge](https://huggingface.co/nvidia/GR00T-N1.6-bridge)) | — | — |
 
 - **Task success**: at least one episode passed the benchmark's official success criterion.
 - **Weights**: parentheses show the Hugging Face weight (`org/name`) that achieved the run.
 - **Connectivity only**: the pipeline runs with `random_init: true` and no score yet — the domain weights are missing or the benchmark assets block a full run (e.g. CALVIN needs the original-format validation dataset even where weights are public).
 - **—**: not supported yet — coming soon.
-- **Detailed results**: see the per-benchmark [benchmark pages](benchmarks/libero.md).
+- **Detailed results**: see the per-benchmark [benchmark pages](benchmarks/index.md).
 
-Any model that implements the shared `predict_action(images, instructions, state=None, dataset_stats=None)` interface can be added — see [§6](#6-adding-a-new-model).
+Any model that implements the shared `predict_action(images, instructions, state=None, dataset_stats=None)` interface can be added — see §6 Adding a new model.
 
 ---
 
@@ -35,7 +35,7 @@ The example below runs LIBERO with pi05:
     pip install numpy==1.24.4   # pinned for simulator compatibility
     ```
 
-    For the eval client deps, common issues, and the verified version list, check the [LIBERO guide](benchmarks/libero.md#step-1-environment-setup); the verified environment version lists are in [benchmark_envs.md](benchmark_envs.md).
+    For the eval client deps, common issues, and the verified version list, check the [LIBERO guide](benchmarks/libero.md) Environment setup section; the verified environment version lists are in [benchmark_envs.md](benchmark_envs.md).
 2. **Get the weights and edit the config** — download [lerobot/pi05_libero_finetuned_v044](https://huggingface.co/lerobot/pi05_libero_finetuned_v044), then fill the `/path/to/...` placeholders in `examples/embodied/pi05/eval/configs/libero/object_smoke.yaml`:
 
     ```yaml
@@ -71,7 +71,7 @@ The run scripts also accept environment overrides (`CONFIG`, `REPO_ROOT`, `BENCH
 python -m loongforge.embodied.eval.orchestrator.run --config /path/to/config.yaml
 ```
 
-Run the orchestrator command inside the **benchmark** environment; the config's `server.python` points at the **model server** environment. Other models/benchmarks: the [benchmark pages](benchmarks/libero.md).
+Run the orchestrator command inside the **benchmark** environment; the config's `server.python` points at the **model server** environment. Other models/benchmarks: the [benchmark pages](benchmarks/index.md).
 
 ---
 

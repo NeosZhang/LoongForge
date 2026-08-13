@@ -1,7 +1,7 @@
 # X-VLA SimplerEnv Guide
 
 > **Before running xvla + SimplerEnv evaluation**, execute the check in
-> [Patch requirement check](#patch-requirement-check)
+> the Patch requirement check section below
 > and confirm the absolute EE controller is present. Skipping this usually surfaces as a 0% success run after hundreds of steps.
 
 ## Impact boundary
@@ -105,7 +105,7 @@ Why this is required: the X-VLA client protocol outputs Euler xyz (rot6d → eul
 
 ## Eval config
 
-See `configs/simplerenv/widowx_stack_cube_smoke.yaml`:
+See `examples/embodied/xvla/eval/configs/simplerenv/widowx_stack_cube_smoke.yaml`:
 
 ```yaml
 benchmark:

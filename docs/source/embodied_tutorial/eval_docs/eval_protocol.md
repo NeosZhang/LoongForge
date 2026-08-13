@@ -1,10 +1,10 @@
 # Evaluation Framework & Protocol
 
-This page describes the LoongForge offline evaluation framework: its architecture, the runtime components, and the wire protocol between the benchmark client and the policy server. It is written for **code contributors** — model integrators and maintainers who touch eval code. End users only need the [user guide](user_guide_en.md) and the [benchmark pages](benchmarks/libero.md).
+This page describes the LoongForge offline evaluation framework: its architecture, the runtime components, and the wire protocol between the benchmark client and the policy server. It is written for **code contributors** — model integrators and maintainers who touch eval code. End users only need the [user guide](user_guide.md) and the [benchmark pages](benchmarks/index.md).
 
 ## Overview
 
-The eval module runs a policy against a simulation benchmark from a single YAML config. It launches the benchmark simulator and an independent model server as separate processes connected by a WebSocket + msgpack-numpy RPC protocol. The model and the benchmark are decoupled: benchmark code never imports model code, and vice versa. (The architecture diagram lives in the [module README](../README.md#architecture).)
+The eval module runs a policy against a simulation benchmark from a single YAML config. It launches the benchmark simulator and an independent model server as separate processes connected by a WebSocket + msgpack-numpy RPC protocol. The model and the benchmark are decoupled: benchmark code never imports model code, and vice versa. (The architecture diagram lives in the [module overview](../eval_overview.md) Architecture section.)
 
 ## Components
 
