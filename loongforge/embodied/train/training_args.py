@@ -1164,6 +1164,20 @@ class _DistributedArgs:
             "help": "Batch gradient copies into buckets to reduce kernel launches."
         },
     )
+    ddp_comm_hook: Optional[str] = field(
+        default=None,
+        metadata={
+            "choices": ["allreduce_hook", "fp16_compress_hook", "bf16_compress_hook"],
+            "help": "DDP gradient communication hook.",
+        },
+    )
+    ddp_comm_hook_logging: bool = field(
+        default=False,
+        metadata={
+            "help": "Wrap the DDP comm hook with rank-0 logging of bucket info "
+                    "before/after each all-reduce."
+        },
+    )
     dynamo_optimize_ddp: bool = field(
         default=True,
         metadata={

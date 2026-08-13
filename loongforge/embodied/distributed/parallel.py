@@ -14,6 +14,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .activation_checkpointing import apply_activation_checkpointing
 from .context import DistributedContext
+from .ddp_utils import resolve_comm_hook
 from .utils import (
     filter_supported_kwargs,
     get_module_names_by_dtype,
@@ -93,7 +94,16 @@ def _wrap_ddp(model: nn.Module, training_args, ctx: DistributedContext, dtype: t
         "batched_grad_copy": training_args.ddp_batched_grad_copy,
     }
 
-    return DDP(model, **filter_supported_kwargs(DDP, ddp_kwargs))
+    ddp_model = DDP(model, **filter_supported_kwargs(DDP, ddp_kwargs))
+    if training_args.ddp_comm_hook:
+        # allreduce_hook: full-precision gradient all-reduce (default, no compression);
+        # fp16_compress_hook: compresses gradients to fp16 before all-reduce to cut traffic;
+        # bf16_compress_hook: compresses gradients to bf16 before all-reduce to cut traffic.
+        comm_hook = resolve_comm_hook(
+            training_args.ddp_comm_hook, use_logging=training_args.ddp_comm_hook_logging
+        )
+        ddp_model.register_comm_hook(state=None, hook=comm_hook)
+    return ddp_model
 
 
 def _wrap_fsdp(
