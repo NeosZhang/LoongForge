@@ -53,7 +53,8 @@ Since training requirements vary across model scenarios, LoongForge builds on mu
 
 ## 🔥 Latest News
 
-- **[2026/07]** 🤖 Released the **[LoongForge-Embodied](./loongforge/embodied)** submodule, delivering training support for mainstream **VLA** and **WAM** models.
+- **[2026/08]** 📄 Released the **[TAOT paper](https://arxiv.org/abs/2608.03676)**, introducing topology-aware dynamic expert replica placement to address expert-parallel (**EP**) load imbalance in **MoE** training with low communication overhead.
+- **[2026/07]** 🤖 Released the **[LoongForge-Embodied](./loongforge/embodied)** submodule, delivering training support for mainstream **VLA** and **WAM** models, with **~2× speedup** on representative models.
 - **[2026/07]** ✨ Added training support for **DeepSeek v4 flash / DeepSeek v4 pro**.
 - **[2026/05]** ⚡ Accelerated **Wan 2.2** training by **116%**, and added CP and data packing support.
 - **[2026/05]** ✨ Added training support for **Kimi K2.5 / K2.6**, and introduced **INT4 / NVFP4** PTQ.
