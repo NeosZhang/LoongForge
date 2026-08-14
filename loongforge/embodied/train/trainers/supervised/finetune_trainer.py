@@ -137,22 +137,24 @@ class FinetuneTrainer(BaseTrainer):
                     batch = self._fetch_batch("vla")
                 self._on_after_train_batch_fetch(batch, micro)
                 self._prepare_model_for_train_step()
-                with st("forward-compute"):
-                    loss, log_loss_dict = self._train_forward(batch)
                 sync_grads = self._should_sync_grads(micro, grad_accum)
-                self._backward_loss(loss, log_loss_dict, log_dict, grad_accum, sync_grads)
+                # The gate has to cover the forward, not just the backward —
+                # see BaseTrainer._grad_sync_ctx.
+                with self._grad_sync_ctx(sync_grads):
+                    with st("forward-compute"):
+                        loss, log_loss_dict = self._train_forward(batch)
+                    self._backward_loss(loss, log_loss_dict, log_dict, grad_accum)
         return log_dict
 
     def _backward_loss(self, loss: torch.Tensor,
                        log_loss_dict: Dict[str, torch.Tensor],
                        log_dict: Dict[str, float],
-                       grad_accum: int, sync_grads: bool) -> None:
-        """Scale + spike-guard + backward routing, accumulating losses into log_dict.
+                       grad_accum: int) -> None:
+        """Scale + spike-guard + backward, accumulating losses into log_dict.
 
         ``loss`` is the single scalar to backpropagate; it is scaled by
-        1/grad_accum, spike-protected, and backwarded with cross-rank gradient
-        sync gated so the all-reduce happens exactly once per optimizer step
-        (only on the last accumulation step).
+        1/grad_accum, spike-protected, and backwarded. Cross-rank gradient sync is
+        gated by the caller's ``_grad_sync_ctx``, which also wraps the forward.
 
         ``log_loss_dict`` contains model-provided reporting losses, which are
         accumulated into ``log_dict`` across micro-steps.
@@ -171,19 +173,9 @@ class FinetuneTrainer(BaseTrainer):
                 self._step_loss_spiked = True
                 loss = loss * 0.0
 
-            # Backward; skip cross-rank gradient sync except on the final
-            # backward (all-reduce exactly once per optimizer step).
-            if self.ctx.is_distributed and not sync_grads:
-                if hasattr(self.model, "no_sync"):
-                    with self.model.no_sync():
-                        loss.backward()
-                else:
-                    # FSDP2 (fully_shard): use set_requires_gradient_sync
-                    self.model.set_requires_gradient_sync(False)
-                    loss.backward()
-                    self.model.set_requires_gradient_sync(True)
-            else:
-                loss.backward()
+            # Gradient sync is gated by the caller's _grad_sync_ctx, so the
+            # all-reduce happens once per optimizer step.
+            loss.backward()
 
         # Print-only losses (summed across micro-steps).
         for key, value in log_loss_dict.items():
