@@ -24,6 +24,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import transformer_engine.pytorch as te
 from einops import rearrange
+from flash_attn.ops.triton.rotary import apply_rotary
 
 from loongforge.embodied.model.fastwam.utils.gradient import gradient_checkpoint_forward
 
@@ -86,13 +87,62 @@ def precompute_freqs_cis(dim: int, end: int = 1024, theta: float = 10000.0):
     return freqs_cis
 
 
+class _TritonRoPE(torch.autograd.Function):
+    """Autograd wrapper around the FlashAttention Triton rotary kernel.
+
+    The interleaved rotary is a per-pair rotation, so the Jacobian w.r.t. ``x``
+    is the forward kernel evaluated with the rotation conjugated. ``cos``/``sin``
+    are position tables and do not receive gradients.
+    """
+
+    @staticmethod
+    def forward(ctx, x, cos, sin):
+        """Apply interleaved rotary embedding to ``x`` and save cos/sin for backward."""
+        ctx.save_for_backward(cos, sin)
+        return apply_rotary(x, cos, sin, interleaved=True)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """Compute the gradient by applying the forward kernel with the rotation conjugated."""
+        cos, sin = ctx.saved_tensors
+        grad_x = apply_rotary(
+            grad_output.contiguous(),
+            cos,
+            sin,
+            interleaved=True,
+            conjugate=True,
+        )
+        return grad_x, None, None
+
+
+def prepare_rope_freqs(freqs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert complex RoPE frequencies to the contiguous cos/sin pair the kernel expects.
+
+    Args:
+        freqs: Complex RoPE frequencies, shape [S, 1, rope_dim // 2].
+
+    Returns:
+        Tuple of contiguous fp32 `(cos, sin)` tables, each shaped [S, rope_dim // 2].
+    """
+    if freqs.ndim != 3 or freqs.shape[1] != 1:
+        raise ValueError(f"Expected RoPE frequencies shaped [S, 1, D/2], got {tuple(freqs.shape)}")
+    return freqs[:, 0].real.float().contiguous(), freqs[:, 0].imag.float().contiguous()
+
+
 def rope_apply(x, freqs, num_heads):
-    """Apply RoPE frequencies to flattened multi-head hidden states."""
+    """Apply fused interleaved RoPE to flattened multi-head hidden states.
+
+    Args:
+        x: Flattened multi-head projections, shape [B, S, H*Dh].
+        freqs: `(cos, sin)` pair produced by `prepare_rope_freqs`.
+        num_heads: Number of attention heads packed in the last dimension of `x`.
+
+    Returns:
+        Rotated projections in the input layout and dtype, shape [B, S, H*Dh].
+    """
+    cos, sin = freqs
     x = rearrange(x, "b s (n d) -> b s n d", n=num_heads)
-    x_out = torch.view_as_complex(x.to(torch.float64).reshape(x.shape[0], x.shape[1], x.shape[2], -1, 2))
-    freqs = freqs.to(torch.complex64) if freqs.device.type == "npu" else freqs
-    x_out = torch.view_as_real(x_out * freqs).flatten(2)
-    return x_out.to(x.dtype)
+    return _TritonRoPE.apply(x, cos, sin).flatten(2)
 
 
 def create_group_causal_attn_mask(
@@ -792,6 +842,7 @@ class WanVideoDiT(torch.nn.Module):
             ],
             dim=-1,
         ).reshape(f * h * w, 1, -1).to(x_tokens.device)
+        freqs = prepare_rope_freqs(freqs)
 
         return {
             "tokens": x_tokens,

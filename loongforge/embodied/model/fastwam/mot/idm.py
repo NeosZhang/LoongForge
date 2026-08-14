@@ -164,7 +164,10 @@ class FastWAMIDM(FastWAMJoint):
 
         # Concatenate [noisy_video, cond_video] as the video expert sequence.
         merged_video_tokens = torch.cat([video_pre_noisy["tokens"], video_pre_cond["tokens"]], dim=1)
-        merged_video_freqs = torch.cat([video_pre_noisy["freqs"], video_pre_cond["freqs"]], dim=0)
+        merged_video_freqs = tuple(
+            torch.cat([noisy_freq, cond_freq], dim=0)
+            for noisy_freq, cond_freq in zip(video_pre_noisy["freqs"], video_pre_cond["freqs"])
+        )
         merged_video_t_mod = torch.cat([video_pre_noisy["t_mod"], video_pre_cond["t_mod"]], dim=1)
         merged_video_context_mask = torch.cat(
             [video_pre_noisy["context_mask"], video_pre_cond["context_mask"]],
