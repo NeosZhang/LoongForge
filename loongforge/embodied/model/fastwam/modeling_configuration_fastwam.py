@@ -70,6 +70,12 @@ class FastWAMModelConfig:
     )
     redirect_common_files: bool = True
     dtype: str = "bfloat16"
+    # q/k RMSNorm implementation for both DiT experts: "wan" (upstream module built
+    # on F.rms_norm) or "te" (TransformerEngine).
+    # torch < 2.9.0 has no fused rms_norm CUDA kernel, so "te" is far faster there;
+    # from torch 2.9.0 on the native kernel wins at the DiT's hidden size (3072),
+    # which TE 2.9 has no tuned kernel for. See `wan.dit.make_rmsnorm`.
+    rmsnorm_impl: str = "wan"  # {"wan", "te"}
 
     # ── Nested architecture configs (fixed for Wan2.2-5B, not in YAML) ────────
     video_dit_config: dict[str, Any] = field(default_factory=lambda: {
@@ -114,6 +120,16 @@ class FastWAMModelConfig:
                 f"got {self.variant!r}"
             )
 
+        # ── Validate rmsnorm_impl ─────────────────────────────────────────────
+        # Mirrors the names accepted by `wan.dit.make_rmsnorm`; kept as a literal
+        # here so importing this config does not pull in torch / TransformerEngine.
+        valid_rmsnorm_impls = {"wan", "te"}
+        if self.rmsnorm_impl not in valid_rmsnorm_impls:
+            raise ValueError(
+                f"FastWAMModelConfig.rmsnorm_impl must be one of {sorted(valid_rmsnorm_impls)}, "
+                f"got {self.rmsnorm_impl!r}"
+            )
+
         # ── Validate num_video_frames constraint via data config ───────────────
         # (num_video_frames lives in DataConfig; validation happens there)
 
@@ -134,3 +150,7 @@ class FastWAMModelConfig:
         # ── Sync action_dim → nested dit configs ──────────────────────────────
         self.video_dit_config["action_dim"] = self.action_dim
         self.action_dit_config["action_dim"] = self.action_dim
+
+        # ── Sync rmsnorm_impl → nested dit configs ────────────────────────────
+        self.video_dit_config["rmsnorm_impl"] = self.rmsnorm_impl
+        self.action_dit_config["rmsnorm_impl"] = self.rmsnorm_impl

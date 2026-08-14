@@ -22,6 +22,7 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import transformer_engine.pytorch as te
 from einops import rearrange
 
 from loongforge.embodied.model.fastwam.utils.gradient import gradient_checkpoint_forward
@@ -177,8 +178,11 @@ def create_group_causal_attn_mask(
     return attn_mask
 
 
-class RMSNorm(nn.Module):
-    """Root-mean-square normalization for Wan DiT projections."""
+class WanRMSNorm(nn.Module):
+    """Root-mean-square normalization for Wan DiT projections via ``F.rms_norm``.
+
+    This is upstream Wan's own implementation, hence the name.
+    """
 
     def __init__(self, dim, eps=1e-5):
         """Initialize RMSNorm scale and epsilon."""
@@ -186,17 +190,61 @@ class RMSNorm(nn.Module):
         self.eps = eps
         self.weight = nn.Parameter(torch.ones(dim))
 
-    def norm(self, x):
-        """Normalize input by root mean square magnitude."""
-        return x * torch.rsqrt(x.pow(2).mean(dim=-1, keepdim=True) + self.eps)
-
     def forward(self, x):
-        """Apply RMS normalization and learned scaling via the fused ATen kernel."""
+        """Apply RMS normalization and learned scaling via the ATen kernel."""
         # F.rms_norm only fuses when weight and x share a dtype; otherwise scale
         # separately to keep the original dtype promotion (fp32 weight -> fp32 out).
         if self.weight.dtype == x.dtype:
             return F.rms_norm(x, self.weight.shape, weight=self.weight, eps=self.eps)
         return F.rms_norm(x, self.weight.shape, eps=self.eps) * self.weight
+
+
+class TERMSNorm(te.RMSNorm):
+    """Transformer Engine RMSNorm for Wan DiT attention projections."""
+
+    def __init__(self, dim, eps=1e-5):
+        """Initialize a standard (non-zero-centered) RMSNorm."""
+        # FastWAM constructs experts on CPU before moving them to the target GPU.
+        super().__init__(dim, eps=eps, device="cpu", zero_centered_gamma=False)
+
+
+def make_rmsnorm(dim: int, eps: float, impl: str) -> nn.Module:
+    """Build the q/k RMSNorm module selected by ``impl``.
+
+    Both implementations expose a single ``weight`` parameter of shape ``(dim,)``,
+    so checkpoints are interchangeable except for the ``_extra_state`` key that TE
+    modules add (see ``utils.state_dict.drop_extra_state``).
+
+    Which one is faster depends on the torch build, so the choice is configuration
+    rather than autodetection:
+
+    * **torch < 2.9.0** has no fused ``rms_norm`` CUDA kernel — ``F.rms_norm``
+      decomposes into seven fp32 elementwise/reduction kernels, and TE is ~9.5x
+      faster. Use ``te``.
+    * **torch >= 2.9.0** ships ``vectorized_layer_norm_kernel<..., rms_norm=true>``
+      (22 registers, 100% occupancy). TE 2.9 only precompiles tuned kernels for
+      hidden sizes {512, 768, 1024, 2048, 4096, 8192}, so the DiT's 3072 falls back
+      to ``rmsnorm_fwd_general_kernel`` (182 registers, 12.5% occupancy) and the
+      native kernel is ~2.0x faster. Use ``wan``.
+
+    Args:
+        dim: Normalized (last) dimension size.
+        eps: Epsilon added to the mean square before the reciprocal square root.
+        impl: ``"wan"`` (upstream ``F.rms_norm`` module) or ``"te"``.
+
+    Returns:
+        The constructed RMSNorm module.
+
+    Raises:
+        ValueError: If ``impl`` is not a recognized implementation name.
+    """
+    if impl == "wan":
+        return WanRMSNorm(dim, eps=eps)
+    if impl == "te":
+        return TERMSNorm(dim, eps=eps)
+    raise ValueError(
+        f"Unknown RMSNorm implementation {impl!r}; expected one of ['wan', 'te']."
+    )
 
 
 class AttentionModule(nn.Module):
@@ -216,7 +264,14 @@ class AttentionModule(nn.Module):
 class SelfAttention(nn.Module):
     """Wan DiT self-attention block with RoPE."""
 
-    def __init__(self, hidden_dim: int, attn_head_dim: int, num_heads: int, eps: float = 1e-6):
+    def __init__(
+        self,
+        hidden_dim: int,
+        attn_head_dim: int,
+        num_heads: int,
+        eps: float = 1e-6,
+        rmsnorm_impl: str = "wan",
+    ):
         """Initialize self-attention projections and RMS norms."""
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -228,8 +283,8 @@ class SelfAttention(nn.Module):
         self.k = nn.Linear(hidden_dim, self.attn_hidden_dim)
         self.v = nn.Linear(hidden_dim, self.attn_hidden_dim)
         self.o = nn.Linear(self.attn_hidden_dim, hidden_dim)
-        self.norm_q = RMSNorm(self.attn_hidden_dim, eps=eps)
-        self.norm_k = RMSNorm(self.attn_hidden_dim, eps=eps)
+        self.norm_q = make_rmsnorm(self.attn_hidden_dim, eps=eps, impl=rmsnorm_impl)
+        self.norm_k = make_rmsnorm(self.attn_hidden_dim, eps=eps, impl=rmsnorm_impl)
 
         # self.attn = AttentionModule(self.num_heads)
 
@@ -247,7 +302,14 @@ class SelfAttention(nn.Module):
 class CrossAttention(nn.Module):
     """Wan DiT cross-attention block for text context."""
 
-    def __init__(self, hidden_dim: int, attn_head_dim: int, num_heads: int, eps: float = 1e-6):
+    def __init__(
+        self,
+        hidden_dim: int,
+        attn_head_dim: int,
+        num_heads: int,
+        eps: float = 1e-6,
+        rmsnorm_impl: str = "wan",
+    ):
         """Initialize cross-attention projections and RMS norms."""
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -259,8 +321,8 @@ class CrossAttention(nn.Module):
         self.k = nn.Linear(hidden_dim, self.attn_hidden_dim)
         self.v = nn.Linear(hidden_dim, self.attn_hidden_dim)
         self.o = nn.Linear(self.attn_hidden_dim, hidden_dim)
-        self.norm_q = RMSNorm(self.attn_hidden_dim, eps=eps)
-        self.norm_k = RMSNorm(self.attn_hidden_dim, eps=eps)
+        self.norm_q = make_rmsnorm(self.attn_hidden_dim, eps=eps, impl=rmsnorm_impl)
+        self.norm_k = make_rmsnorm(self.attn_hidden_dim, eps=eps, impl=rmsnorm_impl)
 
         # self.attn = AttentionModule(self.num_heads)
 
@@ -288,7 +350,15 @@ class GateModule(nn.Module):
 class DiTBlock(nn.Module):
     """Wan DiT transformer block with self-attention, cross-attention, and MLP."""
 
-    def __init__(self, hidden_dim: int, attn_head_dim: int, num_heads: int, ffn_dim: int, eps: float = 1e-6):
+    def __init__(
+        self,
+        hidden_dim: int,
+        attn_head_dim: int,
+        num_heads: int,
+        ffn_dim: int,
+        eps: float = 1e-6,
+        rmsnorm_impl: str = "wan",
+    ):
         """Initialize one DiT block."""
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -296,8 +366,8 @@ class DiTBlock(nn.Module):
         self.num_heads = num_heads
         self.ffn_dim = ffn_dim
 
-        self.self_attn = SelfAttention(hidden_dim, attn_head_dim, num_heads, eps)
-        self.cross_attn = CrossAttention(hidden_dim, attn_head_dim, num_heads, eps)
+        self.self_attn = SelfAttention(hidden_dim, attn_head_dim, num_heads, eps, rmsnorm_impl)
+        self.cross_attn = CrossAttention(hidden_dim, attn_head_dim, num_heads, eps, rmsnorm_impl)
         self.norm1 = nn.LayerNorm(hidden_dim, eps=eps, elementwise_affine=False)
         self.norm2 = nn.LayerNorm(hidden_dim, eps=eps, elementwise_affine=False)
         self.norm3 = nn.LayerNorm(hidden_dim, eps=eps)
@@ -416,6 +486,7 @@ class WanVideoDiT(torch.nn.Module):
         action_group_causal_mask_mode: str = "causal",
         video_attention_mask_mode: str = "bidirectional",
         use_gradient_checkpointing: bool = False,
+        rmsnorm_impl: str = "wan",
     ):
         """Initialize patch, text, time, transformer, and output modules."""
         super().__init__()
@@ -459,7 +530,10 @@ class WanVideoDiT(torch.nn.Module):
         )
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(hidden_dim, hidden_dim * 6))
         self.blocks = nn.ModuleList(
-            [DiTBlock(hidden_dim, attn_head_dim, num_heads, ffn_dim, eps) for _ in range(num_layers)]
+            [
+                DiTBlock(hidden_dim, attn_head_dim, num_heads, ffn_dim, eps, rmsnorm_impl)
+                for _ in range(num_layers)
+            ]
         )
         self.head = Head(hidden_dim, out_dim, patch_size, eps)
         self.freqs = precompute_freqs_cis_3d(attn_head_dim)
