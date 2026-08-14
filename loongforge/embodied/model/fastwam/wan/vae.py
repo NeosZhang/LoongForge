@@ -20,6 +20,7 @@ from einops import rearrange, repeat
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import transformer_engine.pytorch as te
 from tqdm import tqdm
 
 CACHE_T = 2
@@ -73,6 +74,57 @@ class CausalConv3d(nn.Conv3d):
         return super().forward(x)
 
 
+def _rms_norm(x, weight, eps, impl):
+    """RMS-normalize over the last dimension with the ``impl``-selected kernel.
+
+    ``"wan"`` uses ``F.rms_norm``; ``"te"`` uses TransformerEngine's kernel. Which
+    one is faster depends on the torch build — see ``fastwam.wan.dit.make_rmsnorm``
+    for the torch 2.9.0 boundary; the VAE channel sizes (160/320/640) are outside
+    TE 2.9's tuned-kernel list just like the DiT's 3072, so both experts and the VAE
+    want the same choice.
+
+    The TE kernel is forward-only, which is enough because ``VideoVAE38Core`` is
+    constructed ``.eval().requires_grad_(False)`` and never trains. It has no
+    fallback path: an unsupported or mismatched dtype raises (``KeyError`` from
+    ``TE_DType``, or TE's "Unavailable kernel for this normalization config"), which
+    is what we want — a silent fallback would turn a config mistake into an
+    invisible slowdown.
+    """
+    if impl != "te":
+        return F.rms_norm(x, weight.shape, weight=weight, eps=eps)
+    # reshape is a free view because every call site feeds a channels-last tensor.
+    te_dtype = te.constants.TE_DType[x.dtype]
+    flat = x.reshape(-1, weight.numel())
+    out = te.cpp_extensions.rmsnorm_fwd(flat, weight, eps, None, None, te_dtype, 0, False)
+    return out[0].view(x.shape)
+
+
+def set_rmsnorm_impl(module, impl: str) -> None:
+    """Select the RMSNorm kernel for every ``RMSNorm`` inside ``module``.
+
+    The VAE creates ``RMSNorm`` deep inside eight-plus nested constructors, and
+    ``wan.loader`` builds it without ``model_kwargs_override``, so the choice is
+    applied after construction instead of threaded through the constructor chain.
+    This is safe because the selection only affects ``forward``: the parameter is
+    still named ``gamma`` and no ``_extra_state`` is introduced, so the state dict
+    is identical either way.
+
+    Args:
+        module: Root module to walk (typically a ``WanVideoVAE38``).
+        impl: ``"wan"`` or ``"te"``, matching ``FastWAMModelConfig.rmsnorm_impl``.
+
+    Raises:
+        ValueError: If ``impl`` is not a recognized implementation name.
+    """
+    if impl not in {"wan", "te"}:
+        raise ValueError(
+            f"Unknown RMSNorm implementation {impl!r}; expected one of ['wan', 'te']."
+        )
+    for submodule in module.modules():
+        if isinstance(submodule, RMSNorm):
+            submodule.rmsnorm_impl = impl
+
+
 class RMSNorm(nn.Module):
     """Root mean square normalization supporting channel-first tensors."""
 
@@ -86,17 +138,22 @@ class RMSNorm(nn.Module):
         self.eps = 1e-12
         self.gamma = nn.Parameter(torch.ones(shape))
         self.bias = nn.Parameter(torch.zeros(shape)) if bias else 0.
+        # Overwritten by `set_rmsnorm_impl` after the VAE is loaded; defaults to
+        # upstream Wan behaviour so a standalone VAE needs no extra wiring.
+        self.rmsnorm_impl = "wan"
 
     def forward(self, x):
         """Normalize input tensor and apply scale and bias parameters."""
         weight = self.gamma.reshape(-1)
         if self.channel_first:
-            # Move channels to the last axis so F.rms_norm can use the fused kernel.
-            x = F.rms_norm(x.movedim(1, -1), weight.shape, weight=weight, eps=self.eps)
-            x = x.movedim(-1, 1)
+            # Call sites hand us channels-last tensors, so movedim yields a
+            # contiguous view and the last-dim kernel needs no transpose copy.
+            x = _rms_norm(x.movedim(1, -1), weight, self.eps, self.rmsnorm_impl).movedim(-1, 1)
         else:
-            x = F.rms_norm(x, weight.shape, weight=weight, eps=self.eps)
-        return x + self.bias
+            x = _rms_norm(x, weight, self.eps, self.rmsnorm_impl)
+        if isinstance(self.bias, torch.Tensor):
+            x = x + self.bias
+        return x
 
 
 class Upsample(nn.Upsample):
