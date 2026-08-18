@@ -1,3 +1,6 @@
+# Copyright 2026 The LoongForge Authors.
+# SPDX-License-Identifier: Apache-2.0
+
 from types import SimpleNamespace
 
 import loongforge.train  # noqa: F401 - initialize package imports in training order
