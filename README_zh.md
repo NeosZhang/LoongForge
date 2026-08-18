@@ -167,6 +167,7 @@ LoongForge 已支持 LLM、VLM、Diffusion 与 Embodied 等类别的广泛模型
 <li><a href="examples/minimax/">MiniMax-M2.1/2.5/2.7</a> ✅</li>
 <li><a href="examples/mimo/">MIMO</a> ✅</li>
 <li><a href="examples/glm5/">GLM-5</a> ✅</li>
+<li><a href="examples/glm5.2/">GLM-5.2</a> ✅</li>
 </ul>
 </td>
 <td valign="top">
@@ -176,6 +177,7 @@ LoongForge 已支持 LLM、VLM、Diffusion 与 Embodied 等类别的广泛模型
 <li><a href="examples/qwen3.5/">Qwen3.5</a> ✅</li>
 <li><a href="examples/qwen3.6/">Qwen3.6</a> ✅</li>
 <li><a href="examples/kimi_k2.x/kimi_k2.5/">Kimi-K2.5/2.6</a> ✅</li>
+<li><a href="examples/glm5.2_vit/">GLM-5.2 + Kimi-K2.6 ViT</a> ✅</li>
 <li><a href="examples/ernie4.5/">ERNIE4.5-VL</a> ✅</li>
 <li><a href="examples/llava_onevision_1.5/">LLaVA-OneVision-1.5</a> ✅</li>
 <li><a href="examples/internvl2.5/">InternVL2.5</a> ✅</li>

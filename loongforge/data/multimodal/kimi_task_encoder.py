@@ -229,13 +229,13 @@ class KimiVLMTaskEncoder(VLMTaskEncoder):
         attn_mask: torch.Tensor,
         grid_thws: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Expand single <|media_content|> tokens to multiple tokens based on image feature length.
+        """Match <|media_content|> token count to the image feature count.
 
         This implements the core logic of _merge_input_ids_with_image_features from
         modeling_kimi_k25.py, but operates on token IDs instead of embeddings.
 
         Args:
-            input_ids: Token IDs with single <|media_content|> placeholders
+            input_ids: Token IDs with single placeholders or plugin-expanded tokens
             target: Labels tensor
             attn_mask: Attention mask tensor
             grid_thws: Grid dimensions for each image, shape (num_images, 3)
@@ -257,6 +257,11 @@ class KimiVLMTaskEncoder(VLMTaskEncoder):
         ]
 
         input_ids_list = input_ids.tolist()
+        # HF multimodal plugins may already emit one token per visual feature.
+        # In that case expanding again would turn N media tokens into 2N-1.
+        if input_ids_list.count(media_content_id) == sum(feature_lengths):
+            return input_ids, target, attn_mask
+
         target_list = target.tolist()
         attn_mask_list = attn_mask.tolist()
 
@@ -418,6 +423,29 @@ class KimiVLMTaskEncoder(VLMTaskEncoder):
         Returns:
             input_ids, target, attn_mask, imgs, image_grid_thw
         """
+        if isinstance(self.chat_template, HFChatTemplate):
+            if image is not None and constants.Placeholder.IMAGE not in context:
+                context = constants.Placeholder.IMAGE + context
+            messages = [
+                {"role": constants.DataRoles.USER, "content": context},
+                {"role": constants.DataRoles.ASSISTANT, "content": answer},
+            ]
+            (
+                input_ids,
+                target,
+                attn_mask,
+                imgs,
+                image_grid_thw,
+                _,
+                _,
+            ) = self.process_sft_qa(
+                messages,
+                "",
+                None,
+                [image] if image is not None else None,
+            )
+            return input_ids, target, attn_mask, imgs, image_grid_thw
+
         text = self._build_kimi_chat_text(
             context, answer, has_image=(image is not None)
         )
@@ -556,40 +584,7 @@ class KimiVLMTaskEncoder(VLMTaskEncoder):
             image_grid_thw = mm_inputs["image_grid_thw"]
             pixel_values_images = [mm_inputs["pixel_values"]]
 
-        if isinstance(self.chat_template, HFChatTemplate):
-            hf_messages = list(messages)
-            has_system_message = (
-                hf_messages
-                and hf_messages[0].get("role") == constants.DataRoles.SYSTEM
-            )
-            if system and not has_system_message:
-                hf_messages = [
-                    {"role": constants.DataRoles.SYSTEM, "content": system},
-                    *hf_messages,
-                ]
-            input_ids, target, _, _ = self.chat_template.encode_openai(
-                tokenizer=self.tokenizer,
-                messages=hf_messages,
-                tools=tools,
-                train_on_prompt=getattr(self.args, "train_on_prompt", False),
-                history_mask_loss=getattr(self.args, "history_mask_loss", False),
-                ignore_index=IGNORE_INDEX,
-            )
-        else:
-            # Encode multi-turn conversation
-            encode_pairs = self.chat_template.encode_multiturn(
-                tokenizer=self.tokenizer,
-                messages=messages,
-                system=system,
-            )
-
-            input_ids, target = [], []
-            for source_ids, target_ids in encode_pairs:
-                input_ids += source_ids + target_ids
-                target += [IGNORE_INDEX] * len(source_ids) + target_ids
-
-        input_ids = torch.tensor(input_ids)
-        target = torch.tensor(target)
+        input_ids, target = self._encode_sft_messages(messages, system, tools)
         attn_mask = torch.zeros_like(input_ids).bool()
 
         # Expand <|media_content|> tokens to match actual image/video feature length.
