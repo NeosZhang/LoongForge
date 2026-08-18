@@ -208,9 +208,9 @@ class DSAIndexerFused(MegatronModule):
 
         k_norm_config = copy.copy(self.config)
         k_norm_config.normalization = "LayerNorm"
-        k_norm_eps = getattr(
-            self.config, "dsa_indexer_k_norm_epsilon", self.config.layernorm_epsilon
-        )
+        k_norm_eps = getattr(self.config, "dsa_indexer_k_norm_epsilon", None)
+        if k_norm_eps is None:
+            k_norm_eps = self.config.layernorm_epsilon
         self.k_norm = build_module(
             submodules.k_norm,
             config=k_norm_config,

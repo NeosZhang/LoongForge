@@ -58,6 +58,14 @@ def test_fused_indexer_uses_configured_k_norm_epsilon(monkeypatch):
 
     assert recorded == [None, None, 1e-6, None]
 
+    config.dsa_indexer_k_norm_epsilon = None
+    dsa_fused.DSAIndexerFused(
+        config=config,
+        submodules=submodules,
+        pg_collection=SimpleNamespace(cp=None),
+    )
+    assert recorded[-4:] == [None, None, 1e-5, None]
+
 
 def test_fused_indexer_rejects_dense_indexer_loss():
     with pytest.raises(ValueError, match="only supports .*sparse_loss=True"):
