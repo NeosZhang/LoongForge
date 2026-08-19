@@ -671,25 +671,28 @@ class VLMTaskEncoder(BaseTaskEncoder):
         images = sample.images if sample.images is not None else []
         videos = sample.videos if sample.videos is not None else []
 
-        has_images = len(images) > 0
-        has_videos = len(videos) > 0
-        if has_images and has_videos:
+        if images and videos:
             raise ValueError(
                 f"encode_packed_multi_mix_qa: cannot mix images and videos in same sample for key={sample.__key__}"
             )
-        has_text_only = not has_images and not has_videos
-        media_list = images if has_images else videos
-        media_type = "image" if has_images else ("video" if has_videos else "text")
 
-        if not has_text_only and len(media_list) != n_orig_sample:
+        if images and len(images) != n_orig_sample:
             raise ValueError(
-                f"encode_packed_multi_mix_qa: media count ({len(media_list)}) "
+                f"encode_packed_multi_mix_qa: image count ({len(images)}) "
+                f"!= context count ({n_orig_sample}) for key={sample.__key__}"
+            )
+        if videos and len(videos) != n_orig_sample:
+            raise ValueError(
+                f"encode_packed_multi_mix_qa: video count ({len(videos)}) "
                 f"!= context count ({n_orig_sample}) for key={sample.__key__}"
             )
         for idx in range(n_orig_sample):
             contexts = sample.contexts[idx]
-            media_group = None if has_text_only else media_list[idx]  # List[Tensor] or List[AVData]
+            image_group = images[idx] if images else None
+            video_group = videos[idx] if videos else None
             answers = sample.answers[idx]
+            child_has_images = image_group is not None and len(image_group) > 0
+            child_has_videos = video_group is not None and len(video_group) > 0
 
             if not isinstance(contexts, (list, tuple)):
                 raise TypeError(
@@ -716,27 +719,27 @@ class VLMTaskEncoder(BaseTaskEncoder):
             for context, answer in zip(contexts, answers):
                 messages.append({"role": "user", "content": context})
                 messages.append({"role": "assistant", "content": answer})
-            if has_images:
+            if child_has_images:
                 init_kwargs = {
                     "__key__": f"{sample.__key__}.q{idx:03d}",
                     "__restore_key__": sample.__restore_key__,
                     "__subflavors__": sample.__subflavors__,
                     "messages": messages,
-                    "image": media_group,
+                    "image": image_group,
                     "video": None,
                     "system": system,
                 }
                 if _ENERGON_NEEDS_SUBFLAVOR:
                     init_kwargs["__subflavor__"] = None
                 cur_sample = MultiMixQASample(**init_kwargs)
-            elif has_videos:
+            elif child_has_videos:
                 init_kwargs = {
                     "__key__": f"{sample.__key__}.q{idx:03d}",
                     "__restore_key__": sample.__restore_key__,
                     "__subflavors__": sample.__subflavors__,
                     "messages": messages,
                     "image": None,
-                    "video": media_group,  # List[AVData]
+                    "video": video_group,  # List[AVData]
                     "system": system,
                 }
                 if _ENERGON_NEEDS_SUBFLAVOR:
