@@ -50,6 +50,12 @@ VIDEO_TOKEN = "<|video_pad|>"
 VISION_TAGS = ["<|vision_start|>", "<|vision_end|>"]
 IMAGE_TOKEN_WITH_TAGS = VISION_TAGS[0] + IMAGE_TOKEN + VISION_TAGS[1]
 VIDEO_TOKEN_WITH_TAGS = VISION_TAGS[0] + VIDEO_TOKEN + VISION_TAGS[1]
+IMAGE_PLACEHOLDERS = ("<image>", IMAGE_TOKEN, IMAGE_TOKEN_WITH_TAGS)
+VIDEO_PLACEHOLDERS = ("<video>", VIDEO_TOKEN, VIDEO_TOKEN_WITH_TAGS)
+
+
+def _contains_any(text: str, needles: Tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
 
 
 @dataclass
@@ -707,11 +713,30 @@ class VLMTaskEncoder(BaseTaskEncoder):
 
             contexts = list(contexts)
             answers = list(answers)
+            if not all(isinstance(context, str) for context in contexts):
+                raise TypeError(
+                    f"encode_packed_multi_mix_qa expects all contexts[{idx}] "
+                    f"turns to be str for key={sample.__key__}"
+                )
             if len(contexts) != len(answers):
                 raise ValueError(
                     f"encode_packed_multi_mix_qa: context/answer turn count mismatch "
                     f"for key={sample.__key__}.q{idx:03d}: "
                     f"{len(contexts)} vs {len(answers)}"
+                )
+            if not child_has_images and any(
+                _contains_any(context, IMAGE_PLACEHOLDERS) for context in contexts
+            ):
+                raise ValueError(
+                    f"encode_packed_multi_mix_qa: image placeholder found without "
+                    f"image tensors for key={sample.__key__}.q{idx:03d}"
+                )
+            if not child_has_videos and any(
+                _contains_any(context, VIDEO_PLACEHOLDERS) for context in contexts
+            ):
+                raise ValueError(
+                    f"encode_packed_multi_mix_qa: video placeholder found without "
+                    f"video tensors for key={sample.__key__}.q{idx:03d}"
                 )
 
             system = None
