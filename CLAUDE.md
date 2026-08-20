@@ -41,15 +41,12 @@ sh build.sh    # Creates output tarball
 
 E2E tests use a custom YAML-driven framework (`tests/llm_vlm/main.py`), not pytest.
 
+The entry script does NOT download artifacts. Provision the datasets, HuggingFace base
+models, and pre-converted checkpoints referenced by the selected configs first, then run:
+
 ```bash
-# Download test datasets first
-bash tests/llm_vlm/download_datasets.sh
-
-# Run default CI test suite (all models in tests/llm_vlm/configs/)
+# Run the default CI suite (all models in tests/llm_vlm/configs/)
 bash tests/llm_vlm/main_start.sh
-
-# Run optional regression tests (tests/llm_vlm/optional_configs/)
-bash tests/llm_vlm/main_start.sh --optional
 ```
 
 ### Running a Single Model Test

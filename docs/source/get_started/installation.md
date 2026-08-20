@@ -14,8 +14,8 @@
 - **CUDA Toolkit**: >= 12.1
 - **OS**: Linux (Ubuntu 22.04 / 24.04 recommended)
 
-Note: For Kunlun XPU installation, see the
-[Kunlun Installation Guide](../kunlun_tutorial/install_p800.md).
+Note: For Kunlun XPU, see the
+[Kunlun XPU tutorials](../kunlun_tutorial/README.md).
 
 ## Prerequisites
 

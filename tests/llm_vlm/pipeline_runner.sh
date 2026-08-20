@@ -12,7 +12,7 @@ export CUDA_DEVICE_MAX_CONNECTIONS=1
 # Initialize node parameters
 node_nums=1
 gpu_nums=8
-chip="A800" #A800, H800, BZZ
+chip="A800" # A800, H800
 
 # Set metric tolerances
 accuracy_relative_tolerance=0.02
@@ -29,9 +29,6 @@ model_in_optional_configs=""
 
 # Other parameters
 timeout=3600
-AK="default"
-SK="default"
-skip_env=false # Whether to skip environment preparation
 
 # Resume parameters (can be preset via env vars, or auto-read from common.yaml by this script)
 check_loss_only=true
@@ -103,16 +100,6 @@ while [[ $# -gt 0 ]]; do
             fi
             ;;
 
-        --time_flag)
-            if [[ -n "$2" && ! "$2" =~ ^-- ]]; then
-                TIME_FLAG="$2"
-                shift 2
-            else
-                TIME_FLAG=`date "+%Y%m%d%H%M%S"`
-                shift
-            fi
-            ;;
-
         --training_type)
             if [[ -n "$2" && ! "$2" =~ ^-- ]]; then
                 training_type="$2"
@@ -129,29 +116,6 @@ while [[ $# -gt 0 ]]; do
             else
                 shift
             fi
-            ;;
-
-        --ak)
-            if [[ -n "$2" && ! "$2" =~ ^-- ]]; then
-                AK="$2"
-                shift 2
-            else
-                shift
-            fi
-            ;;
-
-        --sk)
-            if [[ -n "$2" && ! "$2" =~ ^-- ]]; then
-                SK="$2"
-                shift 2
-            else
-                shift
-            fi
-            ;;
-
-        --skip_env)
-            skip_env=true
-            shift
             ;;
 
         --check_loss_only)
@@ -184,7 +148,7 @@ while [[ $# -gt 0 ]]; do
 
         *)
             echo "Unknown argument: $1"
-            echo "Supported arguments: --timeout --chip --precision --performance --release_mode --model_in_configs --model_in_optional_configs --time_flag --training_type --tasks --ak --sk --skip_env --check_loss_only --auto_collect_baseline --resume_state_file --resume_policy"
+            echo "Supported arguments: --timeout --chip --precision --performance --release_mode --model_in_configs --model_in_optional_configs --training_type --tasks --check_loss_only --auto_collect_baseline --resume_state_file --resume_policy"
             exit 1
             ;;
     esac
@@ -215,7 +179,6 @@ case "${test_mode}" in
         include_optional=false
         optional_subdir=""
         extra_models=""
-        download_mode="default"
         ;;
     mode2)
         echo "Run all models under configs and optional_configs"
@@ -223,11 +186,9 @@ case "${test_mode}" in
         include_optional=true
         optional_subdir=""
         extra_models=""
-        download_mode="default optional"
         ;;
     *)
         echo "Using developer mode, custom test models"
-        download_mode=""
 
         # Check if at least one model-related parameter is specified
         if [ -z "${model_in_configs}" ] && [ -z "${model_in_optional_configs}" ]; then
@@ -240,7 +201,6 @@ case "${test_mode}" in
         if [ -n "${model_in_configs}" ]; then
             # Specify specific models, multiple models separated by spaces
             model_names="${model_in_configs}"
-            download_mode+=" default"
         else
             model_names=""
         fi
@@ -258,51 +218,13 @@ case "${test_mode}" in
                 extra_models=""
             fi
             include_optional=true
-            download_mode+=" optional"
         else
             include_optional=false
             optional_subdir=""
             extra_models=""
         fi
-
-        # Remove extra leading spaces
-        download_mode="${download_mode#"${download_mode%%[![:space:]]*}"}"
         ;;
 esac
-
-# Build download parameters
-if [[ ! "$skip_env" == true ]]; then
-  SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-  if [[ -f "${SCRIPT_DIR}/prepare_env.sh" ]]; then
-      echo "Running environment preparation script: ${SCRIPT_DIR}/prepare_env.sh"
-
-      # Build argument array
-      args=("${SCRIPT_DIR}/prepare_env.sh")
-
-      # Only add this parameter when download_mode is not empty
-      if [[ -n "$download_mode" ]]; then
-          args+=("--download_mode" "${download_mode}")
-      else
-          echo "Warning: no download mode specified, will skip data download or use default mode" >&2
-          exit 1
-      fi
-
-      # Add optional parameters
-      if [[ "$AK" != "default" && "$SK" != "default" ]]; then
-          args+=("--ak" "$AK" "--sk" "$SK")
-      fi
-
-      echo "Argument array: ${args[@]}"
-
-      # Safe execution
-      if ! bash "${args[@]}"; then
-          echo "Error: data download failed" >&2
-          exit 1
-      fi
-  else
-      echo "Warning: download script ${SCRIPT_DIR}/prepare_env.sh not found, skipping data download"
-  fi
-fi
 
 # Build test parameters
 # 1. Base required parameters

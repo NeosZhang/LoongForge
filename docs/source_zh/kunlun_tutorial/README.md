@@ -6,7 +6,7 @@ LoongForge 支持在昆仑芯 P800 XPU 上进行训练，涵盖 LLM、VLM、VLA 
 
 ### 安装
 
-参考 [昆仑芯 P800 安装](https://loongforge.readthedocs.io/en/latest/kunlun_tutorial/install_p800.html)
+参考 [安装指南](https://loongforge.readthedocs.io/zh-cn/latest/get_started/installation.html)
 
 ### 快速开始：VLM 模型训练
 

@@ -6,7 +6,7 @@ LoongForge supports training on the Kunlunxin P800 XPU, covering a variety of mo
 
 ### Installation
 
-Refer to [Installation on Kunlunxin P800](https://loongforge.readthedocs.io/en/latest/kunlun_tutorial/install_p800.html)
+Refer to [Installation](https://loongforge.readthedocs.io/en/latest/get_started/installation.html)
 
 ### Quick Start: VLM Model Training
 

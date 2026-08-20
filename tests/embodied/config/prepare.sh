@@ -12,7 +12,7 @@ source "${SCRIPT_DIR}/env.sh"
 
 mkdir -p "${LOCAL_VLA_ARTIFACTS_ROOT}"
 
-# bcecmd wrapper function with retries (consistent with the main framework's tests/download_datasets.sh)
+# bcecmd wrapper function with retries
 REAL_BCECMD=${BCECMD}
 bcecmd() {
     local retries=20
