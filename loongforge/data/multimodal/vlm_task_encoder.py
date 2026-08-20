@@ -591,6 +591,7 @@ class VLMTaskEncoder(BaseTaskEncoder):
         """Generates an encoded multimodal packed vqa sample from a raw sample."""
         n_orig_sample = len(sample.images)
         l_VLMTaskSample = []
+        self.is_packing_enabled = True
         for idx in range(n_orig_sample):
             if _ENERGON_NEEDS_SUBFLAVOR:
                 cur_capsample = VQASample(
@@ -611,9 +612,15 @@ class VLMTaskEncoder(BaseTaskEncoder):
                     answers=sample.answers[idx],
                     context=sample.contexts[idx],
                 )
-            l_VLMTaskSample.append(self.encode_vqa(cur_capsample))
+            encoded = self.encode_vqa(cur_capsample)
+            if encoded is None:
+                raise ValueError(
+                    f"encode_packed_vqa: member {cur_capsample.__key__} was "
+                    "dropped during encode_vqa. Offline-packed artifacts "
+                    "cannot drop individual members."
+                )
+            l_VLMTaskSample.append(encoded)
         l_sample_packed = self.pack_selected_samples(l_VLMTaskSample)
-        self.is_packing_enabled = True
         return l_sample_packed
 
     def encode_packed_multi_mix_qa(
@@ -640,6 +647,7 @@ class VLMTaskEncoder(BaseTaskEncoder):
                 f"encode_packed_multi_mix_qa: media count ({len(media_list)}) "
                 f"!= context count ({n_orig_sample}) for key={sample.__key__}"
             )
+        self.is_packing_enabled = True
         for idx in range(n_orig_sample):
             context = sample.contexts[idx]  # str
             media_group = None if has_text_only else media_list[idx]  # List[Tensor] or List[AVData]
@@ -694,9 +702,15 @@ class VLMTaskEncoder(BaseTaskEncoder):
                 if _ENERGON_NEEDS_SUBFLAVOR:
                     init_kwargs["__subflavor__"] = None
                 cur_sample = MultiMixQASample(**init_kwargs)
-            l_VLMTaskSample.append(self.encode_multi_mix_qa(cur_sample))
+            encoded = self.encode_multi_mix_qa(cur_sample)
+            if encoded is None:
+                raise ValueError(
+                    f"encode_packed_multi_mix_qa: member {cur_sample.__key__} was "
+                    "dropped during encode_multi_mix_qa. Offline-packed artifacts "
+                    "cannot drop individual members."
+                )
+            l_VLMTaskSample.append(encoded)
         l_sample_packed = self.pack_selected_samples(l_VLMTaskSample)
-        self.is_packing_enabled = True
         return l_sample_packed
 
     def encode_packed_chat_mix(
