@@ -72,6 +72,7 @@
 
 **1. 安装** —— 可使用 **预构建镜像** 或 **源码构建**：
 - **NVIDIA GPU**：[安装指南](https://loongforge.readthedocs.io/zh-cn/latest/get_started/installation.html)
+- **昆仑芯 XPU**：[安装指南](https://loongforge.readthedocs.io/zh-cn/latest/kunlun_tutorial/install_p800.html)
 
 **2. 启动你的第一个训练任务** —— 根据目标硬件与模态选择教程：
 - **NVIDIA GPU**：[LLM](https://loongforge.readthedocs.io/zh-cn/latest/llm_tutorial/quick_start_llm_pretrain.html) · [VLM](https://loongforge.readthedocs.io/zh-cn/latest/vlm_tutorial/quick_start_vlm_pretrain.html) · [VLA & WAM](https://loongforge.readthedocs.io/zh-cn/latest/embodied_tutorial/overview.html) · [Diffusion (WAN)](https://loongforge.readthedocs.io/zh-cn/latest/wan_tutorial/quick_start_wan_training.html)
@@ -238,7 +239,7 @@ LoongForge/
 ├── tools/                        # Checkpoint 转换、数据预处理
 ├── ops/                          # 自定义融合算子（含开源的 TileLang 版本）
 ├── patches/                      # TransformerEngine 补丁
-├── docker/                       # Dockerfile（GPU）
+├── docker/                       # Dockerfile（GPU & XPU）
 ├── tests/                        # 端到端测试（YAML 驱动）
 └── docs/                         # 文档
 ```

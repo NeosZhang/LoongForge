@@ -68,6 +68,7 @@ LoongForge 中文文档
    :caption: 昆仑训练
 
    kunlun_tutorial/README
+   kunlun_tutorial/install_p800
    kunlun_tutorial/quick_start_llm_pretrain_p800
    kunlun_tutorial/quick_start_llm_sft_p800
    kunlun_tutorial/quick_start_vlm_p800

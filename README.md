@@ -72,6 +72,7 @@ See the full documentation for installation, tutorials, and advanced usage — [
 
 **1. Install** — using **prebuilt Docker images** or **source build**:
 - **NVIDIA GPU**: [Installation Guide](https://loongforge.readthedocs.io/en/latest/get_started/installation.html)
+- **Kunlun XPU**: [Installation Guide](https://loongforge.readthedocs.io/en/latest/kunlun_tutorial/install_p800.html)
 
 **2. Launch your first training run** — follow a tutorial for your target hardware and modality:
 - **NVIDIA GPU**: [LLM](https://loongforge.readthedocs.io/en/latest/llm_tutorial/quick_start_llm_pretrain.html) · [VLM](https://loongforge.readthedocs.io/en/latest/vlm_tutorial/quick_start_vlm_pretrain.html) · [VLA & WAM](https://loongforge.readthedocs.io/en/latest/embodied_tutorial/overview.html) · [Diffusion](https://loongforge.readthedocs.io/en/latest/wan_tutorial/quick_start_wan_training.html)
@@ -239,7 +240,7 @@ LoongForge/
 ├── tools/                        # Checkpoint conversion, data preprocessing
 ├── ops/                          # Custom fused operators (incl. open-sourced TileLang)
 ├── patches/                      # TransformerEngine patches
-├── docker/                       # Dockerfile (GPU)
+├── docker/                       # Dockerfiles (GPU & XPU)
 ├── tests/                        # E2E test suite (YAML-driven)
 └── docs/                         # Documentation
 ```

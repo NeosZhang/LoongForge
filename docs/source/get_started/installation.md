@@ -14,8 +14,8 @@
 - **CUDA Toolkit**: >= 12.1
 - **OS**: Linux (Ubuntu 22.04 / 24.04 recommended)
 
-Note: For Kunlun XPU, see the
-[Kunlun XPU tutorials](../kunlun_tutorial/README.md).
+Note: For Kunlun XPU installation, see the
+[Kunlun Installation Guide](../kunlun_tutorial/install_p800.md).
 
 ## Prerequisites
 
@@ -117,8 +117,8 @@ docker pull loongforge/loongforge:${LOONGFORGE_VERSION}
 LOONGFORGE_VERSION=<version>
 
 docker run --runtime=nvidia --gpus all -itd --rm \
-  -v /path/to/your/hf/models:/mnt/cluster/huggingface.co/ \
-  -v /path/to/data:/mnt/cluster/LoongForge/ \
+  -v /path/to/your/hf/models:/workspace/hf/models \
+  -v /path/to/data:/workspace/data \
   loongforge/loongforge:${LOONGFORGE_VERSION} /bin/bash
 ```
 

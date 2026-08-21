@@ -14,7 +14,7 @@
 - **CUDA Toolkit**：>= 12.1
 - **操作系统**：Linux（推荐 Ubuntu 22.04 / 24.04）
 
-注意：昆仑 XPU 请参见[昆仑芯 XPU 教程](../kunlun_tutorial/README.md)。
+注意：昆仑 XPU 安装请参见[昆仑安装指南](../kunlun_tutorial/install_p800.md)。
 
 ## 前置条件
 
@@ -105,8 +105,8 @@ docker pull loongforge/loongforge:${LOONGFORGE_VERSION}
 LOONGFORGE_VERSION=<version>
 
 docker run --runtime=nvidia --gpus all -itd --rm \
-  -v /path/to/your/hf/models:/mnt/cluster/huggingface.co/ \
-  -v /path/to/data:/mnt/cluster/LoongForge/ \
+  -v /path/to/your/hf/models:/workspace/hf/models \
+  -v /path/to/data:/workspace/data \
   loongforge/loongforge:${LOONGFORGE_VERSION} /bin/bash
 ```
 

@@ -207,7 +207,6 @@ RULES = [
                "as a path or symbol default, break external users.",
         "pattern": r"(?i)\bAIAK[-_](?:Training[-_](?:Omni|LLM)|Megatron)\b"
                    r"|\bBaigeOmni\b"
-                   r"|\bLoongForge-VLA\b"
                    r"|\baiak_training_omni\b"
                    r"|\bset_aiak_\w+|\binitialize_baige_\w+|\bUSE_AIAK_\w+"
                    r"|\baiak-ckpt\b",

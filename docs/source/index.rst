@@ -67,6 +67,7 @@ A modular, scalable, and highly efficient training framework for language, multi
    :caption: KunLun Training
 
    kunlun_tutorial/README
+   kunlun_tutorial/install_p800
    kunlun_tutorial/quick_start_llm_pretrain_p800
    kunlun_tutorial/quick_start_llm_sft_p800
    kunlun_tutorial/quick_start_vlm_p800
