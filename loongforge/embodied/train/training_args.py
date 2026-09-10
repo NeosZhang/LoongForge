@@ -1200,19 +1200,22 @@ class _FP8Args:
     fp8_te_recipe: str = field(
         default="blockwise",
         metadata={
-            "choices": ["blockwise", "current", "delayed"],
+            "choices": ["blockwise", "current", "delayed", "mxfp8"],
             "help": "TransformerEngine FP8 scaling recipe: blockwise "
                     "(Float8BlockScaling), "
-                    "current (Float8CurrentScaling), or delayed (DelayedScaling).",
+                    "current (Float8CurrentScaling), delayed (DelayedScaling), "
+                    "or mxfp8 (MXFP8BlockScaling microscaling).",
         },
     )
     fp8_te_format: Optional[str] = field(
         default=None,
         metadata={
-            "choices": ["e4m3", "hybrid"],
+            "choices": ["e4m3", "e5m2", "hybrid"],
             "help": "TransformerEngine-only FP8 data format override. Unset preserves each "
                     "TransformerEngine recipe's native default: E4M3 for "
-                    "blockwise and HYBRID for current/delayed.",
+                    "blockwise and HYBRID for current/delayed/mxfp8. E5M2 "
+                    "requires a TransformerEngine recipe that supports pure "
+                    "E5M2 and is not supported by MXFP8.",
         },
     )
     fp8_te_margin: int = field(
@@ -1264,6 +1267,16 @@ class _FP8Args:
             "help": "TransformerEngine Float8BlockScaling only: allow "
                     "unconstrained FP32 scales "
                     "instead of the default power-of-two scales.",
+        },
+    )
+    fp8_te_block_backward_override: Optional[str] = field(
+        default=None,
+        metadata={
+            "choices": ["high_precision", "dequantized"],
+            "help": "TransformerEngine Float8BlockScaling only: override "
+                    "backward precision. Unset preserves the default behavior; "
+                    "high_precision keeps high-precision backward operands; "
+                    "dequantized dequantizes saved operands before backward.",
         },
     )
 

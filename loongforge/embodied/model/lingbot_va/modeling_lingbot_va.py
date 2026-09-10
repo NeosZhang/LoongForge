@@ -148,7 +148,7 @@ class LingBotVAEmbodiedModel(nn.Module):
         benefit.
         """
         return {
-            "module_patterns": ["model.blocks.*.ffn"],
+            "module_patterns": ["model"],
             "skip_modules": [],
         }
 

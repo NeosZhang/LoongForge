@@ -305,6 +305,7 @@ def validate(training_args, model_cfg, data_cfg):
                 or not training_args.fp8_te_reduce_amax
                 or training_args.fp8_te_current_use_power_2_scales
                 or training_args.fp8_te_block_use_f32_scales
+                or training_args.fp8_te_block_backward_override is not None
             )
             if te_overrides:
                 raise ValueError(

@@ -11,6 +11,7 @@ outside TE modules.
 
 from __future__ import annotations
 
+import inspect
 import logging
 from contextlib import contextmanager, nullcontext
 
@@ -18,11 +19,13 @@ logger = logging.getLogger(__name__)
 
 # Stable CLI spelling -> TransformerEngine class. The indirection keeps training
 # arguments independent of TE class names while still reporting when an older TE
-# build does not provide a requested recipe.
+# build does not provide a requested recipe. MXFP8 uses TE's native E4M3
+# microscaling recipe and intentionally has no recipe-specific CLI knobs here.
 _RECIPE_CLASSES = {
     "blockwise": "Float8BlockScaling",
     "current": "Float8CurrentScaling",
     "delayed": "DelayedScaling",
+    "mxfp8": "MXFP8BlockScaling",
 }
 
 FP8_RECIPE_CHOICES = tuple(_RECIPE_CLASSES)
@@ -44,7 +47,7 @@ def _resolve_fp8_format(te_recipe, raw_format: str | None):
     if fp8_format is None:
         raise ValueError(
             f"Unsupported --fp8-te-format {raw_format!r} in this "
-            "TransformerEngine build; expected e4m3 or hybrid."
+            "TransformerEngine build; expected e4m3, e5m2, or hybrid."
         )
     return fp8_format
 
@@ -55,11 +58,17 @@ def _recipe_kwargs(recipe_name: str, recipe_args, te_recipe) -> dict:
         return {}
 
     kwargs = {}
+    raw_format = getattr(recipe_args, "fp8_te_format", None)
     fp8_format = _resolve_fp8_format(
         te_recipe,
-        getattr(recipe_args, "fp8_te_format", None),
+        raw_format,
     )
     if fp8_format is not None:
+        if recipe_name == "mxfp8" and raw_format.lower() == "e5m2":
+            raise ValueError(
+                "--fp8-te-format=e5m2 is not supported by "
+                "MXFP8BlockScaling; use e4m3 or hybrid."
+            )
         kwargs["fp8_format"] = fp8_format
 
     if recipe_name == "delayed":
@@ -75,6 +84,12 @@ def _recipe_kwargs(recipe_name: str, recipe_args, te_recipe) -> dict:
         )
     elif recipe_name == "blockwise":
         kwargs["use_f32_scales"] = recipe_args.fp8_te_block_use_f32_scales
+        if recipe_args.fp8_te_block_backward_override is not None:
+            kwargs["backward_override"] = (
+                recipe_args.fp8_te_block_backward_override
+            )
+    elif recipe_name == "mxfp8":
+        kwargs["margin"] = recipe_args.fp8_te_margin
     return kwargs
 
 
@@ -102,7 +117,18 @@ def build_fp8_recipe(recipe_name: str, recipe_args=None):
             f"--fp8-recipe={recipe_name} needs {class_name}, which this "
             "TransformerEngine build does not provide."
         )
-    return recipe_cls(**_recipe_kwargs(recipe_name, recipe_args, te_recipe))
+    recipe_kwargs = _recipe_kwargs(recipe_name, recipe_args, te_recipe)
+    unsupported_kwargs = set(recipe_kwargs).difference(
+        inspect.signature(recipe_cls).parameters
+    )
+    if unsupported_kwargs:
+        unsupported = ", ".join(sorted(unsupported_kwargs))
+        raise RuntimeError(
+            f"--fp8-te-recipe={recipe_name} requires TransformerEngine "
+            f"{class_name} parameters not supported by this installed build: "
+            f"{unsupported}. Upgrade TransformerEngine or unset the option."
+        )
+    return recipe_cls(**recipe_kwargs)
 
 
 @contextmanager
